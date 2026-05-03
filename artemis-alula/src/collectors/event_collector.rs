@@ -11,7 +11,7 @@ use {
 /// Describes how to filter the queried events
 #[derive(Debug, Clone)]
 pub struct EventFilter {
-    pub topics: Vec<String>,
+    pub topics: Vec<Vec<String>>,
     pub event_type: EventType,
     pub contract_ids: Vec<String>,
 }
@@ -104,14 +104,6 @@ impl Collector<Event> for EventCollector {
                             let has_events = !response.events.is_empty();
 
                             for event in response.events {
-                                // X: One must check if this is a good thing to have
-                                let cursor = if event.paging_token.is_empty() {
-                                    event.id.clone()
-                                } else {
-                                    event.paging_token.clone()
-                                };
-
-                                last_cursor_id = Some(cursor);
                                 last_event_timestamp = event.ledger;
 
                                 if let Err(err) = sender.send(Event::SorobanEvents(event)) {
@@ -119,6 +111,11 @@ impl Collector<Event> for EventCollector {
 
                                     return;
                                 }
+                            }
+
+                            // Update cursor once per page, using the response-level cursor
+                            if has_events || last_cursor_id.is_some() {
+                                last_cursor_id = Some(response.cursor);
                             }
 
                             // If we got events, there may be more — poll again immediately.

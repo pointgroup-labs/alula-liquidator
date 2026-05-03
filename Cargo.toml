@@ -10,8 +10,8 @@ package.version = "0.0.1"
 
 [workspace.dependencies]
 ## TODO: Update 21 -> most recent
-stellar-xdr = { version = "21", default-features = true, features = [] }
-stellar-rpc-client = "21"
+stellar-xdr = { version = "25", default-features = true, features = [] }
+stellar-rpc-client = "25"
 soroban-fixed-point-math = {version = "1.0.0"}
 artemis-alula = { path = "./artemis-alula" }
 serde = { version = "1.0.228", features = ["derive"] }

@@ -4,11 +4,11 @@ use {
     ed25519_dalek::{Signer, SigningKey},
     sha2::{Digest, Sha256},
     std::time::Duration,
-    stellar_rpc_client::Client,
+    stellar_rpc_client::{Client, AuthMode},
     stellar_xdr::curr::{
         DecoratedSignature, Hash, Limits, Memo, MuxedAccount, Operation, Preconditions,
         SequenceNumber, Signature, SignatureHint, Transaction, TransactionEnvelope, TransactionExt,
-        TransactionV1Envelope, Uint256, WriteXdr as _,
+        TransactionV1Envelope, Uint256, WriteXdr as _, ReadXdr,
     },
     stellar_xdr::curr::{
         TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction,
@@ -93,9 +93,34 @@ async fn submit(
         ext: TransactionExt::V0,
     };
 
-    let assembled = rpc.simulate_and_assemble_transaction(&tx).await?;
+    // Create a temporary envelope for simulation
+    let temp_envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
+        tx: tx.clone(),
+        signatures: vec![].try_into()?,
+    });
+
+    // Simulate the transaction
+    let sim_response = rpc.simulate_transaction_envelope(&temp_envelope, Some(AuthMode::Record)).await?;
+
+    // Assemble the transaction with simulation data
+    let mut assembled_tx = tx.clone();
+    if !sim_response.transaction_data.is_empty() {
+        // Parse the transaction data from simulation and apply it
+        let transaction_data = stellar_xdr::curr::SorobanTransactionData::from_xdr_base64(&sim_response.transaction_data, Limits::none())?;
+        assembled_tx.ext = TransactionExt::V1(transaction_data);
+    }
+
+    // Update fee with simulation result.
+    // `Transaction.fee` is u32, but `min_resource_fee` is u64 — clamp safely.
+    let min_fee_u32: u32 = u32::try_from(sim_response.min_resource_fee)
+        .map_err(|_| anyhow::anyhow!(
+            "simulated min_resource_fee ({}) exceeds u32::MAX",
+            sim_response.min_resource_fee
+        ))?;
+    assembled_tx.fee = assembled_tx.fee.max(min_fee_u32);
+
     let signed = sign_transaction(
-        assembled.transaction(),
+        &assembled_tx,
         &action.signing_key,
         network_passphrase,
     )?;
