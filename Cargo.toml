@@ -9,11 +9,11 @@ package.version = "0.0.1"
 
 
 [workspace.dependencies]
-## TODO: Update 21 -> most recent
+artemis-alula = { path = "./artemis-alula" }
+
 stellar-xdr = { version = "25", default-features = true, features = [] }
 stellar-rpc-client = "25"
 soroban-fixed-point-math = {version = "1.0.0"}
-artemis-alula = { path = "./artemis-alula" }
 serde = { version = "1.0.228", features = ["derive"] }
 anyhow = "1.0.102"
 tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros"] }
@@ -25,6 +25,8 @@ hex = "0.4.3"
 sha2 = "0.11.0"
 serde_json = "1.0.149"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
+clap = { version = "4.6.1", features = ["derive"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 url = { version = "2.5.8", features = ["serde"] }
 
 [profile.release]

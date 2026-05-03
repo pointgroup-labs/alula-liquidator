@@ -182,7 +182,7 @@ impl PoolData {
     }
 
     pub fn tokens_to_d_tokens_floor(&self, tokens: i128) -> i128 {
-        if self.total_borrowed == 0{
+        if self.total_borrowed == 0 {
             // 1:1 ratio if no borrows
             return tokens;
         }

@@ -4,9 +4,9 @@ use {
         types::{BorrowPosition, DepositPosition, MarketData, Obligation, ObligationKey, PoolData},
     },
     anyhow::{Context, anyhow},
-    stellar_rpc_client::Client,
+    stellar_rpc_client::{AuthMode, Client},
     stellar_xdr::curr::{
-        AccountId, Hash, HostFunction, Int128Parts, InvokeContractArgs, Limits, Memo,
+        AccountId, ContractId, Hash, HostFunction, Int128Parts, InvokeContractArgs, Limits, Memo,
         MuxedAccount, Operation, OperationBody, Preconditions, PublicKey, ReadXdr as _, ScAddress,
         ScMap, ScMapEntry, ScSymbol, ScVal, ScVec, SequenceNumber, Transaction,
         TransactionEnvelope, TransactionExt, TransactionV1Envelope, Uint256, VecM,
@@ -14,15 +14,10 @@ use {
     tracing::{debug, warn},
 };
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 fn i128_from_parts(parts: &stellar_xdr::curr::Int128Parts) -> i128 {
     ((parts.hi as i128) << 64) | (parts.lo as i128)
 }
 
-/// Convert a native i128 to `ScVal::I128`.
 pub fn i128_to_scval(v: i128) -> ScVal {
     ScVal::I128(Int128Parts {
         hi: (v >> 64) as i64,
@@ -30,12 +25,10 @@ pub fn i128_to_scval(v: i128) -> ScVal {
     })
 }
 
-/// Ceiling multiplication: `ceil(a * b_bps / BPS_DENOMINATOR)`.
 pub fn fixed_mul_ceil(a: i128, b_bps: i128) -> i128 {
     (a * b_bps + (BPS_DENOMINATOR - 1)) / BPS_DENOMINATOR
 }
 
-/// Floor multiplication: `floor(a * b_bps / BPS_DENOMINATOR)`.
 pub fn fixed_mul_floor(a: i128, b_bps: i128) -> i128 {
     a * b_bps / BPS_DENOMINATOR
 }
@@ -131,7 +124,6 @@ fn map_get_string(entries: &[ScMapEntry], key: &str) -> Option<String> {
     }
 }
 
-/// Convert a single ScVal to i128 (handles I128, U64, I64, U32, I32).
 fn scval_to_i128(val: &ScVal) -> anyhow::Result<i128> {
     match val {
         ScVal::I128(parts) => Ok(i128_from_parts(parts)),
@@ -144,24 +136,23 @@ fn scval_to_i128(val: &ScVal) -> anyhow::Result<i128> {
 }
 
 pub fn address_to_scval(address: &str) -> anyhow::Result<ScVal> {
-    todo!()
-    // if address.starts_with('G') {
-    //     let pk = stellar_strkey::ed25519::PublicKey::from_string(address)
-    //         .map_err(|e| anyhow!("invalid G-address '{address}': {e}"))?;
+    if address.starts_with('G') {
+        let pk = stellar_strkey::ed25519::PublicKey::from_string(address)
+            .map_err(|e| anyhow!("invalid G-address '{address}': {e}"))?;
 
-    //     Ok(ScVal::Address(ScAddress::Account(AccountId(
-    //         PublicKey::PublicKeyTypeEd25519(Uint256(pk.0)),
-    //     ))))
-    // } else if address.starts_with('C') {
-    //     let contract = stellar_strkey::Contract::from_string(address)
-    //         .map_err(|e| anyhow!("invalid C-address '{address}': {e}"))?;
+        Ok(ScVal::Address(ScAddress::Account(AccountId(
+            PublicKey::PublicKeyTypeEd25519(Uint256(pk.0)),
+        ))))
+    } else if address.starts_with('C') {
+        let contract = stellar_strkey::Contract::from_string(address)
+            .map_err(|e| anyhow!("invalid C-address '{address}': {e}"))?;
 
-    //     Ok(ScVal::Address(ScAddress::Contract(ContractId(Hash(
-    //         contract.0,
-    //     )))))
-    // } else {
-    //     Err(anyhow!("unknown address format: {address}"))
-    // }
+        Ok(ScVal::Address(ScAddress::Contract(ContractId(Hash(
+            contract.0,
+        )))))
+    } else {
+        Err(anyhow!("unknown address format: {address}"))
+    }
 }
 
 pub fn obligation_key_to_scval(obl: &ObligationKey) -> anyhow::Result<ScVal> {
@@ -201,51 +192,50 @@ async fn simulate_contract_call(
     args: &[ScVal],
     source_account: &str,
 ) -> anyhow::Result<ScVal> {
-    // let contract_hash = contract_strkey_to_hash(contract_address)?;
-    // let source_account_id = account_strkey_to_muxed(source_account)?;
+    let contract_hash = contract_strkey_to_hash(contract_address)?;
+    let source_account_id = account_strkey_to_muxed(source_account)?;
 
-    // let invoke_args = InvokeContractArgs {
-    //     contract_address: ScAddress::Contract(ContractId(Hash(contract_hash))),
-    //     function_name: ScSymbol(function_name.try_into()?),
-    //     args: args.to_vec().try_into()?,
-    // };
-    // let tx = Transaction {
-    //     source_account: source_account_id,
-    //     fee: DEFAULT_SIMULATION_FEE,
-    //     seq_num: SequenceNumber(0), // Simulation uses sequence 0
-    //     cond: Preconditions::None,
-    //     memo: Memo::None,
-    //     operations: vec![Operation {
-    //         source_account: None,
-    //         body: OperationBody::InvokeHostFunction(stellar_xdr::curr::InvokeHostFunctionOp {
-    //             host_function: HostFunction::InvokeContract(invoke_args),
-    //             auth: VecM::default(),
-    //         }),
-    //     }]
-    //     .try_into()?,
-    //     ext: TransactionExt::V0,
-    // };
-    // let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
-    //     tx,
-    //     signatures: VecM::default(),
-    // });
+    let invoke_args = InvokeContractArgs {
+        contract_address: ScAddress::Contract(ContractId(Hash(contract_hash))),
+        function_name: ScSymbol(function_name.try_into()?),
+        args: args.to_vec().try_into()?,
+    };
+    let tx = Transaction {
+        source_account: source_account_id,
+        fee: DEFAULT_SIMULATION_FEE,
+        seq_num: SequenceNumber(0), // Simulation uses sequence 0
+        cond: Preconditions::None,
+        memo: Memo::None,
+        operations: vec![Operation {
+            source_account: None,
+            body: OperationBody::InvokeHostFunction(stellar_xdr::curr::InvokeHostFunctionOp {
+                host_function: HostFunction::InvokeContract(invoke_args),
+                auth: VecM::default(),
+            }),
+        }]
+        .try_into()?,
+        ext: TransactionExt::V0,
+    };
+    let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
+        tx,
+        signatures: VecM::default(),
+    });
 
-    // let sim_response: stellar_rpc_client::SimulateTransactionResponse =
-    //     rpc.simulate_transaction_envelope(&envelope).await?;
-    // if let Some(error) = &sim_response.error {
-    //     return Err(anyhow!("simulation failed for {function_name}: {error}"));
-    // }
+    let sim_response: stellar_rpc_client::SimulateTransactionResponse = rpc
+        .simulate_transaction_envelope(&envelope, Some(AuthMode::Record))
+        .await?;
+    if let Some(error) = &sim_response.error {
+        return Err(anyhow!("simulation failed for {function_name}: {error}"));
+    }
 
-    // let results = sim_response.results()?;
-    // if results.is_empty() {
-    //     return Err(anyhow!(
-    //         "simulation returned no results for {function_name}"
-    //     ));
-    // }
+    let results = sim_response.results()?;
+    if results.is_empty() {
+        return Err(anyhow!(
+            "simulation returned no results for {function_name}"
+        ));
+    }
 
-    // Ok(results[0].xdr.clone())
-
-    todo!()
+    Ok(results[0].xdr.clone())
 }
 
 fn parse_obligation_key(val: &ScVal) -> anyhow::Result<ObligationKey> {
@@ -265,8 +255,6 @@ fn parse_obligation_key(val: &ScVal) -> anyhow::Result<ObligationKey> {
     Ok(ObligationKey { user, seed })
 }
 
-/// Parse `Map<Address, DepositPosition>` from XDR.
-/// Each entry has key = ScVal::Address (pool), val = ScVal::Map (position struct).
 fn parse_deposit_positions(val: &ScVal) -> anyhow::Result<Vec<DepositPosition>> {
     let entries = scval_as_map(val).context("deposits is not a map")?;
     let mut positions = Vec::new();
@@ -296,7 +284,6 @@ fn parse_deposit_positions(val: &ScVal) -> anyhow::Result<Vec<DepositPosition>> 
     Ok(positions)
 }
 
-/// Parse `Map<Address, BorrowPosition>` from XDR.
 fn parse_borrow_positions(val: &ScVal) -> anyhow::Result<Vec<BorrowPosition>> {
     let entries = scval_as_map(val).context("borrows is not a map")?;
     let mut positions = Vec::new();
@@ -336,10 +323,7 @@ pub fn parse_obligation(val: &ScVal, key: &ObligationKey) -> anyhow::Result<Obli
         None => Vec::new(),
     };
 
-    Ok(Obligation {
-        deposits,
-        borrows,
-    })
+    Ok(Obligation { deposits, borrows })
 }
 
 fn parse_obligation_keys(val: &ScVal) -> anyhow::Result<Vec<ObligationKey>> {
@@ -435,8 +419,6 @@ fn parse_market_data(val: &ScVal) -> anyhow::Result<MarketData> {
     })
 }
 
-/// Parse a base64-encoded XDR ScVal (the event `value`) as a map and extract
-/// an i128 field by name.  Returns `Ok(None)` if the field is missing.
 pub fn parse_event_data_i128(value_xdr_base64: &str, field: &str) -> anyhow::Result<Option<i128>> {
     use stellar_xdr::curr::{Limits, ReadXdr as _};
 
@@ -453,8 +435,6 @@ pub fn parse_event_data_i128(value_xdr_base64: &str, field: &str) -> anyhow::Res
     }
 }
 
-/// Parse a base64-encoded event value and extract multiple i128 fields at once.
-/// Returns a Vec in the same order as `fields`. Missing fields become 0.
 pub fn parse_event_data_i128_multi(
     value_xdr_base64: &str,
     fields: &[&str],
@@ -477,12 +457,6 @@ pub fn parse_event_data_i128_multi(
     Ok(result)
 }
 
-/// Parse a base64-encoded XDR event value, extract the named obligation field,
-/// and return the full `Obligation` snapshot.
-///
-/// Returns `Ok(None)` when the field is `Void` or an empty `Option` (obligation
-/// was deleted — all positions closed).  Returns `Ok(Some(..))` when a full
-/// `Obligation` struct is present.
 pub fn parse_obligation_from_event_value(
     value_xdr_base64: &str,
     obligation_field_name: &str,
@@ -1272,17 +1246,15 @@ pub fn build_liquidate_op(
     .try_into()
     .map_err(|_| anyhow!("args conversion"))?;
 
-    // let invoke = InvokeContractArgs {
-    //     contract_address: ScAddress::Contract(ContractId(Hash(contract_hash))),
-    //     function_name: ScSymbol(
-    //         "liquidate"
-    //             .try_into()
-    //             .map_err(|_| anyhow!("function name too long"))?,
-    //     ),
-    //     args,
-    // };
-
-    let invoke = todo!();
+    let invoke = InvokeContractArgs {
+        contract_address: ScAddress::Contract(ContractId(Hash(contract_hash))),
+        function_name: ScSymbol(
+            "liquidate"
+                .try_into()
+                .map_err(|_| anyhow!("function name too long"))?,
+        ),
+        args,
+    };
 
     Ok(Operation {
         source_account: None,
@@ -1309,15 +1281,15 @@ pub fn build_issue_cover_bad_debt_op(
         .try_into()
         .map_err(|_| anyhow!("args conversion"))?;
 
-    let invoke = todo!(); // InvokeContractArgs {
-        // contract_address: ScAddress::Contract(ContractId(Hash(contract_hash))),
-        // function_name: ScSymbol(
-        //     "issue_cover_bad_debt"
-        //         .try_into()
-        //         .map_err(|_| anyhow!("function name too long"))?,
-        // ),
-        // args,
-    // };
+    let invoke = InvokeContractArgs {
+        contract_address: ScAddress::Contract(ContractId(Hash(contract_hash))),
+        function_name: ScSymbol(
+            "issue_cover_bad_debt"
+                .try_into()
+                .map_err(|_| anyhow!("function name too long"))?,
+        ),
+        args,
+    };
 
     Ok(Operation {
         source_account: None,
@@ -1345,17 +1317,15 @@ pub fn build_batch_op(
     .try_into()
     .map_err(|_| anyhow!("args conversion"))?;
 
-    let invoke = todo!();
-
-    // let invoke = InvokeContractArgs {
-    //     contract_address: ScAddress::Contract(ContractId(Hash(contract_hash))),
-    //     function_name: ScSymbol(
-    //         "submit_requests_batch"
-    //             .try_into()
-    //             .map_err(|_| anyhow!("function name too long"))?,
-    //     ),
-    //     args,
-    // };
+    let invoke = InvokeContractArgs {
+        contract_address: ScAddress::Contract(ContractId(Hash(contract_hash))),
+        function_name: ScSymbol(
+            "submit_requests_batch"
+                .try_into()
+                .map_err(|_| anyhow!("function name too long"))?,
+        ),
+        args,
+    };
 
     Ok(Operation {
         source_account: None,
@@ -1646,15 +1616,10 @@ pub async fn simulate_swap_provider_get_amount_out(
     // NOTE: `get_amount_out` on the provider takes (path, amount_in) in that order.
     let args = vec![path_scval, i128_to_scval(amount_in)];
 
-    let result = simulate_contract_call(
-        rpc,
-        swap_provider,
-        "get_amount_out",
-        &args,
-        source_account,
-    )
-    .await
-    .context("simulate swap_provider get_amount_out")?;
+    let result =
+        simulate_contract_call(rpc, swap_provider, "get_amount_out", &args, source_account)
+            .await
+            .context("simulate swap_provider get_amount_out")?;
 
     scval_to_i128(&result).context("get_amount_out result is not an i128")
 }

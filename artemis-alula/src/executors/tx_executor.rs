@@ -1,17 +1,18 @@
 use {
-    crate::types::{Action, BoxFuture, Executor},
+    crate::{
+        constants::DEFAULT_SIMULATION_FEE,
+        types::{Action, BoxFuture, Executor},
+    },
     anyhow::Result,
     ed25519_dalek::{Signer, SigningKey},
     sha2::{Digest, Sha256},
     std::time::Duration,
-    stellar_rpc_client::{Client, AuthMode},
+    stellar_rpc_client::{AuthMode, Client},
     stellar_xdr::curr::{
-        DecoratedSignature, Hash, Limits, Memo, MuxedAccount, Operation, Preconditions,
+        DecoratedSignature, Hash, Limits, Memo, MuxedAccount, Operation, Preconditions, ReadXdr,
         SequenceNumber, Signature, SignatureHint, Transaction, TransactionEnvelope, TransactionExt,
-        TransactionV1Envelope, Uint256, WriteXdr as _, ReadXdr,
-    },
-    stellar_xdr::curr::{
         TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction,
+        TransactionV1Envelope, Uint256, WriteXdr as _,
     },
     tracing::{error, info, warn},
 };
@@ -85,7 +86,7 @@ async fn submit(
 
     let tx = Transaction {
         source_account: MuxedAccount::Ed25519(Uint256(source_strkey.0)),
-        fee: 100_000, // X: move this to constants?
+        fee: DEFAULT_SIMULATION_FEE,
         seq_num: SequenceNumber(seq_num + 1),
         cond: Preconditions::None,
         memo: Memo::None,
@@ -100,30 +101,32 @@ async fn submit(
     });
 
     // Simulate the transaction
-    let sim_response = rpc.simulate_transaction_envelope(&temp_envelope, Some(AuthMode::Record)).await?;
+    let sim_response = rpc
+        .simulate_transaction_envelope(&temp_envelope, Some(AuthMode::Record))
+        .await?;
 
     // Assemble the transaction with simulation data
     let mut assembled_tx = tx.clone();
     if !sim_response.transaction_data.is_empty() {
         // Parse the transaction data from simulation and apply it
-        let transaction_data = stellar_xdr::curr::SorobanTransactionData::from_xdr_base64(&sim_response.transaction_data, Limits::none())?;
+        let transaction_data = stellar_xdr::curr::SorobanTransactionData::from_xdr_base64(
+            &sim_response.transaction_data,
+            Limits::none(),
+        )?;
         assembled_tx.ext = TransactionExt::V1(transaction_data);
     }
 
     // Update fee with simulation result.
     // `Transaction.fee` is u32, but `min_resource_fee` is u64 — clamp safely.
-    let min_fee_u32: u32 = u32::try_from(sim_response.min_resource_fee)
-        .map_err(|_| anyhow::anyhow!(
+    let min_fee_u32: u32 = u32::try_from(sim_response.min_resource_fee).map_err(|_| {
+        anyhow::anyhow!(
             "simulated min_resource_fee ({}) exceeds u32::MAX",
             sim_response.min_resource_fee
-        ))?;
+        )
+    })?;
     assembled_tx.fee = assembled_tx.fee.max(min_fee_u32);
 
-    let signed = sign_transaction(
-        &assembled_tx,
-        &action.signing_key,
-        network_passphrase,
-    )?;
+    let signed = sign_transaction(&assembled_tx, &action.signing_key, network_passphrase)?;
 
     let hash = rpc.send_transaction(&signed).await?;
     let hash_hex = hex::encode(hash.0);
