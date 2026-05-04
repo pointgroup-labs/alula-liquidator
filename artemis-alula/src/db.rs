@@ -9,7 +9,7 @@ pub struct DbManager {
 }
 
 impl DbManager {
-    pub fn new(db_path: &str) -> anyhow::Result<Self> {
+    pub fn try_create(db_path: &str) -> anyhow::Result<Self> {
         let conn = Connection::open(db_path)?;
 
         conn.pragma_update(None, "journal_mode", "WAL")?;

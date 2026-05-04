@@ -20,9 +20,8 @@ use {
     url::Url,
 };
 
-pub struct Config {
+pub struct LiquidatorConfig {
     pub rpc_url: Url,
-    pub db_path: String,
     pub markets: Vec<String>,
     pub xlm_address: String,
     /// Minimum profit margin in cents (e.g. 50 = $0.50).
@@ -51,11 +50,10 @@ enum LiquidationType {
     PreSwap {
         full_repay_amount: i128,
         pre_liquidation_swap_amount: i128,
-        flash_amount: i128,                  // additional flash loan after pre-swap
-        pre_liquidation_swa_asset: String,   // address of the liquid asset we're swapping from
+        flash_amount: i128,                // additional flash loan after pre-swap
+        pre_liquidation_swa_asset: String, // address of the liquid asset we're swapping from
     },
 }
-
 
 /// Complete liquidation plan with batch composition details.
 #[derive(Debug)]
@@ -66,7 +64,7 @@ struct LiquidationPlan {
 pub struct Liquidator {
     rpc: Client,
     pkey: String,
-    config: Config,
+    config: LiquidatorConfig,
     skey: SigningKey,
     db: Arc<DbManager>, // TODO: Try 'Rc' here
     last_refresh_ledger: u32,
@@ -74,9 +72,12 @@ pub struct Liquidator {
     obligations: HashMap<String, HashMap<ObligationKey, Obligation>>,
 }
 
-
 impl Liquidator {
-    pub fn try_create(config: Config, skey: &SigningKey, db: &Arc<DbManager>) -> anyhow::Result<Self> {
+    pub fn try_create(
+        config: LiquidatorConfig,
+        skey: &SigningKey,
+        db: &Arc<DbManager>,
+    ) -> anyhow::Result<Self> {
         let db = Arc::clone(db);
         let rpc = Client::new(config.rpc_url.as_str())?;
         let pkey = ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
@@ -96,7 +97,6 @@ impl Liquidator {
         })
     }
 }
-
 
 impl Strategy<Event, Action> for Liquidator {
     fn process_event(&mut self, event: Event) -> BoxFuture<'_, Vec<Action>> {

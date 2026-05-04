@@ -4,6 +4,7 @@ use {
         types::{BorrowPosition, DepositPosition, MarketData, Obligation, ObligationKey, PoolData},
     },
     anyhow::{Context, anyhow},
+    core::convert::TryInto,
     stellar_rpc_client::{AuthMode, Client},
     stellar_xdr::curr::{
         AccountId, ContractId, Hash, HostFunction, Int128Parts, InvokeContractArgs, Limits, Memo,
@@ -11,8 +12,74 @@ use {
         ScMap, ScMapEntry, ScSymbol, ScVal, ScVec, SequenceNumber, Transaction,
         TransactionEnvelope, TransactionExt, TransactionV1Envelope, Uint256, VecM,
     },
+    thiserror::Error,
     tracing::{debug, warn},
 };
+
+pub enum OperationEvent {
+    Repay,
+    Borrow,
+    Deposit,
+    Withdraw,
+    Liquidate,
+    AddCollateral,
+    RemoveCollateral,
+}
+
+impl TryFrom<&str> for OperationEvent {
+    type Error = ParseError;
+
+    fn try_from(x: &str) -> Result<Self, Self::Error> {
+        use OperationEvent::*;
+
+        let operation_event = match x {
+            "repay_event" => Repay,
+            "borrow_event" => Borrow,
+            "deposit_event" => Deposit,
+            "withdraw_event" => Withdraw,
+            "liquidate_event" => Liquidate,
+            "add_collateral_event" => AddCollateral,
+            "remove_collateral_event" => RemoveCollateral,
+            unknown => {
+                return Err(ParseError::UnknownOperationType {
+                    operation_type: unknown.to_string(),
+                });
+            }
+        };
+
+        Ok(operation_event)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum ParseError {
+    #[error("Expected {expected} but found {found}")]
+    TypeMismatch { expected: String, found: String },
+
+    #[error("Missing required field: {field}")]
+    MissingField { field: String },
+
+    #[error("Arithmetic overflow during calculation")]
+    ArithmeticOverflow,
+
+    #[error("Pool not found: {pool_address}")]
+    PoolNotFound { pool_address: String },
+
+    #[error("Invalid XDR data: {reason}")]
+    InvalidXdr { reason: String },
+
+    #[error("Invalid UTF-8 data: {source}")]
+    InvalidUtf8 {
+        #[from]
+        source: std::str::Utf8Error,
+    },
+
+    #[error("Invalid data format: {reason}")]
+    InvalidFormat { reason: String },
+
+    #[error("Unknown operation type: {operation_type}")]
+    UnknownOperationType { operation_type: String },
+}
 
 fn i128_from_parts(parts: &stellar_xdr::curr::Int128Parts) -> i128 {
     ((parts.hi as i128) << 64) | (parts.lo as i128)
@@ -62,17 +129,50 @@ fn is_expected_liquidation_failure(msg: &str) -> bool {
     EXPECTED_ERRORS.iter().any(|e| msg.contains(e))
 }
 
-fn scval_as_map(val: &ScVal) -> Option<&Vec<ScMapEntry>> {
+fn scval_type_name(val: &ScVal) -> &'static str {
     match val {
-        ScVal::Map(Some(ScMap(entries))) => Some(entries.as_ref()),
-        _ => None,
+        ScVal::Bool(_) => "Bool",
+        ScVal::Void => "Void",
+        ScVal::U32(_) => "U32",
+        ScVal::I32(_) => "I32",
+        ScVal::U64(_) => "U64",
+        ScVal::I64(_) => "I64",
+        ScVal::Timepoint(_) => "Timepoint",
+        ScVal::Duration(_) => "Duration",
+        ScVal::U128(_) => "U128",
+        ScVal::I128(_) => "I128",
+        ScVal::String(_) => "String",
+        ScVal::Symbol(_) => "Symbol",
+        ScVal::Vec(_) => "Vec",
+        ScVal::Map(_) => "Map",
+        ScVal::Address(_) => "Address",
+        ScVal::Bytes(_) => "Bytes",
+        ScVal::ContractInstance(_) => "ContractInstance",
+        ScVal::Error(_) => "Error",
+        ScVal::U256(_) => "U256",
+        ScVal::I256(_) => "I256",
+        ScVal::LedgerKeyContractInstance => "LedgerKeyContractInstance",
+        ScVal::LedgerKeyNonce(_) => "LedgerKeyNonce",
     }
 }
 
-fn scval_as_vec(val: &ScVal) -> Option<&Vec<ScVal>> {
+fn scval_as_map(val: &ScVal) -> Result<&Vec<ScMapEntry>, ParseError> {
     match val {
-        ScVal::Vec(Some(ScVec(v))) => Some(v.as_ref()),
-        _ => None,
+        ScVal::Map(Some(ScMap(entries))) => Ok(entries.as_ref()),
+        _ => Err(ParseError::TypeMismatch {
+            expected: "Map".to_string(),
+            found: scval_type_name(val).to_string(),
+        }),
+    }
+}
+
+fn scval_as_vec(val: &ScVal) -> Result<&Vec<ScVal>, ParseError> {
+    match val {
+        ScVal::Vec(Some(ScVec(v))) => Ok(v.as_ref()),
+        _ => Err(ParseError::TypeMismatch {
+            expected: "Vec".to_string(),
+            found: scval_type_name(val).to_string(),
+        }),
     }
 }
 
@@ -116,10 +216,29 @@ fn map_get_address(entries: &[ScMapEntry], key: &str) -> anyhow::Result<String> 
     }
 }
 
-fn map_get_string(entries: &[ScMapEntry], key: &str) -> Option<String> {
+fn map_get_string(entries: &[ScMapEntry], key: &str) -> Result<String, ParseError> {
+    match map_get(entries, key) {
+        Some(ScVal::String(s)) => Ok(s.0.to_string()),
+        Some(ScVal::Symbol(s)) => {
+            let utf8_str = std::str::from_utf8(s.0.as_ref())?;
+            Ok(utf8_str.to_string())
+        }
+        Some(other) => Err(ParseError::TypeMismatch {
+            expected: "String or Symbol".to_string(),
+            found: scval_type_name(other).to_string(),
+        }),
+        None => Err(ParseError::MissingField {
+            field: key.to_string(),
+        }),
+    }
+}
+
+fn map_get_string_optional(entries: &[ScMapEntry], key: &str) -> Option<String> {
     match map_get(entries, key) {
         Some(ScVal::String(s)) => Some(s.0.to_string()),
-        Some(ScVal::Symbol(s)) => Some(std::str::from_utf8(s.0.as_ref()).unwrap_or("").to_string()),
+        Some(ScVal::Symbol(s)) => std::str::from_utf8(s.0.as_ref())
+            .map(|s| s.to_string())
+            .ok(),
         _ => None,
     }
 }
@@ -239,7 +358,7 @@ async fn simulate_contract_call(
 }
 
 fn parse_obligation_key(val: &ScVal) -> anyhow::Result<ObligationKey> {
-    let map = scval_as_map(val).context("ObligationKey is not a map")?;
+    let map = scval_as_map(val)?;
 
     let user = map_get_address(map, "user")?;
     let seed = match map_get(map, "seed") {
@@ -256,7 +375,7 @@ fn parse_obligation_key(val: &ScVal) -> anyhow::Result<ObligationKey> {
 }
 
 fn parse_deposit_positions(val: &ScVal) -> anyhow::Result<Vec<DepositPosition>> {
-    let entries = scval_as_map(val).context("deposits is not a map")?;
+    let entries = scval_as_map(val)?;
     let mut positions = Vec::new();
 
     for entry in entries {
@@ -285,7 +404,7 @@ fn parse_deposit_positions(val: &ScVal) -> anyhow::Result<Vec<DepositPosition>> 
 }
 
 fn parse_borrow_positions(val: &ScVal) -> anyhow::Result<Vec<BorrowPosition>> {
-    let entries = scval_as_map(val).context("borrows is not a map")?;
+    let entries = scval_as_map(val)?;
     let mut positions = Vec::new();
 
     for entry in entries {
@@ -312,7 +431,7 @@ fn parse_borrow_positions(val: &ScVal) -> anyhow::Result<Vec<BorrowPosition>> {
 }
 
 pub fn parse_obligation(val: &ScVal, key: &ObligationKey) -> anyhow::Result<Obligation> {
-    let map = scval_as_map(val).context("Obligation is not a map")?;
+    let map = scval_as_map(val)?;
 
     let deposits = match map_get(map, "deposits") {
         Some(deposit_val) => parse_deposit_positions(deposit_val)?,
@@ -327,15 +446,14 @@ pub fn parse_obligation(val: &ScVal, key: &ObligationKey) -> anyhow::Result<Obli
 }
 
 fn parse_obligation_keys(val: &ScVal) -> anyhow::Result<Vec<ObligationKey>> {
-    scval_as_vec(val)
-        .context("obligations is not a vec")?
+    scval_as_vec(val)?
         .iter()
         .map(parse_obligation_key)
         .collect()
 }
 
 fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
-    let map = scval_as_map(val).context("PoolData is not a map")?;
+    let map = scval_as_map(val)?;
 
     let j_token_rate_floor_bps = map_get_i128(map, "j_token_rate_floor_bps")?;
     let d_token_rate_ceil_bps = map_get_i128(map, "d_token_rate_ceil_bps")?;
@@ -344,11 +462,11 @@ fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
     let total_supply = map_get_i128(map, "total_supply")?;
 
     let pool_val = map_get(map, "pool").context("missing pool in PoolData")?;
-    let pool_map = scval_as_map(pool_val).context("pool is not a map")?;
+    let pool_map = scval_as_map(pool_val)?;
 
     let pool_address = map_get_address(pool_map, "pool_address")?;
     let token_address = map_get_address(pool_map, "token_address")?;
-    let token_symbol = map_get_string(pool_map, "token_symbol").unwrap_or_default();
+    let token_symbol = map_get_string_optional(pool_map, "token_symbol").unwrap_or_default();
     let token_decimals = map_get_u32(pool_map, "token_decimals")?;
     let total_borrowed = map_get_i128(pool_map, "total_borrowed")?;
     let total_d_tokens = map_get_i128(pool_map, "total_d_tokens")?;
@@ -357,9 +475,9 @@ fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
     let total_collateral = map_get_i128(pool_map, "total_collateral")?;
 
     let config_val = map_get(pool_map, "config").context("missing config in Pool")?;
-    let config_map = scval_as_map(config_val).context("config is not a map")?;
+    let config_map = scval_as_map(config_val)?;
     let health_val = map_get(config_map, "health_config").context("missing health_config")?;
-    let health_map = scval_as_map(health_val).context("health_config is not a map")?;
+    let health_map = scval_as_map(health_val)?;
 
     let open_ltv_bps = map_get_i128(health_map, "open_ltv_bps")?;
     let close_ltv_bps = map_get_i128(health_map, "close_ltv_bps")?;
@@ -368,7 +486,7 @@ fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
     let max_liquidation_incentive_bps = map_get_i128(health_map, "max_liquidation_incentive_bps")?;
 
     let fee_val = map_get(config_map, "fee_config").context("missing fee_config")?;
-    let fee_map = scval_as_map(fee_val).context("fee_config is not a map")?;
+    let fee_map = scval_as_map(fee_val)?;
     let flash_loan_fee_bps = map_get_i128(fee_map, "flash_loan_fee_bps")?;
 
     Ok(PoolData {
@@ -396,17 +514,17 @@ fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
 }
 
 fn parse_market_data(val: &ScVal) -> anyhow::Result<MarketData> {
-    let map = scval_as_map(val).context("MarketData is not a map")?;
+    let map = scval_as_map(val)?;
 
     let oracle_price_decimals = map_get_u32(map, "oracle_price_decimals")?;
     let global_state_map = map_get(map, "global_state")
-        .and_then(scval_as_map)
-        .context("global_state missing or not a map")?;
+        .ok_or_else(|| anyhow!("global_state missing"))
+        .and_then(|v| scval_as_map(v).map_err(|e| anyhow::Error::from(e)))?;
     let insolvency_ltv_bps = map_get_i128(global_state_map, "insolvency_ltv_bps")?;
     let min_collateral_value_cents = map_get_i128(global_state_map, "min_collateral_value_cents")?;
     let pools_data = map_get(map, "pools_data")
-        .and_then(scval_as_vec)
-        .context("pools_data missing or not a vec")?
+        .ok_or_else(|| anyhow!("pools_data missing"))
+        .and_then(|v| scval_as_vec(v).map_err(|e| anyhow::Error::from(e)))?
         .iter()
         .map(parse_pool_data)
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -424,7 +542,7 @@ pub fn parse_event_data_i128(value_xdr_base64: &str, field: &str) -> anyhow::Res
 
     let val = ScVal::from_xdr_base64(value_xdr_base64.as_bytes(), Limits::none()) // X: are these Limits necessary?
         .context("decode event value XDR")?;
-    let map = scval_as_map(&val).context("event value is not a map")?;
+    let map = scval_as_map(&val)?;
     match map_get(map, field) {
         Some(v) => {
             let n = scval_to_i128(v)
@@ -442,7 +560,7 @@ pub fn parse_event_data_i128_multi(
     use stellar_xdr::curr::{Limits, ReadXdr as _};
     let val = ScVal::from_xdr_base64(value_xdr_base64.as_bytes(), Limits::none())
         .context("decode event value XDR")?;
-    let map = scval_as_map(&val).context("event value is not a map")?;
+    let map = scval_as_map(&val)?;
 
     let mut result = Vec::with_capacity(fields.len());
     for field in fields {
@@ -466,7 +584,7 @@ pub fn parse_obligation_from_event_value(
 
     let val = ScVal::from_xdr_base64(value_xdr_base64.as_bytes(), Limits::none())
         .context("decode event value XDR")?;
-    let map = scval_as_map(&val).context("event value is not a map")?;
+    let map = scval_as_map(&val)?;
 
     match map_get(map, obligation_field_name) {
         None | Some(ScVal::Void) => Ok(None),
@@ -653,24 +771,31 @@ fn has_any_collateral(obligation: &Obligation, pools: &[PoolData]) -> bool {
 /// Total obligation debt value (unscaled, oracle units), summed across all borrow
 /// positions: `Σ ceil(d_tokens * d_rate_ceil_bps / 10_000) * price / 10^decimals`.
 ///
-/// Returns `None` if any required pool is missing or arithmetic over-/underflows.
+/// Returns `ParseError::PoolNotFound` if any required pool is missing or
+/// `ParseError::ArithmeticOverflow` if arithmetic over-/underflows.
 pub fn compute_obligation_debt_value(
     obligation: &Obligation,
     market_data: &MarketData,
-) -> Option<i128> {
+) -> Result<i128, ParseError> {
     let mut total: i128 = 0;
     for bor in &obligation.borrows {
         let pool = market_data
             .pools_data
             .iter()
-            .find(|p| p.pool_address == bor.pool_address)?;
+            .find(|p| p.pool_address == bor.pool_address)
+            .ok_or_else(|| ParseError::PoolNotFound {
+                pool_address: bor.pool_address.clone(),
+            })?;
         let real_debt = fixed_mul_ceil(bor.d_tokens, pool.d_token_rate_ceil_bps);
         let value = real_debt
-            .checked_mul(pool.oracle_asset_price)?
-            .checked_div(10_i128.pow(pool.token_decimals))?;
-        total = total.checked_add(value)?;
+            .checked_mul(pool.oracle_asset_price)
+            .and_then(|v| v.checked_div(10_i128.pow(pool.token_decimals)))
+            .ok_or(ParseError::ArithmeticOverflow)?;
+        total = total
+            .checked_add(value)
+            .ok_or(ParseError::ArithmeticOverflow)?;
     }
-    Some(total)
+    Ok(total)
 }
 
 /// Total obligation collateral value (unscaled, oracle units), summed across all
@@ -680,21 +805,29 @@ pub fn compute_obligation_debt_value(
 pub fn compute_obligation_collateral_value(
     obligation: &Obligation,
     market_data: &MarketData,
-) -> Option<i128> {
+) -> Result<i128, ParseError> {
     let mut total: i128 = 0;
     for dep in &obligation.deposits {
         let pool = market_data
             .pools_data
             .iter()
-            .find(|p| p.pool_address == dep.pool_address)?;
+            .find(|p| p.pool_address == dep.pool_address)
+            .ok_or_else(|| ParseError::PoolNotFound {
+                pool_address: dep.pool_address.clone(),
+            })?;
         let real_supply = fixed_mul_floor(dep.j_tokens, pool.j_token_rate_floor_bps);
-        let total_tokens = real_supply.checked_add(dep.collateral)?;
+        let total_tokens = real_supply
+            .checked_add(dep.collateral)
+            .ok_or(ParseError::ArithmeticOverflow)?;
         let value = total_tokens
-            .checked_mul(pool.oracle_asset_price)?
-            .checked_div(10_i128.pow(pool.token_decimals))?;
-        total = total.checked_add(value)?;
+            .checked_mul(pool.oracle_asset_price)
+            .and_then(|v| v.checked_div(10_i128.pow(pool.token_decimals)))
+            .ok_or(ParseError::ArithmeticOverflow)?;
+        total = total
+            .checked_add(value)
+            .ok_or(ParseError::ArithmeticOverflow)?;
     }
-    Some(total)
+    Ok(total)
 }
 
 /// Cap on `repay_amount` from the close factor.
@@ -1499,11 +1632,33 @@ pub async fn simulate_batch(
 // ---------------------------------------------------------------------------
 
 /// Extract the event name (first topic) from a Soroban event.
-pub fn decode_event_name(event: &stellar_rpc_client::Event) -> Option<String> {
-    let val = ScVal::from_xdr_base64(event.topic[0].as_bytes(), Limits::none()).ok()?;
+pub fn decode_operation_event(
+    event: &stellar_rpc_client::Event,
+) -> Result<OperationEvent, ParseError> {
+    if event.topic.is_empty() {
+        return Err(ParseError::InvalidXdr {
+            reason: "Event has no topics".to_string(),
+        });
+    }
+
+    let val = ScVal::from_xdr_base64(event.topic[0].as_bytes(), Limits::none()).map_err(|e| {
+        ParseError::InvalidXdr {
+            reason: format!("Failed to decode XDR: {}", e),
+        }
+    })?;
+
     match val {
-        ScVal::Symbol(sym) => Some(sym.0.to_string()),
-        _ => None,
+        ScVal::Symbol(sym) => {
+            let utf8_str = std::str::from_utf8(sym.0.as_ref())
+                .map_err(|e| ParseError::InvalidUtf8 { source: e })?;
+            let operation_event: OperationEvent = utf8_str.try_into()?;
+
+            Ok(operation_event)
+        }
+        _ => Err(ParseError::TypeMismatch {
+            expected: "Symbol".to_string(),
+            found: scval_type_name(&val).to_string(),
+        }),
     }
 }
 
@@ -1595,7 +1750,7 @@ pub async fn simulate_router_get_amounts_in(
     .await
     .context("simulate router_get_amounts_in")?;
 
-    let vec_vals = scval_as_vec(&result).context("router_get_amounts_in result is not a vec")?;
+    let vec_vals = scval_as_vec(&result)?;
     vec_vals.iter().map(scval_to_i128).collect()
 }
 
@@ -1646,7 +1801,7 @@ pub async fn simulate_router_get_amounts_out(
     .await
     .context("simulate router_get_amounts_out")?;
 
-    let vec_vals = scval_as_vec(&result).context("router_get_amounts_out result is not a vec")?;
+    let vec_vals = scval_as_vec(&result)?;
     vec_vals.iter().map(scval_to_i128).collect()
 }
 

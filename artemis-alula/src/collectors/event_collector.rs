@@ -1,6 +1,9 @@
 use {
-    crate::types::{BoxFuture, Collector, CollectorStream, Event},
-    std::time::Duration,
+    crate::{
+        db::DbManager,
+        types::{BoxFuture, Collector, CollectorStream, Event},
+    },
+    std::{sync::Arc, time::Duration},
     stellar_rpc_client::{Client, EventStart, EventType},
     tokio::sync::broadcast,
     tokio_stream::{StreamExt, wrappers::BroadcastStream},
@@ -18,6 +21,7 @@ pub struct EventFilter {
 
 /// Polls the Stellar RPC for contract events and emits them as a stream.
 pub struct EventCollector {
+    db: Arc<DbManager>,
     filter: EventFilter,
     network_url: Url,
     last_event_timestamp: u32,
@@ -25,9 +29,10 @@ pub struct EventCollector {
 }
 
 impl EventCollector {
-    pub fn new(network_url: &Url, filter: EventFilter) -> Self {
+    pub fn new(network_url: &Url, filter: EventFilter, db: &Arc<DbManager>) -> Self {
         Self {
             filter,
+            db: Arc::clone(db),
             last_cursor_id: None,
             last_event_timestamp: 0,
             network_url: network_url.clone(),

@@ -9,10 +9,11 @@ use {
     std::time::Duration,
     stellar_rpc_client::{AuthMode, Client},
     stellar_xdr::curr::{
-        DecoratedSignature, Hash, Limits, Memo, MuxedAccount, Operation, Preconditions, ReadXdr,
-        SequenceNumber, Signature, SignatureHint, Transaction, TransactionEnvelope, TransactionExt,
+        DecoratedSignature, Hash, Limits, Memo, MuxedAccount, Operation,
+        OperationBody, Preconditions, ReadXdr, SequenceNumber, Signature, SignatureHint,
+        SorobanAuthorizationEntry, Transaction, TransactionEnvelope, TransactionExt,
         TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction,
-        TransactionV1Envelope, Uint256, WriteXdr as _,
+        TransactionV1Envelope, Uint256, VecM, WriteXdr as _,
     },
     tracing::{error, info, warn},
 };
@@ -116,6 +117,40 @@ async fn submit(
         assembled_tx.ext = TransactionExt::V1(transaction_data);
     }
 
+    // Apply recorded authorization data to operations
+    if !sim_response.results.is_empty() {
+        // Convert VecM to Vec for easier manipulation
+        let operations_vec: Vec<Operation> = assembled_tx.operations.iter().cloned().collect();
+        let mut new_operations: Vec<Operation> = Vec::new();
+
+        for (i, mut operation) in operations_vec.into_iter().enumerate() {
+            if let Some(result) = sim_response.results.get(i) {
+                if let OperationBody::InvokeHostFunction(invoke_op) = &mut operation.body {
+                    // Extract auth entries from simulation result
+                    if !result.auth.is_empty() {
+                        let auth_entries: Result<VecM<SorobanAuthorizationEntry>, _> = result
+                            .auth
+                            .iter()
+                            .map(|auth_str| {
+                                SorobanAuthorizationEntry::from_xdr_base64(auth_str, Limits::none())
+                            })
+                            .collect::<Result<Vec<_>, _>>()?
+                            .try_into();
+
+                        if let Ok(entries) = auth_entries {
+                            invoke_op.auth = entries;
+                        } else {
+                            warn!("Failed to parse authorization entries for operation {}", i);
+                        }
+                    }
+                }
+            }
+            new_operations.push(operation);
+        }
+
+        assembled_tx.operations = new_operations.try_into()?;
+    }
+
     // Update fee with simulation result.
     // `Transaction.fee` is u32, but `min_resource_fee` is u64 — clamp safely.
     let min_fee_u32: u32 = u32::try_from(sim_response.min_resource_fee).map_err(|_| {
@@ -124,7 +159,10 @@ async fn submit(
             sim_response.min_resource_fee
         )
     })?;
-    assembled_tx.fee = assembled_tx.fee.max(min_fee_u32);
+
+    // Add a 50% buffer to the simulated fee to account for network fluctuations
+    let buffered_fee = min_fee_u32.saturating_mul(3).saturating_div(2);
+    assembled_tx.fee = assembled_tx.fee.max(buffered_fee);
 
     let signed = sign_transaction(&assembled_tx, &action.signing_key, network_passphrase)?;
 
