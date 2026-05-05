@@ -50,8 +50,8 @@ enum LiquidationType {
     PreSwap {
         full_repay_amount: i128,
         pre_liquidation_swap_amount: i128,
-        flash_amount: i128,                // additional flash loan after pre-swap
-        pre_liquidation_swa_asset: String, // address of the liquid asset we're swapping from
+        flash_amount: i128,                 // additional flash loan after pre-swap
+        pre_liquidation_swap_asset: String, // address of the liquid asset we're swapping from
     },
 }
 

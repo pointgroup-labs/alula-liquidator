@@ -16,6 +16,7 @@ use {
     tracing::{debug, warn},
 };
 
+#[derive(Debug)]
 pub enum OperationEvent {
     Repay,
     Borrow,
@@ -484,6 +485,7 @@ fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
     let liability_factor_bps = map_get_i128(health_map, "liability_factor_bps")?;
     let liquidation_close_factor_bps = map_get_i128(health_map, "liquidation_close_factor_bps")?;
     let max_liquidation_incentive_bps = map_get_i128(health_map, "max_liquidation_incentive_bps")?;
+    let utilization_ratio_limit_bps = map_get_i128(health_map, "utilization_ratio_limit_bps")?;
 
     let fee_val = map_get(config_map, "fee_config").context("missing fee_config")?;
     let fee_map = scval_as_map(fee_val)?;
@@ -510,6 +512,7 @@ fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
         liquidation_close_factor_bps,
         max_liquidation_incentive_bps,
         flash_loan_fee_bps,
+        utilization_ratio_limit_bps,
     })
 }
 

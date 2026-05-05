@@ -10,16 +10,17 @@ use {
         strategies::{
             bad_debt_request_initiator::{BadDebtRequestInitiator, BadDebtRequestInitiatorConfig},
             liquidator::{Liquidator, LiquidatorConfig},
+            withdrawer::{Withdrawer, WithdrawerConfig},
         },
         types::{Action, Event},
     },
     clap::Parser,
     ed25519_dalek::SigningKey,
     serde::Deserialize,
-    std::{fs::File, path::PathBuf, process::Output, sync::Arc},
+    std::{fs::File, path::PathBuf, sync::Arc},
     stellar_rpc_client::EventType,
     stellar_strkey::ed25519::PrivateKey,
-    tokio::{runtime::Runtime, signal},
+    tokio::signal,
     tracing::info,
     tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt},
     url::Url,
@@ -85,8 +86,8 @@ async fn main() -> anyhow::Result<()> {
         xlm_safety_margin,
         network_passphrase,
         min_profit_margin_cents,
-        rebalancer_max_slippage_bps,
-        rebalancer_interval_blocks,
+        rebalancer_max_slippage_bps: _,
+        rebalancer_interval_blocks: _,
     } = CliConfig::try_load(config)?;
     let skey = SigningKey::from_bytes(&PrivateKey::from_string(&skey)?.0);
     let db_manager = Arc::new(DbManager::try_create(&db_path)?);
@@ -119,9 +120,19 @@ async fn main() -> anyhow::Result<()> {
         swap_providers: swap_providers.clone(),
         assets_to_hold: assets_to_hold.clone(),
     };
-    let liquidator = Liquidator::try_create(liqudidator_config, &skey, &db_manager)?;
+    let _liquidator = Liquidator::try_create(liqudidator_config, &skey, &db_manager)?;
 
     // engine.add_strategy(Box::new(liquidator));
+
+    // - Withdrawer -
+
+    let withdrawer_config = WithdrawerConfig {
+        rpc_url: rpc_url.clone(),
+        markets: markets.clone(),
+    };
+    let withdrawer = Withdrawer::try_create(withdrawer_config, &skey)?;
+
+    engine.add_strategy(Box::new(withdrawer));
 
     //
 

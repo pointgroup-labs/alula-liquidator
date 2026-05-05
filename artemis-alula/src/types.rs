@@ -78,6 +78,7 @@ pub struct PoolData {
     pub d_token_rate_ceil_bps: i128,
     pub j_token_rate_floor_bps: i128,
     pub total_available_adjusted: i128,
+    pub utilization_ratio_limit_bps: i128,
     pub liquidation_close_factor_bps: i128,
     pub max_liquidation_incentive_bps: i128,
 }
@@ -110,6 +111,15 @@ pub struct Obligation {
 }
 
 impl PoolData {
+    pub fn utilization_ratio_bps(&self) -> i128 {
+        let total_supply = self.total_borrowed + self.total_available_adjusted;
+        if total_supply == 0 {
+            0
+        } else {
+            (self.total_borrowed * 10_000) / total_supply
+        }
+    }
+
     pub fn j_tokens_to_tokens_floor(&self, j_tokens: i128) -> i128 {
         if self.total_j_tokens == 0 {
             return 0;
@@ -233,6 +243,7 @@ mod tests {
             liquidation_close_factor_bps: 5000,  // 50%
             max_liquidation_incentive_bps: 1000, // 10%
             flash_loan_fee_bps: 5,               // 0.05%
+            utilization_ratio_limit_bps: 9000,   // 90%
         }
     }
 
