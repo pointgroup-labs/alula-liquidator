@@ -28,6 +28,7 @@ use {
 
 pub const BPS_FACTOR: i128 = 10_000;
 pub const REBALANCER_INTERVAL_BLOCKS: u32 = 2;
+pub const WITHDRAWER_MIN_WITHDRAW_VALUE_CENTS: i128 = 500;
 
 #[derive(Parser, Debug)]
 pub struct Args {
@@ -48,6 +49,8 @@ struct CliConfig {
     assets_to_hold: Vec<String>,
     swap_providers: Vec<String>,
     min_profit_margin_cents: i128,
+    #[serde(default = "default_min_withdraw_value_cents")]
+    min_withdraw_value_cents: i128,
     #[serde(default = "default_rebalancer_max_slippage_bps")]
     rebalancer_max_slippage_bps: i128,
     #[serde(default = "default_rebalancer_interval_blocks")]
@@ -64,6 +67,10 @@ impl CliConfig {
 
 const fn default_rebalancer_max_slippage_bps() -> i128 {
     BPS_FACTOR / 100 // 1%
+}
+
+const fn default_min_withdraw_value_cents() -> i128 {
+    WITHDRAWER_MIN_WITHDRAW_VALUE_CENTS
 }
 
 const fn default_rebalancer_interval_blocks() -> u32 {
@@ -86,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
         xlm_safety_margin,
         network_passphrase,
         min_profit_margin_cents,
+        min_withdraw_value_cents,
         rebalancer_max_slippage_bps: _,
         rebalancer_interval_blocks: _,
     } = CliConfig::try_load(config)?;
@@ -107,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
     let bad_debt_request_initiator =
         BadDebtRequestInitiator::try_create(bad_debt_request_initiator_config, &skey)?;
 
-    engine.add_strategy(Box::new(bad_debt_request_initiator));
+    // engine.add_strategy(Box::new(bad_debt_request_initiator));
 
     // - Liquidator -
 
@@ -129,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
     let withdrawer_config = WithdrawerConfig {
         rpc_url: rpc_url.clone(),
         markets: markets.clone(),
+        min_withdraw_value_cents,
     };
     let withdrawer = Withdrawer::try_create(withdrawer_config, &skey)?;
 

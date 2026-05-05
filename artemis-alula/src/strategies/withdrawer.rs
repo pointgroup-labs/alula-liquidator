@@ -21,6 +21,8 @@ const BPS_FACTOR: i128 = 10_000;
 pub struct WithdrawerConfig {
     pub rpc_url: Url,
     pub markets: Vec<String>,
+    /// Minimum withdrawal value in cents (e.g. 500 = $5.00)
+    pub min_withdraw_value_cents: i128,
 }
 
 #[derive(Debug, Clone)]
@@ -33,7 +35,6 @@ pub struct Withdrawer {
     rpc: Client,
     pkey: String,
     skey: SigningKey,
-    state: WithdrawerState,
     config: WithdrawerConfig,
     liquidator_key: ObligationKey,
     market_data: HashMap<String, MarketData>,
@@ -57,9 +58,6 @@ impl Withdrawer {
             config,
             market_data: HashMap::new(),
             liquidator_obligations: HashMap::new(),
-            state: WithdrawerState {
-                liquidator_shares: HashMap::new(),
-            },
             liquidator_key,
         })
     }
@@ -80,6 +78,23 @@ impl Withdrawer {
         let max_withdrawal = pool.total_supply.saturating_sub(min_allowed_total_supply);
 
         max_withdrawal
+    }
+
+    /// Calculate the USD value of a token amount in cents
+    fn calculate_withdrawal_value_cents(
+        &self,
+        market_data: &MarketData,
+        pool: &PoolData,
+        token_amount: i128,
+    ) -> i128 {
+        let price_with_decimals = pool.oracle_asset_price;
+        let oracle_decimals = market_data.oracle_price_decimals as u32;
+        let token_decimals = pool.token_decimals;
+
+        let value_raw = (token_amount * price_with_decimals)
+            / (10_i128.pow(token_decimals + oracle_decimals - 2)); // -2 for cents
+
+        value_raw.max(0)
     }
 
     async fn handle_soroban_event(&mut self, event: SorobanEvent) -> Vec<Action> {
@@ -135,15 +150,23 @@ impl Withdrawer {
             let max_withdrawal = self.compute_max_safe_withdrawal(pool);
 
             let liquidator_underlying_tokens = pool.j_tokens_to_tokens_floor(deposit_pos.j_tokens);
-            let withdrawal_amount = liquidator_underlying_tokens.min(max_withdrawal);
+            let mut withdrawal_amount = liquidator_underlying_tokens.min(max_withdrawal);
 
-            if withdrawal_amount > 0 {
+            let withdrawal_value_cents =
+                self.calculate_withdrawal_value_cents(market_data, pool, withdrawal_amount);
+
+            if withdrawal_amount == liquidator_underlying_tokens {
+                withdrawal_amount = i128::MAX;
+            }
+
+            if withdrawal_value_cents >= self.config.min_withdraw_value_cents {
                 info!(
                     pool_address = %pool.pool_address,
                     current_utilization = pool.utilization_ratio_bps(),
                     max_withdrawal,
                     liquidator_tokens = liquidator_underlying_tokens,
                     withdrawal_amount,
+                    value_cents = withdrawal_value_cents,
                     "Creating withdrawal action"
                 );
 
@@ -165,15 +188,9 @@ impl Withdrawer {
         pool_address: &str,
         amount: i128,
     ) -> Option<Action> {
-        let withdraw_request = match helper::build_withdraw_request_scval(pool_address, amount) {
-            Ok(req) => req,
-            Err(e) => {
-                error!(?e, %pool_address, amount, "failed to build withdraw request");
-                return None;
-            }
-        };
-
-        match helper::build_batch_op(market_address, &self.liquidator_key, &[withdraw_request]) {
+        // Use direct withdraw operation instead of batch
+        match helper::build_withdraw_op(market_address, &self.liquidator_key, pool_address, amount)
+        {
             Ok(op) => Some(Action::SubmitTx(SubmitStellarTx {
                 op,
                 signing_key: self.skey.clone(),
@@ -199,6 +216,7 @@ impl Strategy<Event, Action> for Withdrawer {
                         for market_address in &self.config.markets {
                             let market_actions =
                                 self.check_withdrawal_opportunities(market_address).await;
+
                             actions.extend(market_actions);
                         }
                         actions
@@ -248,6 +266,7 @@ impl Strategy<Event, Action> for Withdrawer {
             }
 
             info!("Withdrawer: sync_state completed");
+
             Ok(())
         })
     }

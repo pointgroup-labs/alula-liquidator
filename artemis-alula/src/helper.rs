@@ -1401,6 +1401,48 @@ pub fn build_liquidate_op(
     })
 }
 
+/// Build an `Operation` that calls the contract's standalone `withdraw` function.
+///
+/// Args: `(user: ObligationKey, pool_address: Address, amount: i128, referrer: Option<Address>)`
+///
+/// This initiates withdrawal of deposited tokens from the loan pool to the user.
+/// The actual amount withdrawn is capped to maintain the position's LTV at its Open LTV.
+pub fn build_withdraw_op(
+    market_address: &str,
+    user_key: &ObligationKey,
+    pool_address: &str,
+    amount: i128,
+) -> anyhow::Result<Operation> {
+    let contract_hash = contract_strkey_to_hash(market_address)?;
+
+    let args: VecM<ScVal> = vec![
+        obligation_key_to_scval(user_key)?,
+        address_to_scval(pool_address)?,
+        i128_to_scval(amount),
+        ScVal::Void, // referrer: None
+    ]
+    .try_into()
+    .map_err(|_| anyhow!("args conversion"))?;
+
+    let invoke = InvokeContractArgs {
+        contract_address: ScAddress::Contract(ContractId(Hash(contract_hash))),
+        function_name: ScSymbol(
+            "withdraw"
+                .try_into()
+                .map_err(|_| anyhow!("function name too long"))?,
+        ),
+        args,
+    };
+
+    Ok(Operation {
+        source_account: None,
+        body: OperationBody::InvokeHostFunction(stellar_xdr::curr::InvokeHostFunctionOp {
+            host_function: HostFunction::InvokeContract(invoke),
+            auth: VecM::default(),
+        }),
+    })
+}
+
 /// Build an `Operation` that calls the contract's standalone `issue_cover_bad_debt` function.
 ///
 /// Args: `(user: ObligationKey)`
