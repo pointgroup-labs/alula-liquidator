@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
         rpc_url: rpc_url.clone(),
         markets: markets.clone(),
     };
-    let bad_debt_request_initiator =
+    let _bad_debt_request_initiator =
         BadDebtRequestInitiator::try_create(bad_debt_request_initiator_config, &skey)?;
 
     // engine.add_strategy(Box::new(bad_debt_request_initiator));

@@ -54,10 +54,12 @@ impl Executor<Action> for SorobanExecutor {
                             }
                             Err(e) => {
                                 if attempt >= action.max_retries.max(1) {
-                                    error!(%e, attempt, ?action,
-                                        "tx failed",
-                                    );
+                                    error!(%e, attempt, ?action, "tx failed");
                                     return Err(e);
+                                }
+                                // Non-retryable: simulation itself failed
+                                if e.to_string().contains("simulation returned no results") {
+                                    return Ok(());
                                 }
                                 warn!(%e, attempt, "tx attempt failed, retrying...");
 
@@ -105,6 +107,11 @@ async fn submit(
     let sim_response = rpc
         .simulate_transaction_envelope(&temp_envelope, Some(AuthMode::Record))
         .await?;
+
+    if sim_response.results.is_empty() {
+        error!("simulation returned no results — contract execution likely failed, skipping submission");
+        return Err(anyhow::anyhow!("simulation returned no results"));
+    }
 
     // Assemble the transaction with simulation data
     let mut assembled_tx = tx.clone();
