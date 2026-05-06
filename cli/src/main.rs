@@ -33,6 +33,10 @@ pub const REBALANCER_MIN_SWAP_AMOUNT_VALUE_CENTS: i128 = 100;
 /// Default external slippage buffer applied to the realized quote when
 /// constructing `min_amount_out` (0.3%).
 pub const REBALANCER_SLIPPAGE_BPS: i128 = 30;
+/// Conservative upper-bound DEX swap fee assumed across all configured
+/// `swap_providers` (0.3%). Used so that price-impact sizing and
+/// `min_amount_out` predictions stay safe on the worst-fee provider.
+pub const REBALANCER_MAX_FEE_BPS: i128 = 30;
 pub const WITHDRAWER_MIN_WITHDRAW_VALUE_CENTS: i128 = 500;
 
 #[derive(Parser, Debug)]
@@ -64,6 +68,8 @@ struct CliConfig {
     rebalancer_interval_blocks: u32,
     #[serde(default = "default_rebalancer_min_swap_amount_value_cents")]
     rebalancer_min_swap_amount_value_cents: i128,
+    #[serde(default = "default_rebalancer_max_fee_bps")]
+    rebalancer_max_fee_bps: i128,
 }
 
 impl CliConfig {
@@ -94,6 +100,10 @@ const fn default_rebalancer_min_swap_amount_value_cents() -> i128 {
     REBALANCER_MIN_SWAP_AMOUNT_VALUE_CENTS
 }
 
+const fn default_rebalancer_max_fee_bps() -> i128 {
+    REBALANCER_MAX_FEE_BPS
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     setup_tracing();
@@ -115,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
         rebalancer_slippage_bps,
         rebalancer_interval_blocks,
         rebalancer_min_swap_amount_value_cents,
+        rebalancer_max_fee_bps,
     } = CliConfig::try_load(config)?;
     let skey = SigningKey::from_bytes(&PrivateKey::from_string(&skey)?.0);
     let db_manager = Arc::new(DbManager::try_create(&db_path)?);
@@ -173,7 +184,8 @@ async fn main() -> anyhow::Result<()> {
         rpc_url: rpc_url.clone(),
         markets: markets.clone(),
         xlm_address: xlm_address.clone(),
-        slippage_bps: rebalancer_slippage_bps,
+        max_fee_bps: rebalancer_max_fee_bps,
+        max_slippage_bps: rebalancer_slippage_bps,
         assets_to_hold: assets_to_hold.clone(),
         swap_providers: swap_providers.clone(),
         refresh_interval_blocks: rebalancer_interval_blocks,
