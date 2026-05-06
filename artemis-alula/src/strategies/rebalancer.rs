@@ -18,9 +18,15 @@ const BPS_FACTOR: i128 = 10_000;
 const MAX_SWAP_RETRIES: u32 = 3;
 const MAX_PROBE_STABILITY_RETRIES: u32 = 2;
 
-// Probe sizes to approximate the DEX pool reserves.
+// Probe sizes used to invert the AMM curve in `probe_provider`. The 10×
+// spread (vs. the original 2×) widens the range over which `y_hi - y_lo`
+// must be non-linear, making the curvature-blindness degeneracy in
+// `compute_swap_amounts`'s `denom = y_lo*x_hi - x_lo*y_hi` term far less
+// likely to collapse on deep pools. This is a *mitigation*, not a true
+// fix — see `[BUG] #1` in the module-level review notes for the proper
+// curvature-gate solution.
 const PROBE_LARGE_LO: i128 = 10i128.pow(9);
-const PROBE_LARGE_HI: i128 = 2i128 * 10i128.pow(9);
+const PROBE_LARGE_HI: i128 = 10i128.pow(10);
 
 pub struct RebalancerConfig {
     pub rpc_url: Url,
@@ -284,10 +290,35 @@ impl Rebalancer {
                             "Rebalancer: provider probe ok"
                         );
 
-                        let take = best_provider
-                            .as_ref()
-                            .map(|(_, _, o)| amount_out > *o)
-                            .unwrap_or(true);
+                        // Pick the provider with the best *price per unit
+                        // input*, i.e. the highest `amount_out / amount_in`
+                        // ratio. Comparing absolute `amount_out` is wrong
+                        // because each provider's `dx_max` is derived from
+                        // its own `res_x`, so different providers can
+                        // quote with different `amount_in` values — the
+                        // one allowed to spend more would always look
+                        // "better" by raw output.
+                        //
+                        // Cross-multiply to avoid float math:
+                        //   new_out / new_in > best_out / best_in
+                        //   ⇔ new_out * best_in > best_out * new_in
+                        // (all four operands are positive, checked above).
+                        // On the (extremely unlikely) i128 overflow we
+                        // fall back to absolute-out comparison so we
+                        // still pick *something* rather than silently
+                        // skip the candidate.
+                        let take = match best_provider.as_ref() {
+                            None => true,
+                            Some((_, best_in, best_out)) => {
+                                match (
+                                    amount_out.checked_mul(*best_in),
+                                    best_out.checked_mul(amount_in),
+                                ) {
+                                    (Some(lhs), Some(rhs)) => lhs > rhs,
+                                    _ => amount_out > *best_out,
+                                }
+                            }
+                        };
                         if take {
                             best_provider = Some((provider.clone(), amount_in, amount_out));
                         }
@@ -332,6 +363,10 @@ impl Rebalancer {
             min_amount_out,
         )?;
 
+        // TODO: when supporting more than one market, route each
+        // candidate to the market it actually came from rather than
+        // hardcoding `markets[0]`.
+        // submits the swap to the wrong contract.
         let market_address = &self.config.markets[0];
         let op = helper::build_batch_op(market_address, &self.liquidator_key, &[request])?;
 
@@ -354,7 +389,26 @@ impl Rebalancer {
         })))
     }
 
-    // TODO: Add comment about this
+    /// Derive a provider's *virtual* CPMM reserves by issuing two
+    /// on-chain `get_amount_out` simulations and inverting the curve.
+    ///
+    /// Why probe instead of reading reserves directly?
+    /// `ProxySwap` on market doesn't have such an interface.
+    ///
+    /// The inner loop guards against *probe drift*: if the pool's reserves
+    /// change between the two simulations (e.g. another bot front-runs us
+    /// or the ledger advances mid-call), the inversion is meaningless. We
+    /// require two consecutive identical (y_lo, y_hi) reads before
+    /// trusting the result; otherwise we bail with `Ok(None)` so the
+    /// caller skips this provider for this cycle rather than acting on
+    /// stale numbers.
+    ///
+    /// Returns `Ok(Some((amount_in, amount_out)))` when probes are stable
+    /// and the derived reserves yield a viable swap under the configured
+    /// price-impact and balance constraints; `Ok(None)` for any
+    /// soft-failure (unstable probes, non-positive quotes, overflow,
+    /// inconsistent geometry); and `Err` only for unrecoverable RPC or
+    /// transport failures.
     async fn probe_provider(
         &self,
         provider: &str,
@@ -426,7 +480,38 @@ impl Rebalancer {
     }
 }
 
-// TODO: Big comment
+/// Turn two probe quotes into an actionable `(amount_in, amount_out)`
+/// pair, capped by both price-impact and on-hand balance.
+///
+/// Pipeline (each step has a per-block comment below):
+///   1. **Invert the CPMM curve** to recover `res_x` (the virtual input
+///      reserve) from `(probe_lo, probe_hi, y_lo, y_hi)` and the
+///      assumed worst-case fee `fee_bps`.
+///   2. **Size the input** by the price-impact cap:
+///        `dx_max = p_bps * res_x * B / (gamma_bps * (B - p_bps))`
+///      then take `min(dx_max, liquidator_balance)` so we never try to
+///      spend more than we hold.
+///   3. **Recover `res_y`** from the `y_hi` probe and the now-known
+///      `res_x`, so we can evaluate the curve locally.
+///   4. **Compute `amount_out`** from the standard CPMM formula
+///        `amount_out = res_y * gamma_bps * dx
+///                    / (res_x * B + gamma_bps * dx)`
+///      using the capped `amount_in`.
+///
+/// Returns:
+///   * `Ok(Some((amount_in, amount_out)))` on success.
+///   * `Ok(None)` for any soft-failure: i128 overflow, non-positive
+///     intermediate (probes inconsistent / pool degenerate), or
+///     out-of-range `max_price_impact_bps`. Caller should skip this
+///     provider for this cycle.
+///   * Currently no `Err` paths; the signature returns `Result` to leave
+///     room for future hard failures without a breaking change.
+///
+/// All arithmetic is in i128 raw token units (assumed 7 decimals) with
+/// fees and impact encoded in basis points (`B = BPS_FACTOR = 10_000`).
+/// Every multiply is `checked_mul` to fail closed (return `None`) on
+/// overflow rather than panic; divisions are floor-rounded so any
+/// rounding error biases us *under* the safety caps, never over.
 fn compute_swap_amounts(
     provider: &str,
     probe_hi: i128,
@@ -437,8 +522,6 @@ fn compute_swap_amounts(
     liquidator_balance: i128,
     max_price_impact_bps: i128,
 ) -> anyhow::Result<Option<(i128, i128)>> {
-    // Find the x reserve
-
     // res_x = probe_lo * probe_hi * (1-fee) * (y_hi - y_lo) / (y_lo * x_hi - x_lo * y_hi)
     //
     // All quantities are in raw token units (assumed 7 decimals everywhere
@@ -521,6 +604,7 @@ fn compute_swap_amounts(
             p_bps,
             "Rebalancer: max_price_impact_bps out of (0, BPS_FACTOR); refusing to size swap"
         );
+
         return Ok(None);
     }
 
@@ -531,6 +615,7 @@ fn compute_swap_amounts(
         Some(n) => n,
         None => {
             error!(%provider, "Rebalancer: max_amount_in numerator overflowed");
+
             return Ok(None);
         }
     };
@@ -597,11 +682,12 @@ fn compute_swap_amounts(
             return Ok(None);
         }
     };
-    // gamma_bps * probe_hi ≤ 1e4 * 2e9 = 2e13, comfortably non-overflowing.
+    // gamma_bps * probe_hi ≤ 1e4 * 1e10 = 1e14, comfortably non-overflowing.
     let res_y_denom = gamma_bps * probe_hi;
     let res_y = res_y_numer / res_y_denom;
     if res_y <= 0 {
         error!(%provider, res_y, "Rebalancer: derived non-positive Y reserve");
+
         return Ok(None);
     }
 
@@ -611,6 +697,7 @@ fn compute_swap_amounts(
         Some(v) => v,
         Option::None => {
             error!(%provider, "Rebalancer: amount_out g*dx overflowed");
+
             return Ok(None);
         }
     };
@@ -618,6 +705,7 @@ fn compute_swap_amounts(
         Some(v) => v,
         Option::None => {
             error!(%provider, "Rebalancer: amount_out numerator overflowed");
+
             return Ok(None);
         }
     };
@@ -628,6 +716,7 @@ fn compute_swap_amounts(
         Some(v) => v,
         Option::None => {
             error!(%provider, "Rebalancer: amount_out denominator overflowed");
+
             return Ok(None);
         }
     };
@@ -638,6 +727,7 @@ fn compute_swap_amounts(
             amount_out, amount_in, res_x, res_y,
             "Rebalancer: locally-computed amount_out non-positive"
         );
+
         return Ok(None);
     }
 
