@@ -169,16 +169,16 @@ async fn main() -> anyhow::Result<()> {
     // - PortfolioRebalancer -
 
     let rebalancer_config = RebalancerConfig {
+        xlm_safety_margin,
         rpc_url: rpc_url.clone(),
         markets: markets.clone(),
         xlm_address: xlm_address.clone(),
-        xlm_safety_margin,
+        slippage_bps: rebalancer_slippage_bps,
         assets_to_hold: assets_to_hold.clone(),
         swap_providers: swap_providers.clone(),
+        refresh_interval_blocks: rebalancer_interval_blocks,
         max_price_impact_bps: rebalancer_max_price_impact_bps,
-        slippage_bps: rebalancer_slippage_bps,
         min_swap_amount_value_cents: rebalancer_min_swap_amount_value_cents,
-        interval_blocks: rebalancer_interval_blocks,
     };
     let rebalancer = Rebalancer::try_create(rebalancer_config, &skey)?;
 

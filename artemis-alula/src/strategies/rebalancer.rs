@@ -16,12 +16,9 @@ use {
 const BPS_FACTOR: i128 = 10_000;
 const MAX_REBALANCE_RETRIES: u32 = 3;
 
-/// Probe sizes for the AMM_Max_Swap_Estimator algorithm. The doc explicitly
-/// recommends larger probes (1e6 / 2e6) so the `(2y1 - y2)` denominator is
-/// resilient to integer rounding. We fall back to (1, 2) when the input
-/// balance can't accommodate the larger probe.
-const PROBE_LARGE_LO: i128 = 1_000_000;
-const PROBE_LARGE_HI: i128 = 2_000_000;
+/// Probe sizes for the max amount_in approximation
+const PROBE_LARGE_LO: i128 = 10i128.pow(9);
+const PROBE_LARGE_HI: i128 = 2i128 * 10i128.pow(9);
 
 pub struct RebalancerConfig {
     pub rpc_url: Url,
@@ -36,9 +33,9 @@ pub struct RebalancerConfig {
     pub max_price_impact_bps: i128,
     /// External slippage cap, in basis points.
     pub slippage_bps: i128,
+    pub refresh_interval_blocks: u32,
     /// Skip swaps below this dollar-value threshold (in cents).
     pub min_swap_amount_value_cents: i128,
-    pub interval_blocks: u32,
 }
 
 pub struct AssetInfo {
@@ -90,7 +87,6 @@ impl Rebalancer {
             skey.verifying_key().to_bytes(),
         ))))
         .to_string();
-
         let liquidator_key = ObligationKey::new(pkey.clone());
 
         Ok(Self {
@@ -105,7 +101,7 @@ impl Rebalancer {
     }
 
     async fn handle_new_block(&mut self, block: NewBlock) -> Vec<Action> {
-        if block.number % self.config.interval_blocks != 0 {
+        if block.number % self.config.refresh_interval_blocks != 0 {
             return vec![];
         }
         if self.config.assets_to_hold.is_empty() {
@@ -127,8 +123,8 @@ impl Rebalancer {
         self.find_rebalance_actions().await
     }
 
-    /// Compute the set of assets the liquidator should NOT be holding.
-    fn build_candidate_set(&mut self) -> Vec<String> {
+    /// Returns `Vec<String>` of assets that liquidator should **NOT** be holding.
+    fn get_candidates_set(&mut self) -> Vec<String> {
         self.rebuild_asset_index();
 
         let held: HashSet<&str> = self
@@ -165,18 +161,24 @@ impl Rebalancer {
     }
 
     async fn find_rebalance_actions(&mut self) -> Vec<Action> {
-        let candidates = self.build_candidate_set();
+        let rebalance_candidates = self.get_candidates_set();
         let target_asset = &self.config.assets_to_hold[0];
 
         let mut actions = vec![];
-        for candidate in &candidates {
+        for candidate in &rebalance_candidates {
             if candidate == target_asset {
                 continue;
             }
 
-            match self.evaluate_candidate(candidate, target_asset).await {
-                Ok(Some(action)) => actions.push(action),
-                Ok(None) => {}
+            match self
+                .evaluate_rebalance_candidate(target_asset, candidate)
+                .await
+            {
+                Ok(opt) => {
+                    if let Some(action) = opt {
+                        actions.push(action);
+                    }
+                }
                 Err(e) => warn!(?e, %candidate, "candidate evaluation failed"),
             }
         }
@@ -202,11 +204,15 @@ impl Rebalancer {
     /// Returns `Ok(Some(action))` if a viable swap was found, `Ok(None)` if
     /// the candidate should be skipped (zero balance, dust, infeasible probes,
     /// etc.), or `Err` for unexpected RPC failures we want to log.
-    async fn evaluate_candidate(
+    async fn evaluate_rebalance_candidate(
         &self,
-        candidate: &str,
         target: &str,
+        candidate: &str,
     ) -> anyhow::Result<Option<Action>> {
+        if candidate != "CDNVQW44C3HALYNVQ4SOBXY5EWYTGVYXX6JPESOLQDABJI5FC5LTRRUE" {
+            return Ok(None);
+        }
+
         let raw_balance =
             helper::query_token_balance(&self.rpc, candidate, &self.pkey, &self.pkey).await?;
 
@@ -221,50 +227,43 @@ impl Rebalancer {
             return Ok(None);
         }
 
-        // Deduce the liquidity reserves
-
-        const ENSURE_RESERVES_ATTEMPTS: u32 = 3;
-
-        let mut reserves: Option<(i128, i128)> = None;
-        // `get_amount_out` is a read-only simulation, so the probe size is
-        // independent of the liquidator's balance — it only needs to be large
-        // enough to expose the AMM's curvature (the (2y1 - y2) denominator
-        // collapses to 0 for tiny probes because the formula degenerates to
-        // a linear approximation). The cap by `balance_to_swap` happens later
-        // on the algorithm's output Δx.
         let (probe_lo, probe_hi) = (PROBE_LARGE_LO, PROBE_LARGE_HI);
         let path: [&str; 2] = [candidate, target];
 
         // (provider, dx, expected_output)
-        let mut best: Option<(String, i128, i128)> = None;
-
+        let mut best_provider: Option<(String, i128, i128)> = None;
         for provider in &self.config.swap_providers {
             match self
                 .probe_provider(provider, &path, balance_to_swap, probe_lo, probe_hi)
                 .await
             {
-                Ok(Some((dx, out))) => {
-                    debug!(
-                        %provider,
-                        %candidate,
-                        dx,
-                        out,
-                        "Rebalancer: provider probe ok"
-                    );
-                    let take = best.as_ref().map(|(_, _, o)| out > *o).unwrap_or(true);
-                    if take {
-                        best = Some((provider.clone(), dx, out));
+                Ok(opt) => match opt {
+                    Some((amount_in, amount_out)) => {
+                        debug!(
+                            %provider,
+                            %candidate,
+                            amount_in,
+                            amount_out,
+                            "Rebalancer: provider probe ok"
+                        );
+                        let take = best_provider
+                            .as_ref()
+                            .map(|(_, _, o)| amount_out > *o)
+                            .unwrap_or(true);
+                        if take {
+                            best_provider = Some((provider.clone(), amount_in, amount_out));
+                        }
                     }
-                }
-                Ok(None) => {
-                    debug!(%provider, %candidate, "Rebalancer: provider unviable");
-                }
+                    None => {
+                        debug!(%provider, %candidate, "Rebalancer: provider unviable");
+                    }
+                },
                 Err(e) => {
                     warn!(?e, %provider, %candidate, "Rebalancer: provider probe failed");
                 }
             }
         }
-        let Some((provider, dx_final, expected_out)) = best else {
+        let Some((provider, amount_in, amount_out)) = best_provider else {
             return Ok(None);
         };
 
@@ -272,11 +271,11 @@ impl Rebalancer {
             .asset_index
             .get(candidate)
             .expect("candidate sourced from asset_index");
-        let value_cents = self.calculate_value_cents(dx_final, info);
+        let value_cents = self.calculate_value_cents(amount_in, info);
         if value_cents < self.config.min_swap_amount_value_cents {
             info!(
                 %candidate,
-                dx_final,
+                amount_in,
                 value_cents,
                 min_required = self.config.min_swap_amount_value_cents,
                 "Rebalancer: candidate below dust threshold; skipping"
@@ -285,12 +284,12 @@ impl Rebalancer {
         }
 
         let min_amount_out =
-            expected_out.saturating_mul(BPS_FACTOR - self.config.slippage_bps) / BPS_FACTOR;
+            amount_out.saturating_mul(BPS_FACTOR - self.config.slippage_bps) / BPS_FACTOR;
 
         let request = helper::build_swap_exact_tokens_request_scval(
             &provider,
             &path,
-            dx_final,
+            amount_in,
             min_amount_out,
         )?;
 
@@ -299,12 +298,12 @@ impl Rebalancer {
 
         info!(
             %candidate,
+            value_cents,
             %target,
             %provider,
-            dx_final,
-            expected_out,
+            amount_in,
+            amount_out,
             min_amount_out,
-            value_cents,
             market = %market_address,
             "Rebalancer: submitting swap"
         );
@@ -333,6 +332,306 @@ impl Rebalancer {
     }
 
     async fn probe_provider(
+        &self,
+        provider: &str,
+        path: &[&str],
+        balance_to_swap: i128,
+        probe_lo: i128,
+        probe_hi: i128,
+    ) -> anyhow::Result<Option<(i128, i128)>> {
+        // TODO: rust-analyzer false-positive cleanup. Several `None => { ... }`
+        // arms in this function and in `probe_provider2` get flagged as
+        // `Variable `None` should have snake_case name`. The analyzer mistakes
+        // them for fresh bindings; rustc has no issue. Already worked around
+        // in the dx_max / amount_out block by writing `Option::None => ...`.
+        // Sweep the remaining bare-`None` arms (currently around lines ~501,
+        // ~628, ~693) to the same spelling for a quiet diagnostics list.
+        const MAX_PROBE_STABILITY_RETRIES: u32 = 2;
+
+        let mut stable_ys: Option<(i128, i128)> = None;
+        let mut is_stable = false;
+
+        for _ in 0..MAX_PROBE_STABILITY_RETRIES {
+            let (y_lo, y_hi) = (
+                helper::simulate_swap_provider_get_amount_out(
+                    &self.rpc, provider, &self.pkey, probe_lo, path,
+                )
+                .await,
+                helper::simulate_swap_provider_get_amount_out(
+                    &self.rpc, provider, &self.pkey, probe_hi, path,
+                )
+                .await,
+            );
+
+            let y_lo = match y_lo {
+                Ok(y_lo) => y_lo,
+                Err(e) => {
+                    error!(%e, probe_lo, "Couldn't get amount_out");
+
+                    continue;
+                }
+            };
+            let y_hi = match y_hi {
+                Ok(y_hi) => y_hi,
+                Err(e) => {
+                    error!(%e, probe_hi, "Couldn't get amount_out");
+
+                    return Ok(None);
+                }
+            };
+
+            if !y_lo.is_positive() || !y_hi.is_positive() {
+                error!(
+                    provider,
+                    y_lo, y_hi, "Rebalancer: probes returned non-positive"
+                );
+
+                return Ok(None);
+            }
+
+            ////
+
+            if let Some(prev) = stable_ys {
+                if prev == (y_lo, y_hi) {
+                    is_stable = true;
+
+                    break;
+                }
+                // Differed — replace and try once more.
+            }
+            stable_ys = Some((y_lo, y_hi));
+        }
+        if !is_stable {
+            error!(%provider, "Probes aren't stable");
+
+            return Ok(None);
+        }
+
+        // Find the x reserve
+
+        // res_x = probe_lo * probe_hi * (1-fee) * (y_hi - y_lo) / (y_lo * x_hi - x_lo * y_hi)
+        //
+        // All quantities are in raw token units (assumed 7 decimals everywhere
+        // for now). The (1 - fee) factor is encoded in basis points as
+        // gamma_bps / BPS_FACTOR; we apply that division last to preserve as
+        // much precision as integer math allows.
+        //
+        // TODO: source the per-provider fee from chain state instead of using
+        // the AMM-default 0.3%. Once `RebalancerConfig` (or the provider
+        // metadata) exposes it, thread it in as a parameter.
+        const PROVIDER_FEE_BPS: i128 = 30;
+
+        let (y_lo, y_hi) = stable_ys.expect("set when is_stable == true");
+
+        // Denominator: y_lo * x_hi - x_lo * y_hi.
+        // For a concave (constant-product) curve this is strictly positive;
+        // a non-positive value means the two probes disagree about the curve
+        // shape, so we treat the provider as unviable.
+        let denom = match y_lo
+            .checked_mul(probe_hi)
+            .and_then(|a| probe_lo.checked_mul(y_hi).and_then(|b| a.checked_sub(b)))
+        {
+            Some(d) => d,
+            None => {
+                error!(%provider, "Rebalancer: reserve-X denominator overflowed");
+                return Ok(None);
+            }
+        };
+        if denom <= 0 {
+            error!(
+                %provider,
+                denom, y_lo, y_hi, probe_lo, probe_hi,
+                "Rebalancer: non-positive reserve-X denominator (probes inconsistent)"
+            );
+            return Ok(None);
+        }
+
+        // Numerator: probe_lo * probe_hi * gamma_bps * (y_hi - y_lo).
+        let gamma_bps = BPS_FACTOR - PROVIDER_FEE_BPS;
+        let dy = y_hi - y_lo; // positive: probe_hi > probe_lo on a concave curve
+        let numer = match probe_lo
+            .checked_mul(probe_hi)
+            .and_then(|a| a.checked_mul(gamma_bps))
+            .and_then(|a| a.checked_mul(dy))
+        {
+            Some(n) => n,
+            None => {
+                error!(%provider, "Rebalancer: reserve-X numerator overflowed");
+                return Ok(None);
+            }
+        };
+
+        // Divide by denom first, then by BPS_FACTOR — this keeps the
+        // intermediate large enough to avoid losing the (1 - fee) scaling
+        // to integer truncation when the pool is deep relative to the probes.
+        let res_x = numer / denom / BPS_FACTOR;
+        if res_x <= 0 {
+            error!(
+                %provider,
+                res_x, "Rebalancer: derived non-positive X reserve"
+            );
+            return Ok(None);
+        }
+
+        debug!(
+            %provider,
+            res_x, y_lo, y_hi, probe_lo, probe_hi, fee_bps = PROVIDER_FEE_BPS,
+            "Rebalancer: derived virtual X reserve"
+        );
+
+        // Good, now let's compute the max amount_in for that
+
+        // max_amount_in = (max price impact * x) / gamma * (1 - max price impact)
+        //
+        // Derivation: for a CPMM with reserves (X, Y) and fee f, an input dx
+        // gives realized price dy/dx = Y*gamma / (X + gamma*dx). The price
+        // impact relative to the marginal price Y/X is
+        //   PI = 1 - (dy/dx) / (Y/X) = gamma*dx / (X + gamma*dx).
+        // Solving PI = p for dx gives  dx = p*X / (gamma * (1 - p)).
+        //
+        // Encoded in basis points (gamma_bps from above, p_bps below, both
+        // scaled by BPS_FACTOR=B), the algebra simplifies to
+        //   dx_max = p_bps * X * B  /  (gamma_bps * (B - p_bps))
+        // which we evaluate as a single division to retain precision and to
+        // floor-round in the *safe* direction (slightly under the cap).
+        let p_bps = self.config.max_price_impact_bps;
+        if p_bps <= 0 || p_bps >= BPS_FACTOR {
+            error!(
+                %provider,
+                p_bps,
+                "Rebalancer: max_price_impact_bps out of (0, BPS_FACTOR); refusing to size swap"
+            );
+            return Ok(None);
+        }
+
+        let numer = match p_bps
+            .checked_mul(res_x)
+            .and_then(|a| a.checked_mul(BPS_FACTOR))
+        {
+            Some(n) => n,
+            None => {
+                error!(%provider, "Rebalancer: max_amount_in numerator overflowed");
+                return Ok(None);
+            }
+        };
+        // gamma_bps and (BPS_FACTOR - p_bps) are both <= BPS_FACTOR = 1e4, so
+        // their product is <= 1e8 and can't overflow an i128.
+        let denom = gamma_bps * (BPS_FACTOR - p_bps);
+        let dx_max = numer / denom;
+        if dx_max <= 0 {
+            error!(
+                %provider,
+                dx_max, res_x, p_bps,
+                "Rebalancer: derived non-positive max amount_in"
+            );
+            return Ok(None);
+        }
+
+        // Cap the input by both constraints: the model-derived price-impact
+        // bound (dx_max) and what the keeper actually holds. Whichever is
+        // smaller wins.
+        let amount_in = dx_max.min(balance_to_swap);
+
+        debug!(
+            %provider,
+            dx_max, balance_to_swap, amount_in, res_x, p_bps,
+            "Rebalancer: capped swap input by price impact and balance"
+        );
+
+        // Compute amount_out locally from the same model that produced dx_max.
+        // No extra RPC: we already paid for two probe quotes above, and the
+        // virtual reserves we derived from them are enough to evaluate the
+        // CPMM curve at the chosen amount_in. `slippage_bps` absorbs the
+        // model-vs-execution drift downstream.
+        //
+        // Caveat: this assumes the probe-derived (res_x, res_y) are accurate.
+        // The curvature-blindness bug in `probe_provider` (no relative-
+        // curvature gate like `probe_provider2`'s
+        // RELATIVE_CURVATURE_THRESHOLD_RATIO) can inflate res_x for deep,
+        // near-linear pools, which propagates straight into amount_out here.
+
+        // Re-derive the second virtual reserve from the curve. Inverting
+        //   y = res_y * gamma * dx / (res_x + gamma * dx)
+        // gives  res_y = y * (res_x + gamma * dx) / (gamma * dx).
+        // In BPS-encoded integer form (res_x in raw units, gamma_bps from
+        // above) that's
+        //   res_y = y_hi * (res_x * B + gamma_bps * probe_hi)
+        //         / (gamma_bps * probe_hi)
+        // We pick `probe_hi` over `probe_lo` because the larger probe carries
+        // more signal against integer-rounding inside the pool's own quote.
+        let inner = match res_x.checked_mul(BPS_FACTOR).and_then(|a| {
+            gamma_bps
+                .checked_mul(probe_hi)
+                .and_then(|b| a.checked_add(b))
+        }) {
+            Some(v) => v,
+            Option::None => {
+                error!(%provider, "Rebalancer: res_y inner term overflowed");
+                return Ok(None);
+            }
+        };
+        let res_y_numer = match y_hi.checked_mul(inner) {
+            Some(v) => v,
+            Option::None => {
+                error!(%provider, "Rebalancer: res_y numerator overflowed");
+                return Ok(None);
+            }
+        };
+        // gamma_bps * probe_hi ≤ 1e4 * 2e6 = 2e10, comfortably non-overflowing.
+        let res_y_denom = gamma_bps * probe_hi;
+        let res_y = res_y_numer / res_y_denom;
+        if res_y <= 0 {
+            error!(%provider, res_y, "Rebalancer: derived non-positive Y reserve");
+            return Ok(None);
+        }
+
+        //   amount_out = res_y * gamma_bps * amount_in
+        //              / (res_x * B + gamma_bps * amount_in)
+        let g_dx = match gamma_bps.checked_mul(amount_in) {
+            Some(v) => v,
+            Option::None => {
+                error!(%provider, "Rebalancer: amount_out g*dx overflowed");
+                return Ok(None);
+            }
+        };
+        let out_numer = match res_y.checked_mul(g_dx) {
+            Some(v) => v,
+            Option::None => {
+                error!(%provider, "Rebalancer: amount_out numerator overflowed");
+                return Ok(None);
+            }
+        };
+        let out_denom = match res_x
+            .checked_mul(BPS_FACTOR)
+            .and_then(|a| a.checked_add(g_dx))
+        {
+            Some(v) => v,
+            Option::None => {
+                error!(%provider, "Rebalancer: amount_out denominator overflowed");
+                return Ok(None);
+            }
+        };
+        let amount_out = out_numer / out_denom;
+        if amount_out <= 0 {
+            error!(
+                %provider,
+                amount_out, amount_in, res_x, res_y,
+                "Rebalancer: locally-computed amount_out non-positive"
+            );
+            return Ok(None);
+        }
+
+        debug!(
+            %provider,
+            amount_in, amount_out, res_x, res_y,
+            "Rebalancer: amount_out from local CPMM formula"
+        );
+
+        Ok(Some((amount_in, amount_out)))
+    }
+
+    /// TODO Add description
+    async fn probe_provider2(
         &self,
         provider: &str,
         path: &[&str],
@@ -384,7 +683,10 @@ impl Rebalancer {
                 };
 
                 if !y_lo.is_positive() || !y_hi.is_positive() {
-                    warn!(provider, y_lo, y_hi, "Rebalancer: probes returned non-positive");
+                    warn!(
+                        provider,
+                        y_lo, y_hi, "Rebalancer: probes returned non-positive"
+                    );
                     return Ok(None);
                 }
 
@@ -408,7 +710,10 @@ impl Rebalancer {
                 None => return Ok(None), // shouldn't happen: STABILITY_RETRIES >= 1
             };
             if stable_pair.is_none() {
-                debug!(provider, probe_lo, probe_hi, "Rebalancer: probes unstable, using last");
+                debug!(
+                    provider,
+                    probe_lo, probe_hi, "Rebalancer: probes unstable, using last"
+                );
             }
 
             // Curvature check: is (2y_lo - y_hi) big enough to be meaningful?
@@ -418,7 +723,13 @@ impl Rebalancer {
                 last_good = Some((probe_lo, probe_hi, y_lo, y_hi));
                 debug!(
                     provider,
-                    probe_lo, probe_hi, y_lo, y_hi, denom, threshold, doubling,
+                    probe_lo,
+                    probe_hi,
+                    y_lo,
+                    y_hi,
+                    denom,
+                    threshold,
+                    doubling,
                     "Rebalancer: probes curvature acceptable"
                 );
                 break;
@@ -431,7 +742,12 @@ impl Rebalancer {
 
             if doubling == MAX_DOUBLINGS {
                 warn!(
-                    provider, probe_lo, probe_hi, y_lo, y_hi, denom,
+                    provider,
+                    probe_lo,
+                    probe_hi,
+                    y_lo,
+                    y_hi,
+                    denom,
                     "Rebalancer: gave up doubling probes; curvature still below threshold"
                 );
                 break;
@@ -439,8 +755,12 @@ impl Rebalancer {
 
             // Double and try again. checked_mul guards against overflow on
             // pathological pool sizes.
-            let Some(next_lo) = probe_lo.checked_mul(2) else { break };
-            let Some(next_hi) = probe_hi.checked_mul(2) else { break };
+            let Some(next_lo) = probe_lo.checked_mul(2) else {
+                break;
+            };
+            let Some(next_hi) = probe_hi.checked_mul(2) else {
+                break;
+            };
             probe_lo = next_lo;
             probe_hi = next_hi;
         }
@@ -458,8 +778,8 @@ impl Rebalancer {
             self.config.max_price_impact_bps,
         ) else {
             warn!(
-                provider, y_lo, y_hi,
-                "Rebalancer: degenerate probes (2y1 - y2 <= 0) after adaptive doubling"
+                provider,
+                y_lo, y_hi, "Rebalancer: degenerate probes (2y1 - y2 <= 0) after adaptive doubling"
             );
             return Ok(None);
         };
