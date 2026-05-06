@@ -18,7 +18,7 @@ use {
     clap::Parser,
     ed25519_dalek::SigningKey,
     serde::Deserialize,
-    std::{fs::File, path::PathBuf, sync::Arc},
+    std::{fs::File, net::SocketAddr, path::PathBuf, sync::Arc},
     stellar_rpc_client::EventType,
     stellar_strkey::ed25519::PrivateKey,
     tokio::signal,
@@ -26,6 +26,8 @@ use {
     tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt},
     url::Url,
 };
+
+mod metrics_server;
 
 pub const BPS_FACTOR: i128 = 10_000;
 pub const REBALANCER_INTERVAL_BLOCKS: u32 = 2;
@@ -70,6 +72,8 @@ struct CliConfig {
     rebalancer_min_swap_amount_value_cents: i128,
     #[serde(default = "default_rebalancer_max_fee_bps")]
     rebalancer_max_fee_bps: i128,
+    /// Address the Prometheus `/metrics` endpoint binds to. Required.
+    metrics_bind_addr: SocketAddr,
 }
 
 impl CliConfig {
@@ -126,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         rebalancer_interval_blocks,
         rebalancer_min_swap_amount_value_cents,
         rebalancer_max_fee_bps,
+        metrics_bind_addr,
     } = CliConfig::try_load(config)?;
     let skey = SigningKey::from_bytes(&PrivateKey::from_string(&skey)?.0);
     let db_manager = Arc::new(DbManager::try_create(&db_path)?);
@@ -231,6 +236,11 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::select! {
         _ = engine_fut => {},
+        res = metrics_server::serve(metrics_bind_addr) => {
+            if let Err(e) = res {
+                tracing::error!(?e, "metrics_server stopped");
+            }
+        },
         _ = shutdown_future() => {},
     }
 
