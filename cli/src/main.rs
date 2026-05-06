@@ -10,6 +10,7 @@ use {
         strategies::{
             bad_debt_request_initiator::{BadDebtRequestInitiator, BadDebtRequestInitiatorConfig},
             liquidator::{Liquidator, LiquidatorConfig},
+            rebalancer::{Rebalancer, RebalancerConfig},
             withdrawer::{Withdrawer, WithdrawerConfig},
         },
         types::{Action, Event},
@@ -28,6 +29,10 @@ use {
 
 pub const BPS_FACTOR: i128 = 10_000;
 pub const REBALANCER_INTERVAL_BLOCKS: u32 = 2;
+pub const REBALANCER_MIN_SWAP_AMOUNT_VALUE_CENTS: i128 = 100;
+/// Default external slippage buffer applied to the realized quote when
+/// constructing `min_amount_out` (0.3%).
+pub const REBALANCER_SLIPPAGE_BPS: i128 = 30;
 pub const WITHDRAWER_MIN_WITHDRAW_VALUE_CENTS: i128 = 500;
 
 #[derive(Parser, Debug)]
@@ -51,10 +56,14 @@ struct CliConfig {
     min_profit_margin_cents: i128,
     #[serde(default = "default_min_withdraw_value_cents")]
     min_withdraw_value_cents: i128,
-    #[serde(default = "default_rebalancer_max_slippage_bps")]
-    rebalancer_max_slippage_bps: i128,
+    #[serde(default = "default_rebalancer_max_price_impact_bps")]
+    rebalancer_max_price_impact_bps: i128,
+    #[serde(default = "default_rebalancer_slippage_bps")]
+    rebalancer_slippage_bps: i128,
     #[serde(default = "default_rebalancer_interval_blocks")]
     rebalancer_interval_blocks: u32,
+    #[serde(default = "default_rebalancer_min_swap_amount_value_cents")]
+    rebalancer_min_swap_amount_value_cents: i128,
 }
 
 impl CliConfig {
@@ -65,8 +74,12 @@ impl CliConfig {
     }
 }
 
-const fn default_rebalancer_max_slippage_bps() -> i128 {
+const fn default_rebalancer_max_price_impact_bps() -> i128 {
     BPS_FACTOR / 100 // 1%
+}
+
+const fn default_rebalancer_slippage_bps() -> i128 {
+    REBALANCER_SLIPPAGE_BPS
 }
 
 const fn default_min_withdraw_value_cents() -> i128 {
@@ -75,6 +88,10 @@ const fn default_min_withdraw_value_cents() -> i128 {
 
 const fn default_rebalancer_interval_blocks() -> u32 {
     REBALANCER_INTERVAL_BLOCKS
+}
+
+const fn default_rebalancer_min_swap_amount_value_cents() -> i128 {
+    REBALANCER_MIN_SWAP_AMOUNT_VALUE_CENTS
 }
 
 #[tokio::main]
@@ -94,8 +111,10 @@ async fn main() -> anyhow::Result<()> {
         network_passphrase,
         min_profit_margin_cents,
         min_withdraw_value_cents,
-        rebalancer_max_slippage_bps: _,
-        rebalancer_interval_blocks: _,
+        rebalancer_max_price_impact_bps,
+        rebalancer_slippage_bps,
+        rebalancer_interval_blocks,
+        rebalancer_min_swap_amount_value_cents,
     } = CliConfig::try_load(config)?;
     let skey = SigningKey::from_bytes(&PrivateKey::from_string(&skey)?.0);
     let db_manager = Arc::new(DbManager::try_create(&db_path)?);
@@ -139,15 +158,31 @@ async fn main() -> anyhow::Result<()> {
         markets: markets.clone(),
         min_withdraw_value_cents,
     };
-    let withdrawer = Withdrawer::try_create(withdrawer_config, &skey)?;
+    let _withdrawer = Withdrawer::try_create(withdrawer_config, &skey)?;
 
-    engine.add_strategy(Box::new(withdrawer));
+    // engine.add_strategy(Box::new(withdrawer));
 
     //
 
     // - ShareSeller -
 
     // - PortfolioRebalancer -
+
+    let rebalancer_config = RebalancerConfig {
+        rpc_url: rpc_url.clone(),
+        markets: markets.clone(),
+        xlm_address: xlm_address.clone(),
+        xlm_safety_margin,
+        assets_to_hold: assets_to_hold.clone(),
+        swap_providers: swap_providers.clone(),
+        max_price_impact_bps: rebalancer_max_price_impact_bps,
+        slippage_bps: rebalancer_slippage_bps,
+        min_swap_amount_value_cents: rebalancer_min_swap_amount_value_cents,
+        interval_blocks: rebalancer_interval_blocks,
+    };
+    let rebalancer = Rebalancer::try_create(rebalancer_config, &skey)?;
+
+    engine.add_strategy(Box::new(rebalancer));
 
     // -- Collectors --
 
