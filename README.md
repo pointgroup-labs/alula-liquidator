@@ -97,7 +97,7 @@ After a liquidation the bot may receive collateral in an asset it doesn't want t
 
 #### `rebalancer`
 
-Runs every `rebalancer_interval_blocks` ledgers. It walks the keeper's wallet, picks the first non-target asset whose dollar value exceeds `rebalancer_min_swap_amount_value_cents`, and swaps it into the rebalancer's target asset (the first entry of `assets_to_hold`) through one of the configured `swap_providers`. The trade size is computed with the AMM_Max_Swap_Estimator algorithm documented in [`AMM_Max_Swap_Estimator.md`](AMM_Max_Swap_Estimator.md): the rebalancer probes the pool with two small trial amounts to derive the maximum input that stays under `rebalancer_max_price_impact_bps`, then applies `rebalancer_slippage_bps` as an external slippage buffer when constructing `min_amount_out`. Failed swaps are retried up to a small bounded number of times before the strategy gives up for the current interval.
+Runs every `rebalancer_interval_blocks` ledgers. It walks the keeper's wallet, picks the first non-target asset whose dollar value exceeds `rebalancer_min_swap_amount_value_cents`, and swaps it into the rebalancer's target asset (the first entry of `assets_to_hold`) through one of the configured `swap_providers`. The trade size is sized so that the on-chain price impact stays under `rebalancer_max_price_impact_bps`; `rebalancer_slippage_bps` is then applied as an external slippage buffer when constructing `min_amount_out`. Failed swaps are retried up to a small bounded number of times before the strategy gives up for the current interval.
 
 #### `withdrawer`
 
