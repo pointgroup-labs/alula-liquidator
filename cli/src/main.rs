@@ -154,16 +154,16 @@ async fn main() -> anyhow::Result<()> {
 
     // - Liquidator -
 
-    let liqudidator_config = LiquidatorConfig {
-        xlm_safety_margin,
-        min_profit_margin_cents,
-        markets: markets.clone(),
-        rpc_url: rpc_url.clone(),
-        xlm_address: xlm_address.clone(),
-        swap_providers: swap_providers.clone(),
-        assets_to_hold: assets_to_hold.clone(),
-    };
-    let _liquidator = Liquidator::try_create(liqudidator_config, &skey, &db_manager)?;
+    // let liqudidator_config = LiquidatorConfig {
+    //     xlm_safety_margin,
+    //     min_profit_margin_cents,
+    //     markets: markets.clone(),
+    //     rpc_url: rpc_url.clone(),
+    //     xlm_address: xlm_address.clone(),
+    //     swap_providers: swap_providers.clone(),
+    //     assets_to_hold: assets_to_hold.clone(),
+    // };
+    // let _liquidator = Liquidator::try_create(liqudidator_config, &skey, &db_manager)?;
 
     // engine.add_strategy(Box::new(liquidator));
 

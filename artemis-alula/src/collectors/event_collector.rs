@@ -39,17 +39,39 @@ impl EventCollector {
         }
     }
 
-    /// Set a starting cursor and ledger to resume event collection from a saved position.
-    /// If `cursor_id` is empty, only the ledger is used (EventStart::Ledger).
-    pub fn with_cursor(mut self, cursor_id: String, ledger: u32) -> Self {
-        self.last_cursor_id = if cursor_id.is_empty() {
-            None
-        } else {
-            Some(cursor_id)
-        };
-        self.last_event_timestamp = ledger;
+    /// Like `new`, but seeds `last_cursor_id` / `last_event_timestamp` from the
+    /// saved cursor in the DB if one exists. This lets the collector resume
+    /// from where it left off across restarts instead of starting at the
+    /// current head ledger.
+    pub fn try_create(
+        network_url: &Url,
+        filter: EventFilter,
+        db: &Arc<DbManager>,
+    ) -> anyhow::Result<Self> {
+        let mut collector = Self::new(network_url, filter, db);
 
-        self
+        match db.load_cursor()? {
+            Some((cursor_id, ledger)) => {
+                info!(
+                    %cursor_id,
+                    ledger,
+                    "EventCollector: resuming from saved cursor"
+                );
+                // An empty cursor_id is used as a "ledger-only" snapshot
+                // (see liquidator.rs pre-fetch path); only honor it when set.
+                collector.last_cursor_id = if cursor_id.is_empty() {
+                    None
+                } else {
+                    Some(cursor_id)
+                };
+                collector.last_event_timestamp = ledger;
+            }
+            None => {
+                info!("EventCollector: no saved cursor in DB, will start at head");
+            }
+        }
+
+        Ok(collector)
     }
 }
 

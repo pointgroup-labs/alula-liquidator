@@ -217,23 +217,6 @@ fn map_get_address(entries: &[ScMapEntry], key: &str) -> anyhow::Result<String> 
     }
 }
 
-fn map_get_string(entries: &[ScMapEntry], key: &str) -> Result<String, ParseError> {
-    match map_get(entries, key) {
-        Some(ScVal::String(s)) => Ok(s.0.to_string()),
-        Some(ScVal::Symbol(s)) => {
-            let utf8_str = std::str::from_utf8(s.0.as_ref())?;
-            Ok(utf8_str.to_string())
-        }
-        Some(other) => Err(ParseError::TypeMismatch {
-            expected: "String or Symbol".to_string(),
-            found: scval_type_name(other).to_string(),
-        }),
-        None => Err(ParseError::MissingField {
-            field: key.to_string(),
-        }),
-    }
-}
-
 fn map_get_string_optional(entries: &[ScMapEntry], key: &str) -> Option<String> {
     match map_get(entries, key) {
         Some(ScVal::String(s)) => Some(s.0.to_string()),
