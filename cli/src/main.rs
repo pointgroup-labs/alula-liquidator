@@ -29,18 +29,6 @@ use {
 
 mod metrics_server;
 
-pub const BPS_FACTOR: i128 = 10_000;
-pub const REBALANCER_INTERVAL_BLOCKS: u32 = 2;
-pub const REBALANCER_MIN_SWAP_AMOUNT_VALUE_CENTS: i128 = 100;
-/// Default external slippage buffer applied to the realized quote when
-/// constructing `min_amount_out` (0.3%).
-pub const REBALANCER_SLIPPAGE_BPS: i128 = 30;
-/// Conservative upper-bound DEX swap fee assumed across all configured
-/// `swap_providers` (0.3%). Used so that price-impact sizing and
-/// `min_amount_out` predictions stay safe on the worst-fee provider.
-pub const REBALANCER_MAX_FEE_BPS: i128 = 30;
-pub const WITHDRAWER_MIN_WITHDRAW_VALUE_CENTS: i128 = 500;
-
 #[derive(Parser, Debug)]
 pub struct Args {
     #[arg(short, long)]
@@ -50,6 +38,7 @@ pub struct Args {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 struct CliConfig {
     rpc_url: Url,
     db_path: String,
@@ -60,19 +49,13 @@ struct CliConfig {
     assets_to_hold: Vec<String>,
     swap_providers: Vec<String>,
     min_profit_margin_cents: i128,
-    #[serde(default = "default_min_withdraw_value_cents")]
     min_withdraw_value_cents: i128,
-    #[serde(default = "default_rebalancer_max_price_impact_bps")]
     rebalancer_max_price_impact_bps: i128,
-    #[serde(default = "default_rebalancer_slippage_bps")]
     rebalancer_slippage_bps: i128,
-    #[serde(default = "default_rebalancer_interval_blocks")]
     rebalancer_interval_blocks: u32,
-    #[serde(default = "default_rebalancer_min_swap_amount_value_cents")]
     rebalancer_min_swap_amount_value_cents: i128,
-    #[serde(default = "default_rebalancer_max_fee_bps")]
     rebalancer_max_fee_bps: i128,
-    /// Address the Prometheus `/metrics` endpoint binds to. Required.
+    /// Address the Prometheus `/metrics` endpoint binds to.
     metrics_bind_addr: SocketAddr,
 }
 
@@ -82,30 +65,6 @@ impl CliConfig {
 
         Ok(res)
     }
-}
-
-const fn default_rebalancer_max_price_impact_bps() -> i128 {
-    BPS_FACTOR / 100 // 1%
-}
-
-const fn default_rebalancer_slippage_bps() -> i128 {
-    REBALANCER_SLIPPAGE_BPS
-}
-
-const fn default_min_withdraw_value_cents() -> i128 {
-    WITHDRAWER_MIN_WITHDRAW_VALUE_CENTS
-}
-
-const fn default_rebalancer_interval_blocks() -> u32 {
-    REBALANCER_INTERVAL_BLOCKS
-}
-
-const fn default_rebalancer_min_swap_amount_value_cents() -> i128 {
-    REBALANCER_MIN_SWAP_AMOUNT_VALUE_CENTS
-}
-
-const fn default_rebalancer_max_fee_bps() -> i128 {
-    REBALANCER_MAX_FEE_BPS
 }
 
 #[tokio::main]
@@ -147,25 +106,22 @@ async fn main() -> anyhow::Result<()> {
         rpc_url: rpc_url.clone(),
         markets: markets.clone(),
     };
-    let _bad_debt_request_initiator =
+    let bad_debt_request_initiator =
         BadDebtRequestInitiator::try_create(bad_debt_request_initiator_config, &skey)?;
-
-    // engine.add_strategy(Box::new(bad_debt_request_initiator));
 
     // - Liquidator -
 
-    // let liqudidator_config = LiquidatorConfig {
-    //     xlm_safety_margin,
-    //     min_profit_margin_cents,
-    //     markets: markets.clone(),
-    //     rpc_url: rpc_url.clone(),
-    //     xlm_address: xlm_address.clone(),
-    //     swap_providers: swap_providers.clone(),
-    //     assets_to_hold: assets_to_hold.clone(),
-    // };
-    // let _liquidator = Liquidator::try_create(liqudidator_config, &skey, &db_manager)?;
-
-    // engine.add_strategy(Box::new(liquidator));
+    let liqudidator_config = LiquidatorConfig {
+        xlm_safety_margin,
+        min_profit_margin_cents,
+        markets: markets.clone(),
+        rpc_url: rpc_url.clone(),
+        swap_fee_buffer_bps: Some(500),
+        xlm_address: xlm_address.clone(),
+        swap_providers: swap_providers.clone(),
+        assets_to_hold: assets_to_hold.clone(),
+    };
+    let liquidator = Liquidator::try_create(liqudidator_config, &skey, &db_manager)?;
 
     // - Withdrawer -
 
@@ -174,9 +130,7 @@ async fn main() -> anyhow::Result<()> {
         markets: markets.clone(),
         min_withdraw_value_cents,
     };
-    let _withdrawer = Withdrawer::try_create(withdrawer_config, &skey)?;
-
-    // engine.add_strategy(Box::new(withdrawer));
+    let withdrawer = Withdrawer::try_create(withdrawer_config, &skey)?;
 
     //
 
@@ -199,6 +153,9 @@ async fn main() -> anyhow::Result<()> {
     };
     let rebalancer = Rebalancer::try_create(rebalancer_config, &skey)?;
 
+    engine.add_strategy(Box::new(bad_debt_request_initiator));
+    engine.add_strategy(Box::new(liquidator));
+    engine.add_strategy(Box::new(withdrawer));
     engine.add_strategy(Box::new(rebalancer));
 
     // -- Collectors --
