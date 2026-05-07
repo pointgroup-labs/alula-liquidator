@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "cli",
-    "artemis-alula",
+    "pipeline",
 ]
 default-members = ["cli"]
 resolver = "3"
@@ -11,7 +11,7 @@ package.version = "0.0.1"
 
 
 [workspace.dependencies]
-artemis-alula = { path = "./artemis-alula" }
+pipeline = { path = "./pipeline" }
 
 stellar-xdr = { version = "25", default-features = true, features = [] }
 stellar-rpc-client = "25"

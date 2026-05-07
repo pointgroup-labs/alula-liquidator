@@ -77,27 +77,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "artemis-alula"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "ed25519-dalek",
- "hex",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "stellar-rpc-client",
- "stellar-strkey 0.0.16",
- "stellar-xdr",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tracing",
- "url",
-]
-
-[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -325,13 +304,13 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "artemis-alula",
  "axum",
  "clap",
  "ed25519-dalek",
  "hex",
  "metrics",
  "metrics-exporter-prometheus",
+ "pipeline",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -1415,6 +1394,28 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pipeline"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek",
+ "hex",
+ "metrics",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "stellar-rpc-client",
+ "stellar-strkey 0.0.16",
+ "stellar-xdr",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "url",
+]
 
 [[package]]
 name = "pkcs8"

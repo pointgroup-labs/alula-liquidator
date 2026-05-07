@@ -11,6 +11,7 @@ use {
         },
     },
     ed25519_dalek::SigningKey,
+    metrics::gauge,
     std::{collections::HashMap, sync::Arc},
     stellar_rpc_client::{Client, Event as SorobanEvent},
     stellar_xdr::curr::{AccountId, PublicKey, ScAddress, Uint256},
@@ -308,7 +309,14 @@ impl Liquidator {
                 self.obligations
                     .entry(market.to_string())
                     .or_default()
-                    .insert(key.clone(), obl);
+                    .insert(key.clone(), obl.clone());
+
+                // Emit position metrics immediately when our own obligation changes.
+                if key.user == self.pkey {
+                    if let Some(md) = self.market_data.get(market) {
+                        emit_position_metrics(market, &obl, md);
+                    }
+                }
             }
             Ok(None) => {
                 info!(?key, %event_name, %market, "obligation deleted");
@@ -357,7 +365,16 @@ impl Liquidator {
                         .map(|p| format!("{}={}", p.token_symbol, p.oracle_asset_price))
                         .collect();
                     debug!(%market, ?prices, "refreshed prices");
-                    self.market_data.insert(market, md);
+                    self.market_data.insert(market.clone(), md);
+
+                    // Emit position metrics with the fresh exchange rates.
+                    let own_key = ObligationKey::new(self.pkey.clone());
+                    if let (Some(obl), Some(md)) = (
+                        self.obligations.get(&market).and_then(|m| m.get(&own_key)),
+                        self.market_data.get(&market),
+                    ) {
+                        emit_position_metrics(&market, obl, md);
+                    }
                 }
                 Err(e) => warn!(?e, %market, "refresh failed"),
             }
@@ -569,7 +586,11 @@ impl Liquidator {
         )
         .await
         {
-            Ok(b) => b,
+            Ok(b) => {
+                gauge!("liquidator_asset_balance", "token_address" => borrow_token.to_string())
+                    .set(b as f64);
+                b
+            }
             Err(e) => {
                 warn!(?e, %borrow_token, "balance query failed");
 
@@ -654,7 +675,13 @@ impl Liquidator {
                 match helper::query_token_balance(&self.rpc, source_asset, &self.pkey, &self.pkey)
                     .await
                 {
-                    Ok(b) => b,
+                    Ok(b) => {
+                        gauge!("liquidator_asset_balance",
+                            "token_address" => source_asset.clone()
+                        )
+                        .set(b as f64);
+                        b
+                    }
                     Err(e) => {
                         warn!(?e, %source_asset, "balance query failed, skipping");
 
@@ -934,6 +961,78 @@ impl Liquidator {
         }
 
         best
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Metrics helpers
+// ---------------------------------------------------------------------------
+
+/// Emit position gauges for the liquidator's own obligation in a single market.
+///
+/// Called immediately after any event that updates either side of the picture:
+/// - from `refresh_market_data` when fresh exchange rates arrive, and
+/// - from `apply_obligation_snapshot` when the liquidator's own positions change.
+///
+/// Gauges emitted (all labelled with `market`, `pool_address`, `token_symbol`):
+///
+/// | Gauge | Meaning |
+/// |---|---|
+/// | `liquidator_position_j_tokens` | raw j-token share count |
+/// | `liquidator_position_plain_collateral` | plain (non-share) collateral units |
+/// | `liquidator_position_j_tokens_underlying` | j-tokens priced → underlying asset units |
+/// | `liquidator_position_d_tokens` | raw d-token share count |
+/// | `liquidator_position_d_tokens_underlying` | d-tokens priced → underlying debt units |
+fn emit_position_metrics(market: &str, obligation: &Obligation, market_data: &MarketData) {
+    for deposit in &obligation.deposits {
+        let Some(pool) = market_data
+            .pools_data
+            .iter()
+            .find(|p| p.pool_address == deposit.pool_address)
+        else {
+            warn!(
+                %market,
+                pool = %deposit.pool_address,
+                "emit_position_metrics: pool not found for deposit position"
+            );
+            continue;
+        };
+
+        let labels = [
+            ("market", market.to_string()),
+            ("pool_address", pool.pool_address.clone()),
+            ("token_symbol", pool.token_symbol.clone()),
+        ];
+
+        gauge!("liquidator_position_j_tokens", &labels).set(deposit.j_tokens as f64);
+        gauge!("liquidator_position_plain_collateral", &labels).set(deposit.collateral as f64);
+        gauge!("liquidator_position_j_tokens_underlying", &labels)
+            .set(pool.j_tokens_to_tokens_floor(deposit.j_tokens) as f64);
+    }
+
+    for borrow in &obligation.borrows {
+        let Some(pool) = market_data
+            .pools_data
+            .iter()
+            .find(|p| p.pool_address == borrow.pool_address)
+        else {
+            warn!(
+                %market,
+                pool = %borrow.pool_address,
+                "emit_position_metrics: pool not found for borrow position"
+            );
+            continue;
+        };
+
+        let labels = [
+            ("market", market.to_string()),
+            ("pool_address", pool.pool_address.clone()),
+            ("token_symbol", pool.token_symbol.clone()),
+        ];
+
+        gauge!("liquidator_position_d_tokens", &labels).set(borrow.d_tokens as f64);
+        gauge!("liquidator_position_d_tokens_underlying", &labels)
+            .set(pool.d_tokens_to_tokens_ceil(borrow.d_tokens) as f64);
     }
 }
 

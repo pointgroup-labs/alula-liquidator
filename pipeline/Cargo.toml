@@ -1,5 +1,5 @@
 [package]
-name = "artemis-alula"
+name = "pipeline"
 version.workspace = true
 edition.workspace = true
 
@@ -19,3 +19,4 @@ serde_json = { workspace = true }
 rusqlite = { workspace = true }
 url = { workspace = true }
 thiserror = { workspace = true }
+metrics = "0.24"

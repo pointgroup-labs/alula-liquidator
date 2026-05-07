@@ -10,7 +10,6 @@
 
 use {
     axum::{Router, extract::State, routing::get},
-    metrics::gauge,
     metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle},
     std::net::SocketAddr,
     tracing::info,

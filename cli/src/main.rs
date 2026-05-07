@@ -1,5 +1,7 @@
 use {
-    artemis_alula::{
+    clap::Parser,
+    ed25519_dalek::SigningKey,
+    pipeline::{
         collectors::{
             block_collector::BlockCollector,
             event_collector::{EventCollector, EventFilter},
@@ -15,8 +17,6 @@ use {
         },
         types::{Action, Event},
     },
-    clap::Parser,
-    ed25519_dalek::SigningKey,
     serde::Deserialize,
     std::{fs::File, net::SocketAddr, path::PathBuf, sync::Arc},
     stellar_rpc_client::EventType,
@@ -208,7 +208,7 @@ async fn main() -> anyhow::Result<()> {
 
 fn setup_tracing() {
     let filter = EnvFilter::new("warn")
-        .add_directive("artemis_alula=debug".parse().unwrap())
+        .add_directive("pipeline=debug".parse().unwrap())
         .add_directive("cli=info".parse().unwrap());
     tracing_subscriber::registry()
         .with(filter)
