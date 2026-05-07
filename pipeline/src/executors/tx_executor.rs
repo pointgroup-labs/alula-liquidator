@@ -131,8 +131,8 @@ async fn submit(
         let mut new_operations: Vec<Operation> = Vec::new();
 
         for (i, mut operation) in operations_vec.into_iter().enumerate() {
-            if let Some(result) = sim_response.results.get(i) {
-                if let OperationBody::InvokeHostFunction(invoke_op) = &mut operation.body {
+            if let Some(result) = sim_response.results.get(i)
+                && let OperationBody::InvokeHostFunction(invoke_op) = &mut operation.body {
                     // Extract auth entries from simulation result
                     if !result.auth.is_empty() {
                         let auth_entries: Result<VecM<SorobanAuthorizationEntry>, _> = result
@@ -151,7 +151,6 @@ async fn submit(
                         }
                     }
                 }
-            }
             new_operations.push(operation);
         }
 

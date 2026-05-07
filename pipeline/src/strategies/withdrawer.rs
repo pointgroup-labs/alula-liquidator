@@ -85,7 +85,7 @@ impl Withdrawer {
     }
 
     async fn handle_new_block(&mut self, block: NewBlock) -> Vec<Action> {
-        if block.number % REFRESH_INTERVAL_BLOCKS == 0 {
+        if block.number.is_multiple_of(REFRESH_INTERVAL_BLOCKS) {
             let markets: Vec<String> = self.config.markets.clone();
             let mut actions = vec![];
 
@@ -108,11 +108,10 @@ impl Withdrawer {
             Ok(OperationEvent::Deposit) | Ok(OperationEvent::Repay)
         ) {
             // Ignore events triggered by the liquidator itself to avoid complexity
-            if let Ok(key) = helper::parse_obligation_key_from_topic(&event, 2) {
-                if key.user == self.pkey {
+            if let Ok(key) = helper::parse_obligation_key_from_topic(&event, 2)
+                && key.user == self.pkey {
                     return vec![];
                 }
-            }
 
             info!(?event, "Detected liquidity increase event");
             self.refresh_market_data(&event.contract_id).await;
@@ -227,9 +226,9 @@ impl Withdrawer {
 
         let min_allowed_total_supply =
             (pool.total_borrowed * BPS_FACTOR) / utilization_considered_safe;
-        let max_withdrawal = pool.total_supply.saturating_sub(min_allowed_total_supply);
+        
 
-        max_withdrawal
+        pool.total_supply.saturating_sub(min_allowed_total_supply)
     }
 
     /// Calculate the USD value of a token amount in cents
@@ -240,7 +239,7 @@ impl Withdrawer {
         token_amount: i128,
     ) -> i128 {
         let price_with_decimals = pool.oracle_asset_price;
-        let oracle_decimals = market_data.oracle_price_decimals as u32;
+        let oracle_decimals = market_data.oracle_price_decimals;
         let token_decimals = pool.token_decimals;
 
         let value_raw = (token_amount * price_with_decimals)

@@ -21,6 +21,7 @@ pub struct EventFilter {
 
 /// Polls the Stellar RPC for contract events and emits them as a stream.
 pub struct EventCollector {
+    #[allow(dead_code)]
     db: Arc<DbManager>,
     filter: EventFilter,
     network_url: Url,

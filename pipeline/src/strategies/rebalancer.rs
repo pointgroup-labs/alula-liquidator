@@ -51,8 +51,8 @@ pub struct RebalancerConfig {
     ///   * predicted `amount_out` is conservative → `min_amount_out` is
     ///     looser than reality, so swaps don't revert from over-tight
     ///     slippage on lower-fee providers.
-    /// Both biases land in the safe direction; the cost is leaving a small
-    /// amount of capital efficiency on the table for sub-max-fee providers.
+    ///     Both biases land in the safe direction; the cost is leaving a small
+    ///     amount of capital efficiency on the table for sub-max-fee providers.
     pub max_fee_bps: i128,
     pub refresh_interval_blocks: u32,
     /// Skip swaps below this dollar-value threshold (in cents).
@@ -111,7 +111,7 @@ impl Rebalancer {
     }
 
     async fn handle_new_block(&mut self, block: NewBlock) -> Vec<Action> {
-        if block.number % self.config.refresh_interval_blocks != 0 {
+        if !block.number.is_multiple_of(self.config.refresh_interval_blocks) {
             return vec![];
         }
         if !self.rebalance_preconditions_met() {
@@ -123,12 +123,11 @@ impl Rebalancer {
     }
 
     async fn handle_soroban_event(&mut self, event: stellar_rpc_client::Event) -> Vec<Action> {
-        if let Ok(key) = helper::parse_obligation_key_from_topic(&event, 2) {
-            if key.user != self.pkey {
+        if let Ok(key) = helper::parse_obligation_key_from_topic(&event, 2)
+            && key.user != self.pkey {
                 // Ignore events triggered not by the liquidator
                 return vec![];
             }
-        }
 
         if !matches!(
             helper::decode_operation_event(&event),
@@ -488,13 +487,13 @@ impl Rebalancer {
 ///      reserve) from `(probe_lo, probe_hi, y_lo, y_hi)` and the
 ///      assumed worst-case fee `fee_bps`.
 ///   2. **Size the input** by the price-impact cap:
-///        `dx_max = p_bps * res_x * B / (gamma_bps * (B - p_bps))`
+///      `dx_max = p_bps * res_x * B / (gamma_bps * (B - p_bps))`
 ///      then take `min(dx_max, liquidator_balance)` so we never try to
 ///      spend more than we hold.
 ///   3. **Recover `res_y`** from the `y_hi` probe and the now-known
 ///      `res_x`, so we can evaluate the curve locally.
 ///   4. **Compute `amount_out`** from the standard CPMM formula
-///        `amount_out = res_y * gamma_bps * dx
+///      `amount_out = res_y * gamma_bps * dx
 ///                    / (res_x * B + gamma_bps * dx)`
 ///      using the capped `amount_in`.
 ///
@@ -512,6 +511,7 @@ impl Rebalancer {
 /// Every multiply is `checked_mul` to fail closed (return `None`) on
 /// overflow rather than panic; divisions are floor-rounded so any
 /// rounding error biases us *under* the safety caps, never over.
+#[allow(clippy::too_many_arguments)]
 fn compute_swap_amounts(
     provider: &str,
     probe_hi: i128,

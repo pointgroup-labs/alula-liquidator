@@ -63,6 +63,8 @@ impl BadDebtRequestInitiator {
     async fn handle_soroban_event(&self, event: SorobanEvent) -> Vec<Action> {
         let market = event.contract_id.clone();
 
+        // TODO: Generally, this has to account for cases when
+        // no-one has liquidated a position and it contains bad debt
         match helper::decode_operation_event(&event) {
             Ok(e) => {
                 if !matches!(e, OperationEvent::Liquidate) {
@@ -150,7 +152,7 @@ impl BadDebtRequestInitiator {
     /// 1. Obligation must have borrows (has debt)
     /// 2. Either:
     ///    a. No deposits exist at all (no collateral), OR
-    ///    b. ALL collateral positions have value < min_collateral_value_cents
+    ///    b. Every collateral position has value < min_collateral_value_cents
     async fn is_eligible_for_bad_debt_request_issuance(
         &self,
         market: &str,
@@ -194,7 +196,7 @@ impl BadDebtRequestInitiator {
             let pool = match market_data
                 .pools_data
                 .iter()
-                .find(|p| p.pool_address == deposit_pos.pool_address) // TODO: Optimize
+                .find(|p| p.pool_address == deposit_pos.pool_address) // TODO: Optimize, maybe
             {
                 Some(p) => p,
                 None => {
@@ -251,7 +253,7 @@ impl BadDebtRequestInitiator {
         market: &str,
         obl_key: &ObligationKey,
     ) -> Option<Action> {
-        const MAX_RETRIES: u32 = 3;
+        const MAX_RETRIES: u32 = 3; // let's have one such constant per file
 
         match helper::build_issue_cover_bad_debt_op(market, obl_key) {
             Ok(op) => Some(Action::SubmitTx(SubmitStellarTx {

@@ -11,7 +11,7 @@ use {
         },
     },
     ed25519_dalek::SigningKey,
-    metrics::gauge,
+    metrics::{counter, gauge},
     std::{collections::HashMap, sync::Arc},
     stellar_rpc_client::{Client, Event as SorobanEvent},
     stellar_xdr::curr::{AccountId, PublicKey, ScAddress, Uint256},
@@ -312,10 +312,10 @@ impl Liquidator {
                     .insert(key.clone(), obl.clone());
 
                 // Emit position metrics immediately when our own obligation changes.
-                if key.user == self.pkey {
-                    if let Some(md) = self.market_data.get(market) {
-                        emit_position_metrics(market, &obl, md);
-                    }
+                if key.user == self.pkey
+                    && let Some(md) = self.market_data.get(market)
+                {
+                    emit_position_metrics(market, &obl, md);
                 }
             }
             Ok(None) => {
@@ -393,7 +393,8 @@ impl Liquidator {
         };
 
         let mut actions = Vec::new();
-        let mut checked = 0;
+        let mut checked = 0u64;
+        let mut liquidatable_count = 0u64;
 
         for (obl_key, obligation) in obligations {
             if obl_key.user == self.pkey {
@@ -404,6 +405,7 @@ impl Liquidator {
             if !helper::compute_is_liquidatable(obligation, market_data) {
                 continue;
             }
+            liquidatable_count += 1;
             let is_insolvent = helper::compute_is_insolvent(obligation, market_data);
             debug!(?obl_key, ?obligation, is_insolvent, "locally liquidatable");
 
@@ -416,7 +418,11 @@ impl Liquidator {
             }
         }
 
-        info!(%market, checked, liquidatable = actions.len(), "market evaluation complete");
+        gauge!("liquidator_obligations_total", "market" => market.to_string()).set(checked as f64);
+        gauge!("liquidator_liquidatable_positions", "market" => market.to_string())
+            .set(liquidatable_count as f64);
+
+        info!(%market, checked, liquidatable = liquidatable_count, "market evaluation complete");
 
         actions
     }
@@ -468,7 +474,6 @@ impl Liquidator {
 
                 if let Some(plan) = self
                     .build_liquidation_plan(
-                        market,
                         market_data,
                         obligation,
                         borrower_obl_key,
@@ -494,7 +499,6 @@ impl Liquidator {
     #[allow(clippy::too_many_arguments)]
     async fn build_liquidation_plan(
         &self,
-        market: &str,
         market_data: &MarketData,
         obligation: &Obligation,
         borrower_key: &ObligationKey,
@@ -850,17 +854,13 @@ impl Liquidator {
         borrow_pool: &PoolData,
         collateral_pool: &PoolData,
         profit_margin_borrow_tokens: i128,
-        is_insolvent: bool,
+        _is_insolvent: bool,
     ) -> Option<i128> {
         if available_collateral <= 0 {
             return None;
         }
 
-        let liquidation_incentive_bps = if is_insolvent {
-            collateral_pool.max_liquidation_incentive_bps
-        } else {
-            collateral_pool.max_liquidation_incentive_bps
-        };
+        let liquidation_incentive_bps = collateral_pool.max_liquidation_incentive_bps;
 
         let incentive_multiplier = (10_000 + liquidation_incentive_bps) as f64 / 10_000.0;
 
@@ -948,7 +948,7 @@ impl Liquidator {
             .await
             {
                 Ok(out) if out > 0 => {
-                    let is_better = best.as_ref().map_or(true, |(_, prev)| out > *prev);
+                    let is_better = best.as_ref().is_none_or(|(_, prev)| out > *prev);
                     if is_better {
                         best = Some((provider.clone(), out));
                     }
@@ -1147,11 +1147,15 @@ impl Liquidator {
 
         // 2. Build operation and emit
         match helper::build_batch_op(market, liquidator_obl_key, &requests) {
-            Ok(op) => Some(Action::SubmitTx(SubmitStellarTx {
-                op,
-                signing_key: self.skey.clone(),
-                max_retries: 3,
-            })),
+            Ok(op) => {
+                counter!("liquidator_liquidations_total", "market" => market.to_string())
+                    .increment(1);
+                Some(Action::SubmitTx(SubmitStellarTx {
+                    op,
+                    signing_key: self.skey.clone(),
+                    max_retries: 3,
+                }))
+            }
             Err(e) => {
                 error!(?e, ?plan.borrower_key, "failed to build batch op");
                 None

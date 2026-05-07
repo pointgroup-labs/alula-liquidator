@@ -414,7 +414,7 @@ fn parse_borrow_positions(val: &ScVal) -> anyhow::Result<Vec<BorrowPosition>> {
     Ok(positions)
 }
 
-pub fn parse_obligation(val: &ScVal, key: &ObligationKey) -> anyhow::Result<Obligation> {
+pub fn parse_obligation(val: &ScVal, _key: &ObligationKey) -> anyhow::Result<Obligation> {
     let map = scval_as_map(val)?;
 
     let deposits = match map_get(map, "deposits") {
@@ -505,12 +505,12 @@ fn parse_market_data(val: &ScVal) -> anyhow::Result<MarketData> {
     let oracle_price_decimals = map_get_u32(map, "oracle_price_decimals")?;
     let global_state_map = map_get(map, "global_state")
         .ok_or_else(|| anyhow!("global_state missing"))
-        .and_then(|v| scval_as_map(v).map_err(|e| anyhow::Error::from(e)))?;
+        .and_then(|v| scval_as_map(v).map_err(anyhow::Error::from))?;
     let insolvency_ltv_bps = map_get_i128(global_state_map, "insolvency_ltv_bps")?;
     let min_collateral_value_cents = map_get_i128(global_state_map, "min_collateral_value_cents")?;
     let pools_data = map_get(map, "pools_data")
         .ok_or_else(|| anyhow!("pools_data missing"))
-        .and_then(|v| scval_as_vec(v).map_err(|e| anyhow::Error::from(e)))?
+        .and_then(|v| scval_as_vec(v).map_err(anyhow::Error::from))?
         .iter()
         .map(parse_pool_data)
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -787,7 +787,7 @@ pub fn compute_obligation_debt_value(
 /// Total obligation collateral value (unscaled, oracle units), summed across all
 /// deposit positions: `Σ (floor(j_tokens * j_rate_floor_bps / 10_000) + collateral)
 /// * price / 10^decimals`. Mirrors the contract's `compute_collateral_value` floor
-/// rounding.
+///   rounding.
 pub fn compute_obligation_collateral_value(
     obligation: &Obligation,
     market_data: &MarketData,
@@ -866,6 +866,7 @@ pub fn compute_profit_margin_in_borrow_token(
 /// Returns `0` if any required value is non-positive or arithmetic fails.
 /// Accounts for minimum collateral value rule - if remaining collateral value
 /// falls below min_collateral_value_cents, liquidator gets ALL remaining collateral for free.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_expected_seized_collateral(
     repay_amount: i128,
     borrow_pool: &PoolData,

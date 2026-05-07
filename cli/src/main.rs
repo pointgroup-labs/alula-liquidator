@@ -100,8 +100,6 @@ async fn main() -> anyhow::Result<()> {
 
     // -- Strategies --
 
-    // - BadDebtRequestInitiator -
-
     let bad_debt_request_initiator_config = BadDebtRequestInitiatorConfig {
         rpc_url: rpc_url.clone(),
         markets: markets.clone(),
@@ -109,9 +107,7 @@ async fn main() -> anyhow::Result<()> {
     let bad_debt_request_initiator =
         BadDebtRequestInitiator::try_create(bad_debt_request_initiator_config, &skey)?;
 
-    // - Liquidator -
-
-    let liqudidator_config = LiquidatorConfig {
+    let liquidator_config = LiquidatorConfig {
         xlm_safety_margin,
         min_profit_margin_cents,
         markets: markets.clone(),
@@ -121,9 +117,7 @@ async fn main() -> anyhow::Result<()> {
         swap_providers: swap_providers.clone(),
         assets_to_hold: assets_to_hold.clone(),
     };
-    let liquidator = Liquidator::try_create(liqudidator_config, &skey, &db_manager)?;
-
-    // - Withdrawer -
+    let liquidator = Liquidator::try_create(liquidator_config, &skey, &db_manager)?;
 
     let withdrawer_config = WithdrawerConfig {
         rpc_url: rpc_url.clone(),
@@ -131,12 +125,6 @@ async fn main() -> anyhow::Result<()> {
         min_withdraw_value_cents,
     };
     let withdrawer = Withdrawer::try_create(withdrawer_config, &skey)?;
-
-    //
-
-    // - ShareSeller -
-
-    // - PortfolioRebalancer -
 
     let rebalancer_config = RebalancerConfig {
         xlm_safety_margin,
@@ -154,13 +142,11 @@ async fn main() -> anyhow::Result<()> {
     let rebalancer = Rebalancer::try_create(rebalancer_config, &skey)?;
 
     engine.add_strategy(Box::new(bad_debt_request_initiator));
-    engine.add_strategy(Box::new(liquidator));
     engine.add_strategy(Box::new(withdrawer));
     engine.add_strategy(Box::new(rebalancer));
+    engine.add_strategy(Box::new(liquidator));
 
     // -- Collectors --
-
-    // - Event -
 
     let event_collector = EventCollector::new(
         &rpc_url,
@@ -172,8 +158,6 @@ async fn main() -> anyhow::Result<()> {
         &db_manager,
     );
     engine.add_collector(Box::new(event_collector));
-
-    // - Block -
 
     let block_collector = BlockCollector::new(&rpc_url);
     engine.add_collector(Box::new(block_collector));
