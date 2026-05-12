@@ -243,6 +243,11 @@ impl Liquidator {
 
         if let Err(e) = self.cursor_repo.set(&event.id, event.ledger) {
             warn!(?e, id = %event.id, "failed to save cursor");
+            counter!(
+                "keeper_cursor_save_failures_total",
+                "source" => "liquidator_event_cursor",
+            )
+            .increment(1);
         }
 
         vec![]
@@ -338,9 +343,21 @@ impl Liquidator {
 impl Liquidator {
     async fn evaluate_market(&self, market: &str) -> Vec<Action> {
         let Some(market_data) = self.market_data.get(market) else {
+            counter!(
+                "liquidator_scan_completed_total",
+                "market" => market.to_string(),
+                "outcome" => "no_market_data",
+            )
+            .increment(1);
             return vec![];
         };
         let Some(obligations) = self.obligations.get(market).filter(|m| !m.is_empty()) else {
+            counter!(
+                "liquidator_scan_completed_total",
+                "market" => market.to_string(),
+                "outcome" => "no_obligations",
+            )
+            .increment(1);
             return vec![];
         };
 
@@ -371,6 +388,20 @@ impl Liquidator {
         gauge!("liquidator_obligations_total", "market" => market.to_string()).set(checked as f64);
         gauge!("liquidator_liquidatable_positions", "market" => market.to_string())
             .set(liquidatable_count as f64);
+        counter!(
+            "liquidator_scan_completed_total",
+            "market" => market.to_string(),
+            "outcome" => "ok",
+        )
+        .increment(1);
+        // Liveness gauge. Pair with `time() - …` alerts to detect stalled scans.
+        if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            gauge!(
+                "liquidator_last_successful_scan_timestamp_seconds",
+                "market" => market.to_string(),
+            )
+            .set(now.as_secs() as f64);
+        }
         info!(%market, checked, liquidatable = liquidatable_count, "market evaluation complete");
         actions
     }
@@ -500,6 +531,8 @@ impl Liquidator {
                 min_collateral_threshold,
                 "position below minimum collateral threshold, skipping"
             );
+            counter!("liquidator_skip_total", "reason" => "below_collateral_threshold")
+                .increment(1);
             return None;
         }
 
@@ -539,6 +572,7 @@ impl Liquidator {
             }
             Err(e) => {
                 warn!(?e, %borrow_token, "balance query failed");
+                counter!("liquidator_skip_total", "reason" => "balance_query_failed").increment(1);
                 return None;
             }
         };
@@ -816,6 +850,7 @@ impl Liquidator {
         );
         if seized <= 0 {
             warn!(repay_amount, "expected seized collateral is zero");
+            counter!("liquidator_skip_total", "reason" => "unprofitable_seize_zero").increment(1);
             None
         } else {
             Some(seized)
@@ -929,10 +964,12 @@ impl Liquidator {
             Ok(true) => info!(?plan.borrower_key, "batch simulation OK"),
             Ok(false) => {
                 warn!(?plan.borrower_key, "batch simulation failed, dropping plan");
+                counter!("liquidator_skip_total", "reason" => "batch_sim_failed").increment(1);
                 return None;
             }
             Err(e) => {
                 warn!(?e, ?plan.borrower_key, "batch simulation error");
+                counter!("liquidator_skip_total", "reason" => "batch_sim_failed").increment(1);
                 return None;
             }
         }
@@ -962,6 +999,7 @@ impl Liquidator {
             Ok(b) => b,
             Err(e) => {
                 warn!(?e, %reserve_token, "balance query failed at reservation time");
+                counter!("liquidator_skip_total", "reason" => "balance_query_failed").increment(1);
                 return None;
             }
         };
@@ -979,6 +1017,11 @@ impl Liquidator {
                 %reserve_token,
                 "skipping liquidation: insufficient available balance after pending reservations"
             );
+            counter!(
+                "liquidator_skip_total",
+                "reason" => "insufficient_balance_after_reservations",
+            )
+            .increment(1);
             return None;
         }
 
@@ -1005,6 +1048,7 @@ impl Liquidator {
             }
             Err(e) => {
                 error!(?e, ?plan.borrower_key, "failed to build batch op");
+                counter!("liquidator_skip_total", "reason" => "op_build_failed").increment(1);
                 self.ledger.release(op_id);
                 None
             }
