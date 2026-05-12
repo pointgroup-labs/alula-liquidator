@@ -58,15 +58,25 @@ const EXPECTED_LIQUIDATION_FAILURE_NAMES: &[&str] = &[
 ];
 
 /// Numeric `#[contracterror]` codes from the Alula lending-market contract
-/// that classify as "expected liquidation failure" (borrower not eligible,
-/// inputs invalid, etc.).
+/// (`MCError`) that classify as "expected liquidation failure": the borrower
+/// isn't eligible, the inputs are stale, or the pool was removed between
+/// our state cache and the on-chain check.
 ///
-/// **Currently empty** — the contract source is external to this repo, and
-/// inventing numbers here would risk silently mis-classifying real failures
-/// as expected ones. Drop the values in once they're confirmed against the
-/// contract's `#[contracterror]` enum; no other code needs to change because
-/// [`is_expected_liquidation_failure`] already checks this list first.
-const KNOWN_LIQUIDATION_FAILURE_CODES: &[u32] = &[];
+/// Mirrors [`EXPECTED_LIQUIDATION_FAILURE_NAMES`]; both must be kept in sync
+/// when extended. Numeric codes are the source of truth — names are only
+/// there for the case where the contract is built with debug strings.
+///
+/// Keep this list strictly conservative. A code that doesn't belong here
+/// will be surfaced as a real failure (warning + retry), which is what we
+/// want for genuine bugs; a code that wrongly *does* belong here gets
+/// silently swallowed, which we want to avoid.
+const KNOWN_LIQUIDATION_FAILURE_CODES: &[u32] = &[
+    105, // BorrowPoolDoesNotExist
+    106, // CollateralPoolDoesNotExist
+    200, // ObligationDoesNotExist
+    600, // InvalidLiquidationInputs
+    601, // ObligationIsHealthy
+];
 
 impl SorobanRpcError {
     /// Classify any `Display`-able error.
@@ -127,13 +137,12 @@ fn extract_contract_code(s: &str) -> Option<u32> {
 ///
 /// Resolution order:
 /// 1. A typed `Error(Contract, #N)` whose `N` is in
-///    [`KNOWN_LIQUIDATION_FAILURE_CODES`] — strict, version-independent.
+///    [`KNOWN_LIQUIDATION_FAILURE_CODES`] — strict, version-independent,
+///    survives release builds that strip debug strings.
 /// 2. Otherwise the rendered error is matched against
-///    [`EXPECTED_LIQUIDATION_FAILURE_NAMES`] — only useful when the contract
-///    was built with debug strings.
-///
-/// Once the numeric list is populated, the string fallback becomes a safety
-/// net rather than the primary mechanism.
+///    [`EXPECTED_LIQUIDATION_FAILURE_NAMES`] — safety net for debug-built
+///    contracts and for diagnostics that surface the name without a `#N`
+///    marker.
 pub fn is_expected_liquidation_failure(err: &anyhow::Error) -> bool {
     if let SorobanRpcError::Contract { code } = SorobanRpcError::classify(err)
         && KNOWN_LIQUIDATION_FAILURE_CODES.contains(&code)
@@ -256,12 +265,27 @@ mod tests {
 
     #[test]
     fn expected_liquidation_failure_rejects_unrecognised_contract_code() {
-        // Pure numeric code with no debug name attached. While
-        // KNOWN_LIQUIDATION_FAILURE_CODES is empty this MUST classify as
-        // unexpected — otherwise the keeper would silently swallow real
-        // contract failures (oracle errors, accounting bugs, etc.).
-        let err = anyhow::anyhow!("HostError: Error(Contract, #42)");
+        // 99 is in the unused 12..99 range of MCError's "core errors" block,
+        // so it cannot collide with a real code today or after plausible
+        // future additions. A numeric-only error with this code MUST classify
+        // as unexpected — otherwise the keeper would silently swallow real
+        // contract failures.
+        let err = anyhow::anyhow!("HostError: Error(Contract, #99)");
         assert!(!is_expected_liquidation_failure(&err));
+    }
+
+    #[test]
+    fn expected_liquidation_failure_accepts_every_known_code() {
+        // Lock the numeric path: every code in KNOWN_LIQUIDATION_FAILURE_CODES
+        // must classify as expected, even with no debug name in the message
+        // (the release-build case the numeric path was added for).
+        for &code in KNOWN_LIQUIDATION_FAILURE_CODES {
+            let err = anyhow::anyhow!("HostError: Error(Contract, #{code})");
+            assert!(
+                is_expected_liquidation_failure(&err),
+                "code {code} should classify as expected"
+            );
+        }
     }
 
     #[test]
