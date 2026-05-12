@@ -43,7 +43,7 @@ sha2 = { workspace = true }
 # Storage
 rusqlite = { workspace = true }
 
-# HTTP + Prometheus exporter (keeper-only, not worth promoting to workspace)
+# HTTP + Prometheus exporter
 axum = "0.8"
-metrics = "0.24"
+metrics = { workspace = true }
 metrics-exporter-prometheus = { version = "0.18", default-features = false }

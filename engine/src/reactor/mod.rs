@@ -7,6 +7,7 @@ mod traits;
 pub use traits::{BoxFuture, Collector, CollectorStream, Executor, Strategy};
 
 use {
+    metrics::counter,
     tokio::{
         sync::broadcast::{self, Sender, error::RecvError},
         task::JoinSet,
@@ -97,6 +98,11 @@ where
                             // when actions are dropped — silent loss is the bug we
                             // explicitly do not want.
                             warn!(dropped = n, "executor lagged — actions were dropped");
+                            // Using the `metrics` facade: this is a no-op if no
+                            // recorder is installed (e.g. tests), and surfaces as
+                            // a Prometheus counter when the keeper installs its
+                            // exporter.
+                            counter!("engine_executor_lagged_actions_total").increment(n);
                         }
                         Err(RecvError::Closed) => {
                             info!("executor channel closed — exiting");
@@ -130,6 +136,7 @@ where
                         }
                         Err(RecvError::Lagged(n)) => {
                             warn!(dropped = n, "strategy lagged — events were dropped");
+                            counter!("engine_strategy_lagged_events_total").increment(n);
                         }
                         Err(RecvError::Closed) => {
                             info!("strategy event channel closed — exiting");

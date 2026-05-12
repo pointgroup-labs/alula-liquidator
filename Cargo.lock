@@ -28,6 +28,7 @@ name = "alula-engine"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "metrics",
  "proptest",
  "serde",
  "thiserror 2.0.18",
