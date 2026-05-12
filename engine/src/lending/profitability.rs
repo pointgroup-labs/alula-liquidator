@@ -9,7 +9,10 @@ use crate::lending::{
 ///
 /// `fee = ceil(amount * flash_loan_fee_bps / 10_000)`
 pub fn compute_flash_fee(amount: i128, flash_loan_fee_bps: i128) -> i128 {
-    (amount * flash_loan_fee_bps + 9_999) / 10_000
+    amount
+        .saturating_mul(flash_loan_fee_bps)
+        .saturating_add(BPS_DENOMINATOR - 1)
+        .saturating_div(BPS_DENOMINATOR)
 }
 
 /// Profit margin expressed in borrow-token units.
@@ -25,9 +28,13 @@ pub fn compute_profit_margin_in_borrow_token(
     if borrow_pool.oracle_asset_price <= 0 {
         return 0;
     }
-    let margin_value = min_profit_margin_cents * 10_i128.pow(oracle_price_decimals) / 100;
+    let margin_value = min_profit_margin_cents
+        .saturating_mul(10_i128.pow(oracle_price_decimals))
+        .saturating_div(100);
 
-    margin_value * 10_i128.pow(borrow_pool.token_decimals) / borrow_pool.oracle_asset_price
+    margin_value
+        .saturating_mul(10_i128.pow(borrow_pool.token_decimals))
+        .saturating_div(borrow_pool.oracle_asset_price)
 }
 
 /// Cap on `repay_amount` when using flash loans to bridge liquidity gaps.

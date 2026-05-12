@@ -2,7 +2,7 @@
 
 use {
     crate::lending::{
-        bps::{fixed_mul_ceil, fixed_mul_floor},
+        bps::{BPS_DENOMINATOR, LIQUIDATION_INTEREST_BUFFER_BPS, fixed_mul_ceil, fixed_mul_floor},
         market::MarketData,
         obligation::{DepositPosition, Obligation},
         pool::PoolData,
@@ -25,12 +25,18 @@ pub fn compute_max_repay_amount(
     d_token_rate_ceil_bps: i128,
     liquidation_close_factor_bps: i128,
 ) -> i128 {
-    let position_debt = d_tokens * d_token_rate_ceil_bps / 10_000;
-    let position_debt_plus_percents = (position_debt * 102) / 100; // TODO: Maybe add to consts
-    // NB: For now we take 102% to allow full liquidations that close the entire position
-    // including the most recently accrued interest rate
+    // Preserves the original floor semantics for d_token conversion; the field
+    // is named `_ceil_bps` so this is a known inconsistency with the
+    // gold-standard `compute_obligation_debt_value` (which uses ceil). Left
+    // unchanged here to keep Phase 1 a pure arithmetic-safety refactor.
+    let position_debt = fixed_mul_floor(d_tokens, d_token_rate_ceil_bps);
 
-    position_debt_plus_percents * liquidation_close_factor_bps / 10_000
+    // Inflate by LIQUIDATION_INTEREST_BUFFER_BPS (=10_200) so a full
+    // liquidation can also close the most recently accrued interest.
+    let position_debt_plus_percents =
+        fixed_mul_floor(position_debt, LIQUIDATION_INTEREST_BUFFER_BPS);
+
+    fixed_mul_floor(position_debt_plus_percents, liquidation_close_factor_bps)
 }
 
 /// Estimate the collateral received from a liquidation.
@@ -47,27 +53,33 @@ pub fn compute_received_collateral(
     }
 
     // Uncapped estimate from repay value + bonus
-    let repay_value =
-        repay_amount * borrow_pool.oracle_asset_price / 10_i128.pow(borrow_pool.token_decimals);
-    let repay_value_with_bonus =
-        repay_value * (10_000 + collateral_pool.max_liquidation_incentive_bps) / 10_000;
-    let uncapped = repay_value_with_bonus * 10_i128.pow(collateral_pool.token_decimals)
-        / collateral_pool.oracle_asset_price;
+    let repay_value = repay_amount
+        .saturating_mul(borrow_pool.oracle_asset_price)
+        .saturating_div(10_i128.pow(borrow_pool.token_decimals));
+    let repay_value_with_bonus = repay_value
+        .saturating_mul(BPS_DENOMINATOR.saturating_add(collateral_pool.max_liquidation_incentive_bps))
+        .saturating_div(BPS_DENOMINATOR);
+    let uncapped = repay_value_with_bonus
+        .saturating_mul(10_i128.pow(collateral_pool.token_decimals))
+        .saturating_div(collateral_pool.oracle_asset_price);
 
     // Cap 1: available tokens in the deposit position
     let real_supply = fixed_mul_floor(deposit.j_tokens, collateral_pool.j_token_rate_floor_bps);
-    let available_tokens = real_supply + deposit.collateral;
+    let available_tokens = real_supply.saturating_add(deposit.collateral);
 
     // Cap 2: reserve min_collateral_value_cents for the last liquidator
     let reserved_tokens = if min_collateral_value_cents > 0 {
-        let reserved_value = min_collateral_value_cents * 10_i128.pow(oracle_price_decimals) / 100;
-        reserved_value * 10_i128.pow(collateral_pool.token_decimals)
-            / collateral_pool.oracle_asset_price
+        let reserved_value = min_collateral_value_cents
+            .saturating_mul(10_i128.pow(oracle_price_decimals))
+            .saturating_div(100);
+        reserved_value
+            .saturating_mul(10_i128.pow(collateral_pool.token_decimals))
+            .saturating_div(collateral_pool.oracle_asset_price)
     } else {
         0
     };
 
-    let seizeable = (available_tokens - reserved_tokens).max(0);
+    let seizeable = available_tokens.saturating_sub(reserved_tokens).max(0);
 
     uncapped.min(seizeable)
 }
@@ -88,10 +100,12 @@ pub fn compute_is_liquidatable(obligation: &Obligation, md: &MarketData) -> bool
         };
         let real_debt = fixed_mul_ceil(bor.d_tokens, pool.d_token_rate_ceil_bps);
         let decimals_divisor = 10_i128.pow(pool.token_decimals);
-        let value =
-            (real_debt * pool.oracle_asset_price + (decimals_divisor - 1)) / decimals_divisor;
+        let value = real_debt
+            .saturating_mul(pool.oracle_asset_price)
+            .saturating_add(decimals_divisor - 1)
+            .saturating_div(decimals_divisor);
         let scaled = fixed_mul_ceil(value, pool.liability_factor_bps);
-        debt_value_scaled += scaled;
+        debt_value_scaled = debt_value_scaled.saturating_add(scaled);
     }
 
     let mut collateral_value_scaled: i128 = 0;
@@ -102,19 +116,23 @@ pub fn compute_is_liquidatable(obligation: &Obligation, md: &MarketData) -> bool
             None => continue,
         };
         if pool.close_ltv_bps > 0 {
-            borrow_backing_positions += 1;
+            borrow_backing_positions = borrow_backing_positions.saturating_add(1);
         }
         let real_supply = fixed_mul_floor(dep.j_tokens, pool.j_token_rate_floor_bps);
-        let total_tokens = real_supply + dep.collateral;
+        let total_tokens = real_supply.saturating_add(dep.collateral);
         let decimals_divisor = 10_i128.pow(pool.token_decimals);
-        let value = total_tokens * pool.oracle_asset_price / decimals_divisor;
+        let value = total_tokens
+            .saturating_mul(pool.oracle_asset_price)
+            .saturating_div(decimals_divisor);
         let scaled = fixed_mul_floor(value, pool.close_ltv_bps);
-        collateral_value_scaled += scaled;
+        collateral_value_scaled = collateral_value_scaled.saturating_add(scaled);
     }
 
-    let min_collateral_threshold =
-        md.min_collateral_value_cents * 10_i128.pow(md.oracle_price_decimals) / 100;
-    let buffer = min_collateral_threshold * borrow_backing_positions;
+    let min_collateral_threshold = md
+        .min_collateral_value_cents
+        .saturating_mul(10_i128.pow(md.oracle_price_decimals))
+        .saturating_div(100);
+    let buffer = min_collateral_threshold.saturating_mul(borrow_backing_positions);
 
     debt_value_scaled > collateral_value_scaled.saturating_sub(buffer)
 }
@@ -127,7 +145,7 @@ pub fn has_any_collateral(obligation: &Obligation, pools: &[PoolData]) -> bool {
             None => return false,
         };
         let real_supply = fixed_mul_floor(dep.j_tokens, pool.j_token_rate_floor_bps);
-        real_supply + dep.collateral > 0
+        real_supply.saturating_add(dep.collateral) > 0
     })
 }
 
@@ -217,30 +235,36 @@ pub fn compute_expected_seized_collateral(
     }
 
     let real_supply = fixed_mul_floor(deposit.j_tokens, collateral_pool.j_token_rate_floor_bps);
-    let position_collateral_sum = real_supply + deposit.collateral;
+    let position_collateral_sum = real_supply.saturating_add(deposit.collateral);
     if position_collateral_sum <= 0 {
         return 0;
     }
 
-    let liquidated_value =
-        repay_amount * borrow_pool.oracle_asset_price / 10_i128.pow(borrow_pool.token_decimals);
+    let liquidated_value = repay_amount
+        .saturating_mul(borrow_pool.oracle_asset_price)
+        .saturating_div(10_i128.pow(borrow_pool.token_decimals));
 
     let min_incentive_bps = borrow_pool
         .max_liquidation_incentive_bps
         .min(collateral_pool.max_liquidation_incentive_bps);
-    let collateral_amount_no_bonus = liquidated_value * 10_i128.pow(collateral_pool.token_decimals)
-        / collateral_pool.oracle_asset_price;
-    let with_incentive = collateral_amount_no_bonus * (10_000 + min_incentive_bps) / 10_000;
+    let collateral_amount_no_bonus = liquidated_value
+        .saturating_mul(10_i128.pow(collateral_pool.token_decimals))
+        .saturating_div(collateral_pool.oracle_asset_price);
+    let with_incentive = collateral_amount_no_bonus
+        .saturating_mul(BPS_DENOMINATOR.saturating_add(min_incentive_bps))
+        .saturating_div(BPS_DENOMINATOR);
 
     let ltv_cap = if !is_insolvent {
         if obligation_debt_value <= 0 || obligation_collateral_value <= 0 {
             return 0;
         }
-        let max_value_recv =
-            liquidated_value.saturating_mul(obligation_collateral_value) / obligation_debt_value;
-        let strict_max_value_recv = max_value_recv * 999 / 1000;
-        let ltv_collateral = strict_max_value_recv * 10_i128.pow(collateral_pool.token_decimals)
-            / collateral_pool.oracle_asset_price;
+        let max_value_recv = liquidated_value
+            .saturating_mul(obligation_collateral_value)
+            .saturating_div(obligation_debt_value);
+        let strict_max_value_recv = max_value_recv.saturating_mul(999).saturating_div(1000);
+        let ltv_collateral = strict_max_value_recv
+            .saturating_mul(10_i128.pow(collateral_pool.token_decimals))
+            .saturating_div(collateral_pool.oracle_asset_price);
         Some(ltv_collateral)
     } else {
         None
@@ -252,11 +276,13 @@ pub fn compute_expected_seized_collateral(
     }
 
     let collateral_left = position_collateral_sum.saturating_sub(seized);
-    let collateral_value_left = collateral_left * collateral_pool.oracle_asset_price
-        / 10_i128.pow(collateral_pool.token_decimals);
+    let collateral_value_left = collateral_left
+        .saturating_mul(collateral_pool.oracle_asset_price)
+        .saturating_div(10_i128.pow(collateral_pool.token_decimals));
 
-    let min_collateral_threshold =
-        min_collateral_value_cents * 10_i128.pow(oracle_price_decimals) / 100;
+    let min_collateral_threshold = min_collateral_value_cents
+        .saturating_mul(10_i128.pow(oracle_price_decimals))
+        .saturating_div(100);
 
     if collateral_value_left < min_collateral_threshold {
         seized = position_collateral_sum;
@@ -279,10 +305,12 @@ pub fn compute_is_insolvent(obligation: &Obligation, market_data: &MarketData) -
         };
         let real_debt = fixed_mul_ceil(bor.d_tokens, pool.d_token_rate_ceil_bps);
         let decimals_divisor = 10_i128.pow(pool.token_decimals);
-        let value =
-            (real_debt * pool.oracle_asset_price + (decimals_divisor - 1)) / decimals_divisor;
+        let value = real_debt
+            .saturating_mul(pool.oracle_asset_price)
+            .saturating_add(decimals_divisor - 1)
+            .saturating_div(decimals_divisor);
         let scaled = fixed_mul_ceil(value, pool.liability_factor_bps);
-        debt_value_scaled += scaled;
+        debt_value_scaled = debt_value_scaled.saturating_add(scaled);
     }
 
     let mut collateral_value_scaled: i128 = 0;
@@ -296,11 +324,13 @@ pub fn compute_is_insolvent(obligation: &Obligation, market_data: &MarketData) -
             None => continue,
         };
         let real_supply = fixed_mul_floor(dep.j_tokens, pool.j_token_rate_floor_bps);
-        let total_tokens = real_supply + dep.collateral;
+        let total_tokens = real_supply.saturating_add(dep.collateral);
         let decimals_divisor = 10_i128.pow(pool.token_decimals);
-        let value = total_tokens * pool.oracle_asset_price / decimals_divisor;
+        let value = total_tokens
+            .saturating_mul(pool.oracle_asset_price)
+            .saturating_div(decimals_divisor);
         let scaled = fixed_mul_floor(value, market_data.insolvency_ltv_bps);
-        collateral_value_scaled += scaled;
+        collateral_value_scaled = collateral_value_scaled.saturating_add(scaled);
     }
 
     debt_value_scaled > collateral_value_scaled
