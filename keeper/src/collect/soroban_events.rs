@@ -127,7 +127,7 @@ impl Collector<Event> for SorobanEventCollector {
                     match client
                         .get_events(
                             start,
-                            Some(EventType::Contract),
+                            Some(filter.event_type),
                             &filter.contract_ids,
                             &filter.topics,
                             None,
