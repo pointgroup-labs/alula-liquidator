@@ -984,8 +984,15 @@ impl Liquidator {
 
         match self.gateway.batch_op(market, liquidator_obl_key, &requests) {
             Ok(op) => {
-                counter!("liquidator_liquidations_total", "market" => market.to_string())
-                    .increment(1);
+                // Counts plans handed to the executor — NOT confirmed liquidations.
+                // The tx may still fail at simulate, bad_seq retry, or confirmation
+                // poll; those outcomes are tracked separately by the executor's
+                // own counters.
+                counter!(
+                    "liquidator_liquidation_plans_dispatched_total",
+                    "market" => market.to_string()
+                )
+                .increment(1);
                 Some(Action::SubmitTx(SubmitStellarTx {
                     op,
                     signing_key: self.skey.clone(),
