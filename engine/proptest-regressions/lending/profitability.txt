@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9e47bb4b6e836f8ee610cbda0458052fe3e217878ebddbc395c290441cf57780 # shrinks to max_feasible_repay = 523307100, available_collateral = 827589, profit_margin = 0, (i_lo, i_hi) = (0, 1)

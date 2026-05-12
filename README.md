@@ -1,4 +1,4 @@
-# Alula Keeper
+# Alula Liquidator
 
 An automated keeper bot for [Alula](https://alula.finance/) lending pools on Stellar/Soroban.
 
