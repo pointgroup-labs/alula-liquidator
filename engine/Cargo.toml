@@ -20,4 +20,4 @@ tracing = { workspace = true }
 metrics = { workspace = true }
 
 [dev-dependencies]
-proptest = "1.11"
+proptest = { workspace = true }

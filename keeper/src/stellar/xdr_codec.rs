@@ -449,3 +449,42 @@ pub fn scval_display(val: &ScVal) -> String {
         other => format!("{other:?}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Round-trip coverage for the `i128 <-> ScVal::I128` path. The encoder
+    //! relies on `(v >> 64) as i64` and `v as u64`, which is correct only if
+    //! the decoder mirrors the bit-shuffle exactly. Catching a regression here
+    //! is cheap; debugging a silently-truncated repay amount on chain is not.
+
+    use {super::*, proptest::prelude::*};
+
+    fn roundtrip(v: i128) -> i128 {
+        scval_to_i128(&i128_to_scval(v)).expect("ScVal::I128 always decodes")
+    }
+
+    #[test]
+    fn roundtrip_boundaries() {
+        for v in [
+            0_i128,
+            1,
+            -1,
+            i128::MAX,
+            i128::MIN,
+            i64::MAX as i128,
+            i64::MIN as i128,
+            (i64::MAX as i128) + 1,
+            (i64::MIN as i128) - 1,
+            u64::MAX as i128,
+        ] {
+            assert_eq!(roundtrip(v), v, "round-trip diverged at {v}");
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn roundtrip_any_i128(v in any::<i128>()) {
+            prop_assert_eq!(roundtrip(v), v);
+        }
+    }
+}
