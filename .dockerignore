@@ -1,0 +1,45 @@
+# Build-context exclusions. Anything not listed here ships to the Docker
+# daemon on every `docker build`, so keep the list aggressive.
+
+# Cargo build artefacts — by far the biggest source of context bloat.
+target
+**/target
+
+# Local Git state. Re-introduce via --build-arg if the binary ever needs it.
+.git
+.github
+
+# Editor / IDE droppings.
+.idea
+.vscode
+.claude
+
+# Local secrets and per-host config — these MUST stay out of the image.
+.env
+.env.*
+config.json
+
+# Docker plumbing itself.
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Deployment configs are mounted at runtime, not baked.
+deploy
+
+# Local SQLite databases and ad-hoc scratch.
+data*
+*.db
+tmp
+test-ledger
+
+# Stray JS / docs scaffolding (vestigial from earlier templates).
+node_modules
+**/node_modules
+dist
+**/dist
+docs
+
+# OS / log noise.
+.DS_Store
+*.log
