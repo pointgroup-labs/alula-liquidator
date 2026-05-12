@@ -13,9 +13,9 @@
 
 use {
     engine::ports::ChainReader,
+    parking_lot::Mutex,
     std::{
         collections::HashMap,
-        sync::Mutex,
         time::{Duration, Instant},
     },
 };
@@ -79,7 +79,7 @@ impl CapitalLedger {
         if amount <= 0 {
             return false;
         }
-        let mut g = self.inner.lock().expect("CapitalLedger mutex poisoned");
+        let mut g = self.inner.lock();
         self.expire_locked(&mut g);
         let committed: i128 = g
             .reservations
@@ -103,7 +103,7 @@ impl CapitalLedger {
     }
 
     pub fn release(&self, op_id: u64) {
-        let mut g = self.inner.lock().expect("CapitalLedger mutex poisoned");
+        let mut g = self.inner.lock();
         g.reservations.remove(&op_id);
     }
 
@@ -113,7 +113,7 @@ impl CapitalLedger {
         account: &str,
         balance: i128,
     ) -> i128 {
-        let mut g = self.inner.lock().expect("CapitalLedger mutex poisoned");
+        let mut g = self.inner.lock();
         self.expire_locked(&mut g);
         let committed: i128 = g
             .reservations
@@ -136,7 +136,7 @@ impl CapitalLedger {
             return Ok(b);
         }
         let value = chain.read_token_balance(token, account).await?;
-        let mut g = self.inner.lock().expect("CapitalLedger mutex poisoned");
+        let mut g = self.inner.lock();
         g.balances.insert(
             key,
             CachedBalance {
@@ -148,7 +148,7 @@ impl CapitalLedger {
     }
 
     fn fresh_cached(&self, key: &(String, String)) -> Option<i128> {
-        let g = self.inner.lock().expect("CapitalLedger mutex poisoned");
+        let g = self.inner.lock();
         g.balances
             .get(key)
             .filter(|c| c.fetched_at.elapsed() < self.balance_ttl)
@@ -234,7 +234,7 @@ mod tests {
         ) -> BoxFuture<'a, anyhow::Result<i128>> {
             Box::pin(async move {
                 self.calls.fetch_add(1, Ordering::SeqCst);
-                let mut g = self.balances.lock().unwrap();
+                let mut g = self.balances.lock();
                 Ok(if g.len() > 1 { g.remove(0) } else { g[0] })
             })
         }
