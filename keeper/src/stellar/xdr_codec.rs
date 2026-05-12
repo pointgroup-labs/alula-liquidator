@@ -255,8 +255,20 @@ fn parse_deposit_positions(val: &ScVal) -> anyhow::Result<Vec<DepositPosition>> 
         };
         let pos_map = scval_as_map(&entry.val)
             .with_context(|| format!("deposit position for pool {pool_address} is not a map"))?;
-        let j_tokens = map_get_i128(pos_map, "j_tokens").unwrap_or(0);
-        let collateral = map_get_i128(pos_map, "collateral").unwrap_or(0);
+        let j_tokens = match map_get_i128(pos_map, "j_tokens") {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(%pool_address, %e, "skipping deposit position: bad j_tokens");
+                continue;
+            }
+        };
+        let collateral = match map_get_i128(pos_map, "collateral") {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(%pool_address, %e, "skipping deposit position: bad collateral");
+                continue;
+            }
+        };
         positions.push(DepositPosition {
             j_tokens,
             collateral,
@@ -279,7 +291,13 @@ fn parse_borrow_positions(val: &ScVal) -> anyhow::Result<Vec<BorrowPosition>> {
         };
         let pos_map = scval_as_map(&entry.val)
             .with_context(|| format!("borrow position for pool {pool_address} is not a map"))?;
-        let d_tokens = map_get_i128(pos_map, "d_tokens").unwrap_or(0);
+        let d_tokens = match map_get_i128(pos_map, "d_tokens") {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(%pool_address, %e, "skipping borrow position: bad d_tokens");
+                continue;
+            }
+        };
         positions.push(BorrowPosition {
             d_tokens,
             pool_address,
