@@ -31,6 +31,7 @@ use {
     anyhow::Result,
     ed25519_dalek::{Signer, SigningKey},
     engine::reactor::{BoxFuture, Executor},
+    metrics::counter,
     sha2::{Digest, Sha256},
     std::{sync::Arc, time::Duration},
     stellar_rpc_client::{AuthMode, Client},
@@ -139,6 +140,11 @@ impl Executor<Action> for SorobanExecutor {
                             Err(e) => {
                                 warn!(%e, attempt, "failed to acquire sequence number");
                                 if attempt >= max {
+                                    counter!(
+                                        "keeper_tx_submitted_total",
+                                        "outcome" => "seq_acquire_failed",
+                                    )
+                                    .increment(1);
                                     if let Some(hook) = &on_settle {
                                         hook.release();
                                     }
@@ -162,6 +168,11 @@ impl Executor<Action> for SorobanExecutor {
                         {
                             Ok(hash_hex) => {
                                 info!(hash = %hash_hex, "tx submitted; polling in background");
+                                counter!(
+                                    "keeper_tx_submitted_total",
+                                    "outcome" => "ok",
+                                )
+                                .increment(1);
                                 spawn_confirmation_poll(rpc.clone(), hash_hex, on_settle);
                                 return Ok(());
                             }
@@ -169,6 +180,11 @@ impl Executor<Action> for SorobanExecutor {
                                 // Non-retryable: simulation itself produced no results.
                                 if is_no_simulation_results_error(&e) {
                                     warn!(%e, "simulation returned no results; giving up");
+                                    counter!(
+                                        "keeper_tx_submitted_total",
+                                        "outcome" => "sim_empty",
+                                    )
+                                    .increment(1);
                                     if let Some(hook) = &on_settle {
                                         hook.release();
                                     }
@@ -178,10 +194,16 @@ impl Executor<Action> for SorobanExecutor {
                                 // attempt will refetch from RPC.
                                 if is_bad_seq_error(&e) {
                                     warn!(%e, attempt, "tx_bad_seq; resyncing seq cursor");
+                                    counter!("keeper_tx_bad_seq_retries_total").increment(1);
                                     self.invalidate_seq().await;
                                 }
                                 if attempt >= max {
                                     error!(%e, attempt, "tx failed after all retries");
+                                    counter!(
+                                        "keeper_tx_submitted_total",
+                                        "outcome" => "retry_exhausted",
+                                    )
+                                    .increment(1);
                                     if let Some(hook) = &on_settle {
                                         hook.release();
                                     }
@@ -195,6 +217,11 @@ impl Executor<Action> for SorobanExecutor {
                     }
                     // Loop guard fall-through (max == 0 was clamped to 1, so unreachable
                     // in practice). Release defensively.
+                    counter!(
+                        "keeper_tx_submitted_total",
+                        "outcome" => "unreachable",
+                    )
+                    .increment(1);
                     if let Some(hook) = &on_settle {
                         hook.release();
                     }
@@ -217,6 +244,11 @@ fn spawn_confirmation_poll(rpc: Arc<Client>, hash_hex: String, on_settle: Option
             }
             _ => {
                 warn!(hash = %hash_hex, "could not decode hash for polling");
+                counter!(
+                    "keeper_tx_confirmed_total",
+                    "outcome" => "hash_decode_failed",
+                )
+                .increment(1);
                 if let Some(hook) = &on_settle {
                     hook.release();
                 }
@@ -224,8 +256,22 @@ fn spawn_confirmation_poll(rpc: Arc<Client>, hash_hex: String, on_settle: Option
             }
         };
         match rpc.get_transaction_polling(&hash_bytes, None).await {
-            Ok(_) => info!(hash = %hash_hex, "tx confirmed"),
-            Err(e) => warn!(hash = %hash_hex, %e, "tx confirmation poll failed"),
+            Ok(_) => {
+                info!(hash = %hash_hex, "tx confirmed");
+                counter!(
+                    "keeper_tx_confirmed_total",
+                    "outcome" => "confirmed",
+                )
+                .increment(1);
+            }
+            Err(e) => {
+                warn!(hash = %hash_hex, %e, "tx confirmation poll failed");
+                counter!(
+                    "keeper_tx_confirmed_total",
+                    "outcome" => "poll_failed",
+                )
+                .increment(1);
+            }
         }
         if let Some(hook) = &on_settle {
             hook.release();
