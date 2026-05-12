@@ -2,7 +2,7 @@
 //! cursor across restarts via [`crate::storage::CursorRepo`].
 
 use {
-    crate::storage::CursorRepo,
+    crate::{storage::CursorRepo, stellar::errors::is_terminal_cursor_error},
     super::Event,
     engine::reactor::{BoxFuture, Collector, CollectorStream},
     std::{sync::Arc, time::Duration},
@@ -76,17 +76,9 @@ impl SorobanEventCollector {
 }
 
 /// Heuristic: which RPC errors mean the saved cursor is permanently bad and
-/// must be replaced with a fresh head ledger?
-///
-/// The Soroban RPC error type does not give us a clean discriminator, so we
-/// pattern-match on the rendered message. This is fragile — see TODO below.
-fn is_terminal_cursor_error(err: &impl std::fmt::Display) -> bool {
-    let msg = err.to_string().to_lowercase();
-    msg.contains("cursor not found")
-        || msg.contains("invalid cursor")
-        || msg.contains("invalid argument")
-        || msg.contains("ledger") && msg.contains("too old")
-}
+/// must be replaced with a fresh head ledger? Routed through
+/// [`crate::stellar::errors`] so the substring patterns are unit-tested
+/// alongside the other classification helpers.
 
 impl Collector<Event> for SorobanEventCollector {
     fn get_event_stream(&mut self) -> BoxFuture<'_, anyhow::Result<CollectorStream<'_, Event>>> {
@@ -169,9 +161,6 @@ impl Collector<Event> for SorobanEventCollector {
                             }
                         }
                         Err(e) => {
-                            // TODO: distinguish transient from terminal errors more
-                            // precisely once stellar-rpc-client exposes a typed error
-                            // surface. For now we string-match.
                             let terminal = is_terminal_cursor_error(&e);
 
                             if terminal && !is_first_poll {

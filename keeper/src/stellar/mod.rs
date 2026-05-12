@@ -4,6 +4,7 @@
 //! `Arc<Gateway>` and rely on its trait impls (`ChainReader`, `OpBuilder`,
 //! `BatchSimulator`, `EventCodec`) — never on its inherent surface.
 
+pub mod errors;
 pub mod xdr_codec; // pub: simulation + event_decode share helpers
 
 mod client;

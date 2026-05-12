@@ -21,7 +21,13 @@
 
 use {
     super::Action,
-    crate::{stellar::Gateway, strategy::CapitalLedger},
+    crate::{
+        stellar::{
+            Gateway,
+            errors::{is_bad_seq_error, is_no_simulation_results_error},
+        },
+        strategy::CapitalLedger,
+    },
     anyhow::Result,
     ed25519_dalek::{Signer, SigningKey},
     engine::reactor::{BoxFuture, Executor},
@@ -113,15 +119,6 @@ impl SorobanExecutor {
     }
 }
 
-/// Best-effort detection of "sequence number out of sync" errors from the
-/// Stellar RPC. Substring-matches the error text because `stellar-rpc-client`
-/// erases structure into `anyhow`. Marked fragile — see follow-up Fix #4
-/// (typed Soroban error decoding).
-fn is_bad_seq_error(err: &anyhow::Error) -> bool {
-    let s = err.to_string().to_lowercase();
-    s.contains("tx_bad_seq") || s.contains("bad_seq") || s.contains("bad seq")
-}
-
 impl Executor<Action> for SorobanExecutor {
     fn execute(&self, action: Action) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
@@ -170,7 +167,7 @@ impl Executor<Action> for SorobanExecutor {
                             }
                             Err(e) => {
                                 // Non-retryable: simulation itself produced no results.
-                                if e.to_string().contains("simulation returned no results") {
+                                if is_no_simulation_results_error(&e) {
                                     warn!(%e, "simulation returned no results; giving up");
                                     if let Some(hook) = &on_settle {
                                         hook.release();

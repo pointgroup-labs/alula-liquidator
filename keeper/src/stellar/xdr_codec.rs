@@ -59,17 +59,6 @@ pub(super) fn account_strkey_to_muxed(strkey: &str) -> anyhow::Result<MuxedAccou
     ))
 }
 
-pub(super) fn is_expected_liquidation_failure(msg: &str) -> bool {
-    const EXPECTED_ERRORS: &[&str] = &[
-        "ObligationIsHealthy",
-        "ObligationDoesNotExist",
-        "InvalidLiquidationInputs",
-        "BorrowPoolDoesNotExist",
-        "CollateralPoolDoesNotExist",
-    ];
-    EXPECTED_ERRORS.iter().any(|e| msg.contains(e))
-}
-
 pub fn scval_type_name(val: &ScVal) -> &'static str {
     match val {
         ScVal::Bool(_) => "Bool",

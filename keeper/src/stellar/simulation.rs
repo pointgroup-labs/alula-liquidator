@@ -3,9 +3,10 @@
 use {
     super::{
         Gateway,
+        errors::is_expected_liquidation_failure,
         xdr_codec::{
             address_to_scval, build_address_vec_scval, build_requests_vec_scval,
-            i128_to_scval, is_expected_liquidation_failure, obligation_key_to_scval,
+            i128_to_scval, obligation_key_to_scval,
             parse_market_data, parse_obligation, parse_obligation_keys, scval_as_vec,
             scval_to_i128,
         },
@@ -176,8 +177,8 @@ impl ChainReader for Gateway {
             {
                 Ok(_) => Ok(true),
                 Err(e) => {
-                    let msg = format!("{e:#}");
-                    if is_expected_liquidation_failure(&msg) {
+                    if is_expected_liquidation_failure(&e) {
+                        let msg = format!("{e:#}");
                         warn!(
                             "liquidation sim: not liquidatable: borrower={} err={}",
                             borrower.user,
@@ -186,8 +187,8 @@ impl ChainReader for Gateway {
                         Ok(false)
                     } else {
                         warn!(
-                            "liquidation sim unexpected error: borrower={} err={}",
-                            borrower.user, msg,
+                            "liquidation sim unexpected error: borrower={} err={:#}",
+                            borrower.user, e,
                         );
                         Err(e)
                     }
