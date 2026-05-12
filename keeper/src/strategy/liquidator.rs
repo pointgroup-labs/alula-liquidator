@@ -487,11 +487,12 @@ impl Liquidator {
             + deposit_pos.collateral;
 
         let position_collateral_value = position_collateral_sum
-            * collateral_pool.oracle_asset_price
-            / 10_i128.pow(collateral_pool.token_decimals);
-        let min_collateral_threshold = market_data.min_collateral_value_cents
-            * 10_i128.pow(market_data.oracle_price_decimals)
-            / 100;
+            .saturating_mul(collateral_pool.oracle_asset_price)
+            .saturating_div(10_i128.pow(collateral_pool.token_decimals));
+        let min_collateral_threshold = market_data
+            .min_collateral_value_cents
+            .saturating_mul(10_i128.pow(market_data.oracle_price_decimals))
+            .saturating_div(100);
         if position_collateral_sum <= 0 || position_collateral_value < min_collateral_threshold {
             warn!(
                 position_collateral_sum,
@@ -726,14 +727,18 @@ impl Liquidator {
                 continue;
             };
 
-            let cost_oracle = needed_source * source_pool.oracle_asset_price
-                / 10_i128.pow(source_pool.token_decimals);
-            let gain_oracle = expected_seized * collateral_pool.oracle_asset_price
-                / 10_i128.pow(collateral_pool.token_decimals);
+            let cost_oracle = needed_source
+                .saturating_mul(source_pool.oracle_asset_price)
+                .saturating_div(10_i128.pow(source_pool.token_decimals));
+            let gain_oracle = expected_seized
+                .saturating_mul(collateral_pool.oracle_asset_price)
+                .saturating_div(10_i128.pow(collateral_pool.token_decimals));
 
-            let profit_margin_oracle = self.config.min_profit_margin_cents
-                * 10_i128.pow(market_data.oracle_price_decimals)
-                / 100;
+            let profit_margin_oracle = self
+                .config
+                .min_profit_margin_cents
+                .saturating_mul(10_i128.pow(market_data.oracle_price_decimals))
+                .saturating_div(100);
 
             let check = profitability::is_liquidation_profitable(
                 gain_oracle,
