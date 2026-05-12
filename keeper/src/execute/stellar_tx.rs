@@ -1,11 +1,19 @@
 //! Submits Soroban transactions.
 //!
 //! Layout:
-//! - `execute(action)` builds → simulates → signs → SENDS the tx, then
-//!   spawns a detached tokio task that polls for the receipt. The future
-//!   returns once the tx is *submitted*, never blocks on confirmation.
+//! - `execute(action)` acquires a sequence number from a local cursor,
+//!   builds → simulates → signs → SENDS the tx, then spawns a detached
+//!   tokio task that polls for the receipt. The future returns once the
+//!   tx is *submitted*, never blocks on confirmation.
 //! - The polling task logs success/failure but does not feed back into the
 //!   reactor (executors are fire-and-forget by `Executor` contract).
+//!
+//! Sequence number management:
+//! - The executor maintains an `Option<i64>` cursor. On each submission it
+//!   bumps the cursor locally; only initializes (and on `tx_bad_seq`-style
+//!   errors, re-initializes) from `rpc.get_account`. This prevents the
+//!   back-to-back submission race where the RPC view of `seq_num` lags an
+//!   in-flight tx, causing two new txs to share the same sequence.
 //!
 //! Retries between build/send attempts use a linear backoff
 //! (`250 * (attempt + 1) ms`). Simulation failures ("simulation returned no
@@ -27,6 +35,7 @@ use {
         TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction,
         TransactionV1Envelope, Uint256, VecM, WriteXdr as _,
     },
+    tokio::sync::Mutex as AsyncMutex,
     tracing::{error, info, warn},
 };
 
@@ -64,6 +73,10 @@ pub struct SubmitStellarTx {
 pub struct SorobanExecutor {
     network_passphrase: String,
     gateway: Arc<Gateway>,
+    /// Locally-tracked next-to-use sequence number. `None` means "fetch from
+    /// chain on the next submission". Reset to `None` whenever the RPC
+    /// reports a `tx_bad_seq`-style error so we resynchronize.
+    seq_cursor: AsyncMutex<Option<i64>>,
 }
 
 impl SorobanExecutor {
@@ -71,8 +84,42 @@ impl SorobanExecutor {
         Self {
             network_passphrase: network_passphrase.into(),
             gateway,
+            seq_cursor: AsyncMutex::new(None),
         }
     }
+
+    /// Return the sequence number to use for the next outgoing tx, bumping
+    /// the cursor by 1. Initializes from `get_account` if the cursor is
+    /// empty.
+    async fn acquire_seq(&self, rpc: &Client, source_address: &str) -> Result<i64> {
+        let mut guard = self.seq_cursor.lock().await;
+        if guard.is_none() {
+            // Hold the lock across the RPC call: concurrent callers will
+            // queue and observe the initialized cursor. The lock is small
+            // and only contended at startup / after a bad_seq reset.
+            let account = rpc.get_account(source_address).await?;
+            *guard = Some(account.seq_num.0);
+        }
+        let current = guard.expect("seq_cursor initialized above");
+        let next = current.saturating_add(1);
+        *guard = Some(next);
+        Ok(next)
+    }
+
+    /// Drop the cursor so the next call refetches from RPC. Use on
+    /// `tx_bad_seq` errors.
+    async fn invalidate_seq(&self) {
+        *self.seq_cursor.lock().await = None;
+    }
+}
+
+/// Best-effort detection of "sequence number out of sync" errors from the
+/// Stellar RPC. Substring-matches the error text because `stellar-rpc-client`
+/// erases structure into `anyhow`. Marked fragile — see follow-up Fix #4
+/// (typed Soroban error decoding).
+fn is_bad_seq_error(err: &anyhow::Error) -> bool {
+    let s = err.to_string().to_lowercase();
+    s.contains("tx_bad_seq") || s.contains("bad_seq") || s.contains("bad seq")
 }
 
 impl Executor<Action> for SorobanExecutor {
@@ -84,8 +131,38 @@ impl Executor<Action> for SorobanExecutor {
                     let max = tx.max_retries.max(1);
                     let on_settle = tx.on_settle.clone();
 
+                    let source_strkey = stellar_strkey::ed25519::PublicKey(
+                        tx.signing_key.verifying_key().to_bytes(),
+                    );
+                    let source_address = source_strkey.to_string();
+
                     for attempt in 1..=max {
-                        match build_and_send(&rpc, &self.network_passphrase, &tx).await {
+                        let seq_to_use = match self.acquire_seq(&rpc, &source_address).await {
+                            Ok(n) => n,
+                            Err(e) => {
+                                warn!(%e, attempt, "failed to acquire sequence number");
+                                if attempt >= max {
+                                    if let Some(hook) = &on_settle {
+                                        hook.release();
+                                    }
+                                    return Err(e);
+                                }
+                                let backoff =
+                                    Duration::from_millis(250 * (attempt as u64 + 1));
+                                tokio::time::sleep(backoff).await;
+                                continue;
+                            }
+                        };
+
+                        match build_and_send(
+                            &rpc,
+                            &self.network_passphrase,
+                            &tx,
+                            &source_strkey,
+                            seq_to_use,
+                        )
+                        .await
+                        {
                             Ok(hash_hex) => {
                                 info!(hash = %hash_hex, "tx submitted; polling in background");
                                 spawn_confirmation_poll(rpc.clone(), hash_hex, on_settle);
@@ -99,6 +176,12 @@ impl Executor<Action> for SorobanExecutor {
                                         hook.release();
                                     }
                                     return Ok(());
+                                }
+                                // bad_seq → resync local cursor; the next
+                                // attempt will refetch from RPC.
+                                if is_bad_seq_error(&e) {
+                                    warn!(%e, attempt, "tx_bad_seq; resyncing seq cursor");
+                                    self.invalidate_seq().await;
                                 }
                                 if attempt >= max {
                                     error!(%e, attempt, "tx failed after all retries");
@@ -157,18 +240,13 @@ async fn build_and_send(
     rpc: &Client,
     network_passphrase: &str,
     action: &SubmitStellarTx,
+    source_strkey: &stellar_strkey::ed25519::PublicKey,
+    seq_num_to_use: i64,
 ) -> Result<String> {
-    let source_strkey =
-        stellar_strkey::ed25519::PublicKey(action.signing_key.verifying_key().to_bytes());
-    let source_address = source_strkey.to_string();
-
-    let account = rpc.get_account(&source_address).await?;
-    let seq_num = account.seq_num.0;
-
     let tx = Transaction {
         source_account: MuxedAccount::Ed25519(Uint256(source_strkey.0)),
         fee: DEFAULT_SIMULATION_FEE,
-        seq_num: SequenceNumber(seq_num + 1),
+        seq_num: SequenceNumber(seq_num_to_use),
         cond: Preconditions::None,
         memo: Memo::None,
         operations: vec![action.op.clone()].try_into()?,
