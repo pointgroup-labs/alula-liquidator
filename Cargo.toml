@@ -55,9 +55,14 @@ panic = "abort"
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+# Trap on any raw-arithmetic overflow we haven't already wrapped in
+# `checked_*` / `saturating_*`. A panic-abort here is preferable to silent
+# wrapping in liquidation / profitability math.
+overflow-checks = true
 
 [profile.dev]
 panic = "abort"
+overflow-checks = true
 
 [profile.release-debug]
 inherits = "release"
