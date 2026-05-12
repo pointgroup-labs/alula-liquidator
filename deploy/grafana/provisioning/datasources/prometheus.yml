@@ -1,5 +1,6 @@
 apiVersion: 1
 
+# Pinned UID so dashboard JSON references survive volume rebuilds.
 datasources:
   - name: Prometheus
     type: prometheus

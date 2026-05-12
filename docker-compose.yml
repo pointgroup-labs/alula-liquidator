@@ -17,6 +17,7 @@ services:
       - --config
       - /etc/keeper/config.json
       - --skey
+      # `:?` aborts compose with a clear error if STELLAR_SKEY is unset.
       - ${STELLAR_SKEY:?STELLAR_SKEY must be set (see .env.example)}
     environment:
       RUST_LOG: ${RUST_LOG:-info,alula_keeper=info,alula_engine=info}
@@ -24,6 +25,7 @@ services:
       - ./config.json:/etc/keeper/config.json:ro
       - keeper-data:/var/lib/keeper
     networks: [obs]
+    # /healthz is served by the same axum app as /metrics on :9090.
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9090/healthz"]
       interval: 15s
@@ -44,6 +46,7 @@ services:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     ports:
+      # Bound to loopback only — prometheus UI is not for public exposure.
       - "127.0.0.1:9091:9090"
     networks: [obs]
     depends_on:
