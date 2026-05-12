@@ -1,0 +1,27 @@
+{
+    "rpc_url": "https://soroban-testnet.stellar.org",
+    "db_path": "/var/lib/keeper/data.db",
+    "markets": [
+        "CCWYUCUX7QHREMI6R74RAQGCIOXRTELECS2TKYMRD4MDPIYNFSSQUFUS"
+    ],
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "xlm_address": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+    "swap_providers": [
+        "CAAMNEXA7BOLMJKHDWNWLW6NQONLW3D6EXIKBBDJJEIDOGJYXRD7PJG4",
+        "CCBMBQGNR3NCR2FPN3AYQMJ65UMGQHCOJUB34RQCGIYMX77D5HUUSQDG"
+    ],
+    "assets_to_hold": [
+        "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
+    ],
+    "xlm_safety_margin": 200000000,
+    "min_profit_margin_cents": 50,
+    "min_withdraw_value_cents": 500,
+    "rebalancer_max_price_impact_bps": 100,
+    "rebalancer_slippage_bps": 30,
+    "rebalancer_interval_blocks": 2,
+    "rebalancer_min_swap_amount_value_cents": 100,
+    "rebalancer_max_fee_bps": 30,
+    "liquidator_gain_haircut_bps": 500,
+    "liquidator_inclusion_fee_oracle_units": 0,
+    "metrics_bind_addr": "0.0.0.0:9090"
+}

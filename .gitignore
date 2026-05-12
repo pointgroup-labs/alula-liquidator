@@ -39,11 +39,16 @@ target
 # dotenv environment variable files
 .env
 .env.*
+# Tracked: the committed template that operators copy to `.env`.
+!.env.example
 
 .claude
 CLAUDE.md
 
 tmp
-data*
+# Local SQLite DB lives at repo root (`data.db`, `data-*.db`, …).
+# Anchored to root so deploy/grafana/provisioning/datasources/ etc.
+# aren't swept up.
+/data*
 
 config.json

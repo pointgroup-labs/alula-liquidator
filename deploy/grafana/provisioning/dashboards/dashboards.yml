@@ -1,0 +1,16 @@
+# Auto-provisioned dashboard provider.
+# Picks up any *.json file under /var/lib/grafana/dashboards.
+
+apiVersion: 1
+
+providers:
+  - name: alula
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

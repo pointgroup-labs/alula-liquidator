@@ -1,0 +1,16 @@
+# Auto-provisioned Prometheus datasource for the alula stack.
+# `editable: false` means an operator using the UI can't accidentally
+# break the source — the file is the source of truth.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 10s

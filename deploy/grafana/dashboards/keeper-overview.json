@@ -1,0 +1,381 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Operational overview for the alula-liquidator keeper. Panels group by stage: scan loop, simulation, tx submission, tx confirmation, plus skip reasons and lag.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Time since last successful scan",
+      "description": "time() - liquidator_last_successful_scan_timestamp_seconds. Green if ≤30s, yellow ≤60s, red beyond. Per market.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 8, "x": 0, "y": 0},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - liquidator_last_successful_scan_timestamp_seconds",
+          "legendFormat": "{{market}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": null, "color": "green"},
+              {"value": 30, "color": "yellow"},
+              {"value": 60, "color": "red"}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Plans dispatched (1h)",
+      "description": "Rolling count of liquidation plans handed to the executor. Does NOT mean they confirmed — see the funnel panel.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 8, "x": 8, "y": 0},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(liquidator_liquidation_plans_dispatched_total[1h]))",
+          "legendFormat": "plans",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "blue"}]}},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "TXs confirmed (1h)",
+      "description": "Confirmation poll succeeded on the receipt. The bot is actually doing work iff this is non-zero.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 8, "x": 16, "y": 0},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(keeper_tx_confirmed_total{outcome=\"confirmed\"}[1h]))",
+          "legendFormat": "confirmed",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}]}},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Liquidation pipeline — plans → submitted → confirmed",
+      "description": "All three series should track each other in steady state. Divergence between plans and submitted = simulation rejections in the executor path. Divergence between submitted and confirmed = txs landed but did not finalize.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 5},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(liquidator_liquidation_plans_dispatched_total[5m]))",
+          "legendFormat": "plans dispatched"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(keeper_tx_submitted_total{outcome=\"ok\"}[5m]))",
+          "legendFormat": "tx submitted ok"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(keeper_tx_confirmed_total{outcome=\"confirmed\"}[5m]))",
+          "legendFormat": "tx confirmed"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["mean", "lastNotNull"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Skip reasons (per second)",
+      "description": "Why try_liquidate returned None. Fixed taxonomy of 6 reasons. A reason spiking 10× overnight is the early signal we want.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 14},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (rate(liquidator_skip_total[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "stacking": {"mode": "normal", "group": "A"},
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "lastNotNull"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Simulation outcomes",
+      "description": "sum by (call, outcome) (rate(keeper_simulation_total[5m])). A growing 'not_liquidatable' bucket means engine/contract drift; growing 'error' means RPC trouble.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 14},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (call, outcome) (rate(keeper_simulation_total[5m]))",
+          "legendFormat": "{{call}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "stacking": {"mode": "normal", "group": "A"},
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "lastNotNull"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "TX submission outcomes",
+      "description": "sum by (outcome) (rate(keeper_tx_submitted_total[5m])). 'retry_exhausted' or 'sim_empty' on a sustained basis is a red flag.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 23},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome) (rate(keeper_tx_submitted_total[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "stacking": {"mode": "normal", "group": "A"},
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "lastNotNull"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "TX confirmation outcomes",
+      "description": "sum by (outcome) (rate(keeper_tx_confirmed_total[5m])). 'poll_failed' or 'hash_decode_failed' indicates an RPC layer regression.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 23},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome) (rate(keeper_tx_confirmed_total[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "stacking": {"mode": "normal", "group": "A"},
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "lastNotNull"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Liquidatable positions (gauge)",
+      "description": "liquidator_liquidatable_positions per market. Sustained zero with non-zero liquidator_obligations_total is suspicious.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 32},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "liquidator_liquidatable_positions",
+          "legendFormat": "{{market}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Reactor lag + cursor-save failures",
+      "description": "Any non-zero rate here means the engine is dropping events under back-pressure or the keeper can't persist state. Both are operational red flags.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 32},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (collector) (rate(keeper_collector_lagged_events_total[5m]))",
+          "legendFormat": "collector lag: {{collector}}"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(engine_strategy_lagged_events_total[5m])",
+          "legendFormat": "strategy lag"
+        },
+        {
+          "refId": "C",
+          "expr": "rate(engine_executor_lagged_actions_total[5m])",
+          "legendFormat": "executor lag"
+        },
+        {
+          "refId": "D",
+          "expr": "sum by (source) (rate(keeper_cursor_save_failures_total[5m]))",
+          "legendFormat": "cursor save fail: {{source}}"
+        },
+        {
+          "refId": "E",
+          "expr": "rate(keeper_tx_bad_seq_retries_total[5m])",
+          "legendFormat": "bad_seq retries"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "lastNotNull"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["alula", "liquidator"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Alula Liquidator — Overview",
+  "uid": "alula-overview",
+  "version": 1,
+  "weekStart": ""
+}
