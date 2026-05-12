@@ -17,6 +17,7 @@ use {
         ports::{BatchSimulator, ChainReader},
         reactor::BoxFuture,
     },
+    metrics::counter,
     stellar_xdr::curr::ScVal,
     tracing::{debug, warn},
 };
@@ -175,7 +176,15 @@ impl ChainReader for Gateway {
                 .simulate_contract_call(market, "liquidate", &args)
                 .await
             {
-                Ok(_) => Ok(true),
+                Ok(_) => {
+                    counter!(
+                        "keeper_simulation_total",
+                        "call" => "liquidate",
+                        "outcome" => "ok",
+                    )
+                    .increment(1);
+                    Ok(true)
+                }
                 Err(e) => {
                     if is_expected_liquidation_failure(&e) {
                         let msg = format!("{e:#}");
@@ -184,12 +193,24 @@ impl ChainReader for Gateway {
                             borrower.user,
                             msg.chars().take(200).collect::<String>()
                         );
+                        counter!(
+                            "keeper_simulation_total",
+                            "call" => "liquidate",
+                            "outcome" => "not_liquidatable",
+                        )
+                        .increment(1);
                         Ok(false)
                     } else {
                         warn!(
                             "liquidation sim unexpected error: borrower={} err={:#}",
                             borrower.user, e,
                         );
+                        counter!(
+                            "keeper_simulation_total",
+                            "call" => "liquidate",
+                            "outcome" => "error",
+                        )
+                        .increment(1);
                         Err(e)
                     }
                 }
@@ -229,7 +250,15 @@ impl BatchSimulator for Gateway {
                 .simulate_contract_call(market, "submit_requests_batch", &args)
                 .await
             {
-                Ok(_) => Ok(true),
+                Ok(_) => {
+                    counter!(
+                        "keeper_simulation_total",
+                        "call" => "batch",
+                        "outcome" => "ok",
+                    )
+                    .increment(1);
+                    Ok(true)
+                }
                 Err(e) => {
                     let msg = format!("{e:#}");
                     warn!(
@@ -237,6 +266,16 @@ impl BatchSimulator for Gateway {
                         liquidator.user,
                         msg.chars().take(300).collect::<String>(),
                     );
+                    // Batch simulation collapses every failure mode (contract
+                    // precondition, RPC error, malformed args) into `Ok(false)`,
+                    // so the metric uses a single `failed` bucket. If the
+                    // taxonomy ever splits, mirror simulate_liquidate's enum.
+                    counter!(
+                        "keeper_simulation_total",
+                        "call" => "batch",
+                        "outcome" => "failed",
+                    )
+                    .increment(1);
                     Ok(false)
                 }
             }
