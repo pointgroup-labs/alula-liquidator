@@ -273,7 +273,7 @@ impl Liquidator {
                 if key.user == self.pkey
                     && let Some(md) = self.market_data.get(market)
                 {
-                    emit_position_metrics(market, &obl, md);
+                    emit_self_position_metrics(market, &obl, md);
                 }
             }
             Ok(None) => {
@@ -326,7 +326,7 @@ impl Liquidator {
                         self.obligations.get(&market).and_then(|m| m.get(&own_key)),
                         self.market_data.get(&market),
                     ) {
-                        emit_position_metrics(&market, obl, md);
+                        emit_self_position_metrics(&market, obl, md);
                     }
                 }
                 Err(e) => warn!(?e, %market, "refresh failed"),
@@ -1005,14 +1005,14 @@ impl Liquidator {
     }
 }
 
-fn emit_position_metrics(market: &str, obligation: &Obligation, market_data: &MarketData) {
+fn emit_self_position_metrics(market: &str, obligation: &Obligation, market_data: &MarketData) {
     for deposit in &obligation.deposits {
         let Some(pool) = market_data
             .pools_data
             .iter()
             .find(|p| p.pool_address == deposit.pool_address)
         else {
-            warn!(%market, pool = %deposit.pool_address, "emit_position_metrics: pool not found");
+            warn!(%market, pool = %deposit.pool_address, "emit_self_position_metrics: pool not found");
             continue;
         };
         let labels = [
@@ -1020,9 +1020,9 @@ fn emit_position_metrics(market: &str, obligation: &Obligation, market_data: &Ma
             ("pool_address", pool.pool_address.clone()),
             ("token_symbol", pool.token_symbol.clone()),
         ];
-        gauge!("liquidator_position_j_tokens", &labels).set(deposit.j_tokens as f64);
-        gauge!("liquidator_position_plain_collateral", &labels).set(deposit.collateral as f64);
-        gauge!("liquidator_position_j_tokens_underlying", &labels)
+        gauge!("liquidator_self_j_tokens", &labels).set(deposit.j_tokens as f64);
+        gauge!("liquidator_self_plain_collateral", &labels).set(deposit.collateral as f64);
+        gauge!("liquidator_self_j_tokens_underlying", &labels)
             .set(pool.j_to_underlying_floor(JToken(deposit.j_tokens)).raw() as f64);
     }
     for borrow in &obligation.borrows {
@@ -1031,7 +1031,7 @@ fn emit_position_metrics(market: &str, obligation: &Obligation, market_data: &Ma
             .iter()
             .find(|p| p.pool_address == borrow.pool_address)
         else {
-            warn!(%market, pool = %borrow.pool_address, "emit_position_metrics: pool not found");
+            warn!(%market, pool = %borrow.pool_address, "emit_self_position_metrics: pool not found");
             continue;
         };
         let labels = [
@@ -1039,8 +1039,8 @@ fn emit_position_metrics(market: &str, obligation: &Obligation, market_data: &Ma
             ("pool_address", pool.pool_address.clone()),
             ("token_symbol", pool.token_symbol.clone()),
         ];
-        gauge!("liquidator_position_d_tokens", &labels).set(borrow.d_tokens as f64);
-        gauge!("liquidator_position_d_tokens_underlying", &labels)
+        gauge!("liquidator_self_d_tokens", &labels).set(borrow.d_tokens as f64);
+        gauge!("liquidator_self_d_tokens_underlying", &labels)
             .set(pool.d_tokens_to_tokens_ceil(borrow.d_tokens) as f64);
     }
 }
