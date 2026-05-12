@@ -1,14 +1,9 @@
-# docker-compose for local dev / staging.
+# Local dev / staging stack: keeper + prometheus + grafana.
 #
 # Usage:
-#   1. cp .env.example .env             # then fill STELLAR_SKEY
-#   2. cp config.docker.example.json config.json  # then edit
-#   3. docker compose up -d --build
-#
-# Ports (bound to 127.0.0.1 by default — local-safe):
-#   * Grafana    → http://localhost:3000   (default admin / admin)
-#   * Prometheus → http://localhost:9091
-#   * Keeper     → internal only (scraped via prometheus on the obs network)
+#   cp .env.example .env             # then fill STELLAR_SKEY
+#   cp config.example.json config.json
+#   docker compose up -d --build
 
 services:
   keeper:
@@ -18,9 +13,6 @@ services:
     image: alula-keeper:local
     container_name: alula-keeper
     restart: unless-stopped
-    # Skey is interpolated from the .env file at compose time. The `:?` form
-    # makes compose abort with a clear error if STELLAR_SKEY is missing,
-    # rather than silently passing an empty string to the binary.
     command:
       - --config
       - /etc/keeper/config.json
@@ -56,13 +48,10 @@ services:
     networks: [obs]
     depends_on:
       keeper:
-        # `service_started` (not `service_healthy`) so prometheus comes up
-        # even when the keeper is degraded — scrape failures show up as
-        # `up == 0` in the dashboard, which is the signal we want.
         condition: service_started
 
   grafana:
-    image: grafana/grafana:11.3.0
+    image: grafana/grafana:13.0.1
     container_name: alula-grafana
     restart: unless-stopped
     environment:

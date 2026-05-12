@@ -1,6 +1,3 @@
-# Auto-provisioned dashboard provider.
-# Picks up any *.json file under /var/lib/grafana/dashboards.
-
 apiVersion: 1
 
 providers:

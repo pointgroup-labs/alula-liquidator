@@ -1,7 +1,3 @@
-# Auto-provisioned Prometheus datasource for the alula stack.
-# `editable: false` means an operator using the UI can't accidentally
-# break the source — the file is the source of truth.
-
 apiVersion: 1
 
 datasources:
