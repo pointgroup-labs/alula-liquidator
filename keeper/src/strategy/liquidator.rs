@@ -64,6 +64,9 @@ struct LiquidationPlan {
     borrow_pool_address: String,
     collateral_pool_address: String,
     expected_seized_collateral: i128,
+    /// Ranking key across (borrow, deposit) pairs. Computed in oracle units
+    /// so it's comparable across pools with different decimals/prices.
+    net_profit_oracle: i128,
 }
 
 pub struct Liquidator {
@@ -382,6 +385,10 @@ impl Liquidator {
     ) -> Option<Action> {
         let liquidator_obl_key = ObligationKey::new(self.pkey.clone());
 
+        // Score every (borrow, deposit) pair and keep the highest-profit plan.
+        // Picking the first viable pair (the old behaviour) could shadow a
+        // strictly better one later in the iteration order.
+        let mut best: Option<LiquidationPlan> = None;
         for borrow_pos in &obligation.borrows {
             let Some(borrow_pool) = market_data
                 .pools_data
@@ -411,7 +418,7 @@ impl Liquidator {
                     continue;
                 };
 
-                if let Some(plan) = self
+                let Some(plan) = self
                     .build_liquidation_plan(
                         market_data,
                         obligation,
@@ -423,14 +430,29 @@ impl Liquidator {
                         is_insolvent,
                     )
                     .await
+                else {
+                    continue;
+                };
+
+                if best
+                    .as_ref()
+                    .is_none_or(|b| plan.net_profit_oracle > b.net_profit_oracle)
                 {
-                    return self
-                        .execute_liquidation_plan(market, &liquidator_obl_key, plan)
-                        .await;
+                    best = Some(plan);
                 }
             }
         }
-        None
+
+        let plan = best?;
+        info!(
+            ?plan.borrower_key,
+            borrow_pool = %plan.borrow_pool_address,
+            collateral_pool = %plan.collateral_pool_address,
+            net = plan.net_profit_oracle,
+            "selected best (borrow, deposit) pair",
+        );
+        self.execute_liquidation_plan(market, &liquidator_obl_key, plan)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -539,11 +561,37 @@ impl Liquidator {
                 is_insolvent,
             )?;
 
+            // Same oracle-units accounting as the PreSwap branch, so the
+            // ranking key in `try_liquidate` is consistent across branches.
+            let cost_oracle = profitable_repay
+                .saturating_mul(borrow_pool.oracle_asset_price)
+                .saturating_div(10_i128.pow(borrow_pool.token_decimals));
+            let gain_oracle = expected_seized
+                .saturating_mul(collateral_pool.oracle_asset_price)
+                .saturating_div(10_i128.pow(collateral_pool.token_decimals));
+            let profit_margin_oracle = self.config.min_profit_margin_cents
+                .saturating_mul(10_i128.pow(market_data.oracle_price_decimals))
+                .saturating_div(100);
+            let check = profitability::is_liquidation_profitable(
+                gain_oracle,
+                cost_oracle,
+                profit_margin_oracle,
+                self.config.gain_haircut_bps,
+                self.config.inclusion_fee_oracle_units,
+            );
+            if !check.profitable {
+                debug!(
+                    net = check.net_oracle,
+                    "direct branch fails profitability gate",
+                );
+                return None;
+            }
+
             info!(
                 ?borrower_key,
                 borrow_pool = %borrow_pool.pool_address,
                 collateral_pool = %collateral_pool.pool_address,
-                profitable_repay, expected_seized,
+                profitable_repay, expected_seized, net = check.net_oracle,
                 "DIRECT liquidation plan"
             );
 
@@ -555,6 +603,7 @@ impl Liquidator {
                 borrow_pool_address: borrow_pool.pool_address.clone(),
                 collateral_pool_address: collateral_pool.pool_address.clone(),
                 expected_seized_collateral: expected_seized,
+                net_profit_oracle: check.net_oracle,
             });
         }
 
@@ -726,6 +775,7 @@ impl Liquidator {
                 borrow_pool_address: borrow_pool.pool_address.clone(),
                 collateral_pool_address: collateral_pool.pool_address.clone(),
                 expected_seized_collateral: expected_seized,
+                net_profit_oracle: check.net_oracle,
             });
         }
 

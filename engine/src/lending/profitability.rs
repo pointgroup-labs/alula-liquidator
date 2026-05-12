@@ -150,6 +150,9 @@ fn _floor_marker(a: i128, b: i128) -> i128 {
 pub struct ProfitabilityCheck {
     pub effective_gain_oracle: i128,
     pub required_oracle: i128,
+    /// Signed `effective_gain_oracle - required_oracle`. Negative when the
+    /// gate rejects; suitable as a ranking key across candidate pairs.
+    pub net_oracle: i128,
     pub profitable: bool,
 }
 
@@ -182,10 +185,13 @@ pub fn is_liquidation_profitable(
         .saturating_add(min_profit_margin_oracle)
         .saturating_add(inclusion_fee_oracle_units);
 
+    let net_oracle = effective_gain_oracle.saturating_sub(required_oracle);
+
     ProfitabilityCheck {
         effective_gain_oracle,
         required_oracle,
-        profitable: effective_gain_oracle >= required_oracle,
+        net_oracle,
+        profitable: net_oracle >= 0,
     }
 }
 
@@ -467,5 +473,23 @@ mod tests {
         let r = is_liquidation_profitable(1_000_000, 0, 0, 10_001, 0);
         assert_eq!(r.effective_gain_oracle, 0);
         assert!(!r.profitable || r.required_oracle == 0);
+    }
+
+    #[test]
+    fn profitable_net_oracle_is_signed_difference() {
+        // Positive net.
+        let r = is_liquidation_profitable(1_000_000, 800_000, 0, 0, 0);
+        assert_eq!(r.net_oracle, 200_000);
+        assert!(r.profitable);
+
+        // Zero net: boundary.
+        let r = is_liquidation_profitable(1_000_000, 1_000_000, 0, 0, 0);
+        assert_eq!(r.net_oracle, 0);
+        assert!(r.profitable);
+
+        // Negative net: rejected and ranks below positives.
+        let r = is_liquidation_profitable(1_000_000, 1_500_000, 0, 0, 0);
+        assert_eq!(r.net_oracle, -500_000);
+        assert!(!r.profitable);
     }
 }
