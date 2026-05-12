@@ -627,8 +627,11 @@ impl Liquidator {
                 continue;
             }
 
-            // ceil(profitable_repay * usable_balance / quoted_out)
-            let needed_source = (profitable_repay * usable_balance + quoted_out - 1) / quoted_out;
+            // ceil(profitable_repay * usable_balance / quoted_out), overflow-safe
+            let needed_source = profitable_repay
+                .saturating_mul(usable_balance)
+                .saturating_add(quoted_out - 1)
+                .saturating_div(quoted_out);
             if needed_source > usable_balance {
                 debug!(%source_asset, needed_source, usable_balance, "insufficient balance");
                 continue;
