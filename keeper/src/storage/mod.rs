@@ -4,19 +4,18 @@
 //! - [`obligations::ObligationsRepo`] — per-market `Obligation` cache.
 //! - [`cursor::CursorRepo`] — last seen Soroban event cursor.
 //!
-//! Both repos share a single `Mutex<Connection>` behind an `Arc`. The DTOs
-//! that map sqlite rows are private to each repo file — the engine's domain
-//! types stay free of `rusqlite` and `serde` plumbing concerns.
+//! Both repos share a single `parking_lot::Mutex<Connection>` behind an
+//! `Arc`. The DTOs that map sqlite rows are private to each repo file — the
+//! engine's domain types stay free of `rusqlite` and `serde` plumbing
+//! concerns.
 
 pub mod cursor;
 pub mod obligations;
 
 use {
+    parking_lot::Mutex,
     rusqlite::Connection,
-    std::{
-        path::Path,
-        sync::{Arc, Mutex},
-    },
+    std::{path::Path, sync::Arc},
 };
 
 pub use {cursor::CursorRepo, obligations::ObligationsRepo};

@@ -5,8 +5,9 @@
 //! left off and writes it after each successful page.
 
 use {
+    parking_lot::Mutex,
     rusqlite::{Connection, OptionalExtension, params},
-    std::sync::{Arc, Mutex},
+    std::sync::Arc,
 };
 
 /// Saved resume position for the Soroban event stream.
@@ -29,7 +30,7 @@ impl CursorRepo {
 
     /// Load the saved cursor, if any.
     pub fn get(&self) -> anyhow::Result<Option<EventCursor>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let row = conn
             .query_row(
                 "SELECT cursor_id, ledger FROM event_cursor WHERE id = 1",
@@ -47,7 +48,7 @@ impl CursorRepo {
 
     /// Upsert the single-row cursor.
     pub fn set(&self, cursor_id: &str, last_event_timestamp: u32) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT OR REPLACE INTO event_cursor (id, cursor_id, ledger) VALUES (1, ?1, ?2)",
             params![cursor_id, last_event_timestamp],

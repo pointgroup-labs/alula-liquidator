@@ -7,11 +7,9 @@
 
 use {
     engine::lending::{Obligation, ObligationKey},
+    parking_lot::Mutex,
     rusqlite::{Connection, params},
-    std::{
-        collections::HashMap,
-        sync::{Arc, Mutex},
-    },
+    std::{collections::HashMap, sync::Arc},
 };
 
 /// Private DTO mirroring a single sqlite row.
@@ -32,7 +30,7 @@ impl ObligationsRepo {
 
     /// Load every obligation persisted for `market`.
     pub fn load_all(&self, market: &str) -> anyhow::Result<HashMap<ObligationKey, Obligation>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT user_address, seed, data_json FROM obligations WHERE market = ?1",
         )?;
@@ -66,7 +64,7 @@ impl ObligationsRepo {
         key: &ObligationKey,
         obligation: &Obligation,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let data_json = serde_json::to_string(obligation)?;
         conn.execute(
             "INSERT OR REPLACE INTO obligations (market, user_address, seed, data_json)
@@ -78,7 +76,7 @@ impl ObligationsRepo {
 
     /// Delete an obligation (no-op if absent).
     pub fn delete(&self, market: &str, key: &ObligationKey) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "DELETE FROM obligations WHERE market = ?1 AND user_address = ?2 AND seed = ?3",
             params![market, &key.user, key.seed_as_str()],
