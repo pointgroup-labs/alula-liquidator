@@ -3,12 +3,11 @@
 
 use {
     crate::{storage::CursorRepo, stellar::errors::is_terminal_cursor_error},
-    super::Event,
+    super::{Event, lag_counted_stream},
     engine::reactor::{BoxFuture, Collector, CollectorStream},
     std::{sync::Arc, time::Duration},
     stellar_rpc_client::{Client, EventStart, EventType},
     tokio::sync::broadcast,
-    tokio_stream::{StreamExt, wrappers::BroadcastStream},
     tracing::{error, info, warn},
     url::Url,
 };
@@ -197,7 +196,7 @@ impl Collector<Event> for SorobanEventCollector {
                 }
             });
 
-            let stream = BroadcastStream::new(receiver).filter_map(|item| item.ok());
+            let stream = lag_counted_stream(receiver, "soroban_events");
             Ok(Box::pin(stream) as CollectorStream<'_, Event>)
         })
     }

@@ -1,13 +1,12 @@
 //! Polls the Stellar RPC for the latest ledger and emits `NewBlock` events.
 
 use {
-    super::Event,
+    super::{Event, lag_counted_stream},
     anyhow::Result,
     engine::reactor::{BoxFuture, Collector, CollectorStream},
     std::time::Duration,
     stellar_rpc_client::Client,
     tokio::sync::broadcast,
-    tokio_stream::{StreamExt, wrappers::BroadcastStream},
     tracing::{debug, error, warn},
     url::Url,
 };
@@ -71,7 +70,7 @@ impl Collector<Event> for BlockCollector {
                 }
             });
 
-            let stream = BroadcastStream::new(receiver).filter_map(|item| item.ok());
+            let stream = lag_counted_stream(receiver, "block");
             Ok(Box::pin(stream) as CollectorStream<'_, Event>)
         })
     }
