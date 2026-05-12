@@ -36,8 +36,19 @@ pub struct CliConfig {
     pub rebalancer_interval_blocks: u32,
     pub rebalancer_min_swap_amount_value_cents: i128,
     pub rebalancer_max_fee_bps: i128,
+    /// Haircut on `gain_oracle` (bps): out-leg slippage + oracle drift.
+    #[serde(default = "default_liquidator_gain_haircut_bps")]
+    pub liquidator_gain_haircut_bps: i128,
+    /// Absolute oracle-units allowance for the Stellar tx fee.
+    #[serde(default)]
+    pub liquidator_inclusion_fee_oracle_units: i128,
     /// Address the Prometheus `/metrics` endpoint binds to.
     pub metrics_bind_addr: SocketAddr,
+}
+
+// Preserves the legacy hardcoded 500 bps when the field is absent.
+fn default_liquidator_gain_haircut_bps() -> i128 {
+    500
 }
 
 impl CliConfig {

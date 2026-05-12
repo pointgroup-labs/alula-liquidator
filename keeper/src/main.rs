@@ -42,7 +42,9 @@ async fn main() -> anyhow::Result<()> {
         rpc_url, db_path, markets, xlm_address, xlm_safety_margin, network_passphrase,
         assets_to_hold, swap_providers, min_profit_margin_cents, min_withdraw_value_cents,
         rebalancer_max_price_impact_bps, rebalancer_slippage_bps, rebalancer_interval_blocks,
-        rebalancer_min_swap_amount_value_cents, rebalancer_max_fee_bps, metrics_bind_addr,
+        rebalancer_min_swap_amount_value_cents, rebalancer_max_fee_bps,
+        liquidator_gain_haircut_bps, liquidator_inclusion_fee_oracle_units,
+        metrics_bind_addr,
     } = CliConfig::load(&config)?;
 
     let skey = SigningKey::from_bytes(&PrivateKey::from_string(&skey)?.0);
@@ -106,7 +108,8 @@ async fn main() -> anyhow::Result<()> {
             swap_providers,
             xlm_address,
             xlm_safety_margin,
-            swap_fee_buffer_bps: Some(500),
+            gain_haircut_bps: liquidator_gain_haircut_bps,
+            inclusion_fee_oracle_units: liquidator_inclusion_fee_oracle_units,
         },
         store.obligations(),
         store.cursor(),

@@ -37,7 +37,10 @@ pub struct LiquidatorConfig {
     pub swap_providers: Vec<String>,
     pub xlm_address: String,
     pub xlm_safety_margin: i128,
-    pub swap_fee_buffer_bps: Option<i128>,
+    /// Haircut on `gain_oracle` (bps): out-leg slippage + oracle drift.
+    pub gain_haircut_bps: i128,
+    /// Absolute oracle-units allowance for the Stellar tx fee.
+    pub inclusion_fee_oracle_units: i128,
 }
 
 #[derive(Debug, Clone)]
@@ -679,17 +682,27 @@ impl Liquidator {
             let gain_oracle = expected_seized * collateral_pool.oracle_asset_price
                 / 10_i128.pow(collateral_pool.token_decimals);
 
-            let effective_gain = if let Some(buf) = self.config.swap_fee_buffer_bps {
-                gain_oracle * (10_000 - buf) / 10_000
-            } else {
-                gain_oracle
-            };
             let profit_margin_oracle = self.config.min_profit_margin_cents
                 * 10_i128.pow(market_data.oracle_price_decimals)
                 / 100;
 
-            if effective_gain < cost_oracle + profit_margin_oracle {
-                debug!(%source_asset, effective_gain, cost_oracle, profit_margin_oracle, "pre-swap not profitable");
+            let check = profitability::is_liquidation_profitable(
+                gain_oracle,
+                cost_oracle,
+                profit_margin_oracle,
+                self.config.gain_haircut_bps,
+                self.config.inclusion_fee_oracle_units,
+            );
+
+            if !check.profitable {
+                debug!(
+                    %source_asset,
+                    effective_gain = check.effective_gain_oracle,
+                    required = check.required_oracle,
+                    gain_haircut_bps = self.config.gain_haircut_bps,
+                    inclusion_fee_oracle_units = self.config.inclusion_fee_oracle_units,
+                    "pre-swap not profitable"
+                );
                 continue;
             }
 
