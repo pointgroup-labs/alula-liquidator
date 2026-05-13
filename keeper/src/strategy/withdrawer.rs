@@ -154,6 +154,19 @@ impl Withdrawer {
             }
 
             let liquidator_underlying = pool.j_to_underlying_floor(JToken(deposit_pos.j_tokens));
+            // A zero-balance deposit row would otherwise dribble into the
+            // `below_threshold` bucket below (any min_withdraw_value_cents
+            // > 0 dwarfs a 0-token position), misdirecting the operator
+            // toward tuning the threshold that wouldn't fix anything.
+            // Worse, the `withdrawal_amount == liquidator_underlying.raw()`
+            // branch immediately below would flip `withdrawal_amount` to
+            // i128::MAX on a 0-balance row, building a withdraw-everything
+            // op against a position that has nothing — surface this as its
+            // own outcome and skip.
+            if liquidator_underlying.raw() == 0 {
+                counter!("withdrawer_outcome_total", "outcome" => "empty_position").increment(1);
+                continue;
+            }
             let mut withdrawal_amount = liquidator_underlying.raw().min(max_withdrawal.raw());
             let withdrawal_value_cents =
                 self.calculate_withdrawal_value_cents(market_data, pool, withdrawal_amount);
