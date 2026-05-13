@@ -1,13 +1,6 @@
-//! SQLite-backed local state for the keeper.
-//!
-//! The store is split into two narrow repos:
-//! - [`obligations::ObligationsRepo`] — per-market `Obligation` cache.
-//! - [`cursor::CursorRepo`] — last seen Soroban event cursor.
-//!
-//! Both repos share a single `parking_lot::Mutex<Connection>` behind an
-//! `Arc`. The DTOs that map sqlite rows are private to each repo file — the
-//! engine's domain types stay free of `rusqlite` and `serde` plumbing
-//! concerns.
+//! SQLite-backed local state. Per-repo DTOs keep `rusqlite`/`serde` plumbing
+//! out of the engine's domain types; repos share one
+//! `Arc<parking_lot::Mutex<Connection>>`.
 
 pub mod cursor;
 pub mod obligations;

@@ -1,23 +1,9 @@
-//! Submits Soroban transactions.
+//! Submits Soroban transactions. Fire-and-forget: `execute` returns once the
+//! tx is sent; a detached task polls for the receipt.
 //!
-//! Layout:
-//! - `execute(action)` acquires a sequence number from a local cursor,
-//!   builds → simulates → signs → SENDS the tx, then spawns a detached
-//!   tokio task that polls for the receipt. The future returns once the
-//!   tx is *submitted*, never blocks on confirmation.
-//! - The polling task logs success/failure but does not feed back into the
-//!   reactor (executors are fire-and-forget by `Executor` contract).
-//!
-//! Sequence number management:
-//! - The executor maintains an `Option<i64>` cursor. On each submission it
-//!   bumps the cursor locally; only initializes (and on `tx_bad_seq`-style
-//!   errors, re-initializes) from `rpc.get_account`. This prevents the
-//!   back-to-back submission race where the RPC view of `seq_num` lags an
-//!   in-flight tx, causing two new txs to share the same sequence.
-//!
-//! Retries between build/send attempts use a linear backoff
-//! (`250 * (attempt + 1) ms`). Simulation failures ("simulation returned no
-//! results") short-circuit and are not retried.
+//! Sequence numbers are tracked in a local cursor and only refreshed from
+//! `get_account` on init or `tx_bad_seq` — back-to-back submissions otherwise
+//! race the RPC's lagging view of `seq_num`.
 
 use {
     super::Action,

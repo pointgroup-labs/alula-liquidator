@@ -1,25 +1,9 @@
 //! Structured view over the opaque errors returned by `stellar-rpc-client`.
 //!
-//! `stellar-rpc-client` v25 erases all RPC failures into `anyhow::Error`,
-//! preserving their structure only in the rendered `Display` string. The rest
-//! of the keeper used to deal with this by sprinkling `.contains("…")` checks
-//! over the formatted error at every call site. That pattern is fragile:
-//!
-//! * the message format is upstream-controlled and can shift between client
-//!   versions,
-//! * each site uses a slightly different set of substrings,
-//! * there is no test coverage for the matches.
-//!
-//! This module concentrates the parsing in one place. Call sites convert an
-//! `anyhow::Error` (or a raw message) to `SorobanRpcError` via
-//! [`SorobanRpcError::classify`] and then `match` on variants. The numeric
-//! contract-error code is exposed as a `u32` so we can eventually match
-//! against the contract's `#[contracterror]` enum directly, without going
-//! through human-readable variant names.
-//!
-//! The substring-match against debug variant names is still present, but it
-//! lives in a single named constant ([`EXPECTED_LIQUIDATION_FAILURE_NAMES`])
-//! and only as a fallback when no `#N` code is rendered.
+//! v25 erases RPC failures into `anyhow::Error` with structure only in the
+//! `Display` string. Centralizing the parsing here keeps `.contains("…")`
+//! checks (whose format is upstream-controlled and untested) out of call
+//! sites — they `classify()` once and `match` on variants instead.
 
 /// Classified RPC / simulation failure surface.
 #[derive(Debug, Clone, PartialEq, Eq)]

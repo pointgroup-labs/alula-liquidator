@@ -1,12 +1,6 @@
-//! Prometheus metrics endpoint.
-//!
-//! Two routes:
-//!   * `GET /metrics`  — Prometheus text exposition (scrape target).
-//!   * `GET /healthz`  — liveness probe, always returns "ok".
-//!
-//! The recorder is installed as the global `metrics` recorder so any code in
-//! the process can emit metrics via `metrics::{counter, gauge, histogram}`
-//! and they will show up here.
+//! Prometheus exposition (`/metrics`) and liveness (`/healthz`). The recorder
+//! installs globally so any crate can emit via `metrics::{counter, gauge,
+//! histogram}` without plumbing a handle through.
 
 use {
     axum::{Router, extract::State, routing::get},

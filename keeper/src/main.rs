@@ -1,6 +1,4 @@
-//! `keeper` — Stellar lending keeper bot. Composition root: wires the engine,
-//! Gateway adapter, SQLite store, four strategies, two collectors, and the
-//! Stellar tx executor; serves Prometheus metrics on the side.
+//! Liquidator bot for Alula lending pools on Stellar/Soroban.
 
 mod collect;
 mod config;
