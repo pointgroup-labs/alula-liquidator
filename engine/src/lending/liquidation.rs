@@ -19,8 +19,10 @@ pub enum LendingError {
     PoolNotFound { pool_address: String },
 }
 
-/// Upper bound on tokens repayable in one `liquidate` call. Applies the
-/// d-token → underlying ceil rate, inflates by `LIQUIDATION_INTEREST_BUFFER_BPS`
+/// Upper bound on tokens repayable in one `liquidate` call. Multiplies
+/// `d_tokens` by `d_token_rate_ceil_bps` using **floor** rounding (the field
+/// name reflects the rate's role in the protocol, not the rounding direction
+/// used here — see the inline note), inflates by `LIQUIDATION_INTEREST_BUFFER_BPS`
 /// so a "full" liquidation also clears recently accrued interest, then
 /// applies the close factor.
 pub fn compute_max_repay_amount(

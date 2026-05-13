@@ -13,9 +13,11 @@ use {
     url::Url,
 };
 
-/// Subscription filter forwarded to [`Client::get_events`]. `topics` is a
-/// list of per-position alternatives; an empty inner vec matches anything
-/// at that position.
+/// Subscription filter forwarded to [`Client::get_events`]. Each entry in
+/// `topics` is a positional `TopicFilter`; segments are exact XDR-encoded
+/// strings or `"*"` for a single-segment wildcard, and the filter's segment
+/// count must match the event topic length. An empty *outer* vec disables
+/// topic filtering entirely.
 #[derive(Debug, Clone)]
 pub struct EventFilter {
     pub topics: Vec<Vec<String>>,
