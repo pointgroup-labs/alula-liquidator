@@ -57,12 +57,13 @@ jobs:
           #   :edge             — moving pointer at default-branch tip
           #   :<branch>         — sanitized branch name (e.g. :main); lets
           #                       ops pin to a branch's latest without sha
-          #   :sha-<full-sha>   — immutable per-commit identifier
+          #   :sha-<short-sha>  — immutable per-commit identifier. Full SHA
+          #                       lives in the OCI image.revision label.
           #   :vX.Y.Z, :vX.Y    — semver tags from `v*` git tags
           tags: |
             type=raw,value=edge,enable={{is_default_branch}}
             type=ref,event=branch
-            type=sha,format=long
+            type=sha
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
