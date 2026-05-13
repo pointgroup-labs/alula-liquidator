@@ -9,6 +9,7 @@ volumes:
   prom-data:
   alertmanager-data:
   grafana-data:
+  traefik-acme:
 
 services:
   keeper:
@@ -76,6 +77,9 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_ROOT_URL: "https://stats.alula.finance/"
+      GF_SERVER_DOMAIN: "stats.alula.finance"
+      GF_SECURITY_COOKIE_SECURE: "true"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -83,9 +87,39 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     networks: [obs]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.grafana.rule=Host(`stats.alula.finance`)
+      - traefik.http.routers.grafana.entrypoints=websecure
+      - traefik.http.routers.grafana.tls.certresolver=le
+      - traefik.http.services.grafana.loadbalancer.server.port=3000
     depends_on:
       prometheus:
         condition: service_started
+
+  traefik:
+    image: traefik:v3.7.1
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=alula-liquidator_obs
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL:?ACME_EMAIL must be set in .env}
+      - --certificatesresolvers.le.acme.storage=/acme/acme.json
+      - --certificatesresolvers.le.acme.httpchallenge=true
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-acme:/acme
+    networks:
+      - obs
 
   watchtower:
     image: nickfedor/watchtower:latest
