@@ -59,7 +59,7 @@ The provisioned dashboard `Alula Liquidator` is organised into rows by what ques
 
 ## Troubleshooting
 
-**"Scrape up is 0."** Prometheus cannot reach `keeper:9000`. Confirm `metrics_bind_addr` in the config matches the address Prometheus targets (`keeper:9000` for the docker-compose stack — note the `keeper` here is the *service* name, not the `container_name`). If you bound to `127.0.0.1`, change it to `0.0.0.0`.
+**"Scrape up is 0."** Prometheus cannot reach `keeper:9000`. Confirm `metrics_bind_addr` in the config matches the address Prometheus targets (`keeper:9000` for the docker-compose stack — note the `keeper` here is the *service* name, not the `container_name`). If you bound to `127.0.0.1`, change it to `0.0.0.0`. A frequent footgun on upgraded deploys: a stale `config/keeper.json` from before the port unification still binds `:9090` — re-sync it from `config.example.json` if the panels stay empty after a clean restart.
 
 **"Time since last scan keeps growing."** The collector is stuck. Inspect `docker compose logs keeper` for repeated RPC errors. The most common cause is a stale event cursor in the SQLite db (`db_path`) after switching networks — delete the db file and restart; the keeper re-derives from head.
 

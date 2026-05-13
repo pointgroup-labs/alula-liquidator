@@ -2,8 +2,9 @@ global:
   resolve_timeout: 5m
 
 route:
-  # Default tree. Operators override the receiver via env-templated webhook
-  # URL — see the `webhook` receiver below.
+  # Default tree. Wire up a real integration in the `default` receiver
+  # below before relying on alert delivery — this config ships with a
+  # no-op receiver so the container starts cleanly.
   receiver: default
   group_by: ['alertname', 'severity']
   group_wait: 30s
@@ -31,10 +32,9 @@ inhibit_rules:
 
 receivers:
   - name: default
-    # Replace with your own integration. The webhook URL is read from the
-    # ALERTMANAGER_WEBHOOK_URL env var inside the alertmanager container so
-    # the URL never lands in the repo. Set it via deploy/keeper.env or a
-    # dedicated alertmanager.env file (see docker-compose.yml).
-    webhook_configs:
-      - url: '${ALERTMANAGER_WEBHOOK_URL}'
-        send_resolved: true
+    # No-op receiver: alerts fire and group correctly but go nowhere.
+    # Add a `webhook_configs:`, `slack_configs:`, or similar block here
+    # to deliver. Env-var expansion is not used because the v0.32.1
+    # alertmanager binary no longer supports --config.expand-env;
+    # render this file with `envsubst` at deploy time if you need
+    # secrets out of the repo.
