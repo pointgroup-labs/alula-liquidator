@@ -4,14 +4,14 @@
 
 An automated keeper bot for [Alula](https://alula.finance/) lending pools on Stellar/Soroban.
 
-The bot tracks on-chain events from Alula's money-market contracts and runs a set of cooperating strategies that keep the keeper's positions healthy and capture liquidation opportunities. Architecture is loosely inspired by [Artemis](https://github.com/paradigmxyz/artemis): collectors stream events into a shared engine, strategies turn events into intents, and a Soroban executor signs and submits the resulting transactions.
+The bot tracks on-chain events from Alula's money-market contracts and runs several strategies that keep the keeper's positions healthy and capture liquidation opportunities. The architecture is loosely inspired by [Artemis](https://github.com/paradigmxyz/artemis): collectors stream events into a shared engine, strategies turn events into actions, and a Soroban executor signs and submits transactions.
 
 The current strategies are:
 
-- `bad_debt_request_initiator` — flags under-collateralised obligations as bad debt so the insurance fund contract can process them.
-- `liquidator` — participates in liquidation auctions, optionally using flash borrows or pre-swaps for capital efficiency.
-- `rebalancer` — converts non-target assets in the keeper's wallet into the configured `assets_to_hold` via on-chain AMMs.
-- `withdrawer` — pulls the keeper's own liquidity back out of pools when utilisation allows.
+- `bad_debt_request_initiator` monitors liquidation events. If the borrower is left with residual debt and no viable collateral, it initiates bad-debt coverage through the insurance fund.
+- `liquidator` scans obligations for profitable liquidation opportunities and executes them, using pre-swaps when the keeper doesn't hold enough of the repayment asset.
+- `rebalancer` converts non-target assets in the keeper's wallet into the configured `assets_to_hold` via on-chain AMMs.
+- The `withdrawer` pulls the keeper's deposits back out of pools when utilisation allows.
 
 See [`docs/`](./docs) for the full configuration reference and operations guide.
 
@@ -35,7 +35,7 @@ Then:
 - Prometheus: <http://127.0.0.1:9090>
 - Keeper `/metrics`: scraped internally by Prometheus, not exposed on the host
 
-See [`docs/operations.md`](./docs/operations.md) for the dashboard tour, env-var contract, and troubleshooting.
+See [`docs/operations.md`](./docs/operations.md) for the dashboard tour, environment variables, and troubleshooting.
 
 ### From source
 
@@ -43,27 +43,27 @@ See [`docs/operations.md`](./docs/operations.md) for the dashboard tour, env-var
 cargo run --release -- --config config.json --skey "S..."
 ```
 
-The keeper binary expects a `--config` JSON path and a `--skey` Stellar secret key (`S...`, 56 chars). Everything else lives in the config file — see [`docs/configuration.md`](./docs/configuration.md).
+The keeper binary expects a `--config` JSON path and a `--skey` Stellar secret key (`S...`, 56 chars). Everything else lives in the config file; see [`docs/configuration.md`](./docs/configuration.md).
 
 ## How it works
 
-The bot runs a continuous loop with three stages:
+Collectors, strategies, and an executor run as concurrent tasks connected by broadcast channels:
 
-1. **Collection** — A block collector and an event collector subscribe to new ledgers and contract events via the Soroban RPC, keeping the local view of every monitored pool in sync.
-2. **Evaluation** — Each strategy maintains the slice of state it cares about (market data, the keeper's own obligation, oracle prices, wallet balances, …) and turns incoming events into candidate actions.
-3. **Execution** — A Soroban executor batches the resulting operations into a single transaction, signs it with the configured key, and submits it to the network.
+1. **Collectors** subscribe to new ledgers and contract events via the Soroban RPC, keeping the local view of every monitored pool current.
+2. **Strategies** each maintain the state they need (market data, obligations, oracle prices, wallet balances) and turn incoming events into candidate actions.
+3. **Executor** takes each action, wraps it in a transaction (composing multiple operations via `submit_requests_batch` when needed), signs it, and submits it to the network.
 
-The `engine` crate holds the deterministic, side-effect-free core (lending model + reactor loop + the trait surface that adapters plug into). The `keeper` crate is the I/O shell — RPC clients, SQLite store, signing, metrics — wired together in `main.rs`.
+The `engine` crate contains the lending model, the reactor loop, and the trait definitions that adapters implement. The `keeper` crate is the runtime layer: RPC clients, SQLite store, signing, metrics, wired together in `main.rs`.
 
-### Strategies in one paragraph each
+### Strategies in detail
 
-**`bad_debt_request_initiator`** — Listens for borrow/repay/liquidate events that change an obligation's health, and submits the protocol call that flags any newly under-collateralised obligation as bad debt. This unlocks the auction path the liquidator participates in. Stateless; no startup sync needed.
+**`bad_debt_request_initiator`** listens for `Liquidate` events and inspects the borrower's residual obligation. When the obligation has no viable collateral left but still carries debt, it submits `issue_cover_bad_debt` so the insurance fund can socialize the loss. Stateless; no startup sync needed.
 
-**`liquidator`** — The core opportunity-taker. Models obligations and oracle prices per market, estimates net profit after gas / swap costs / `min_profit_margin_cents`, and chooses one of three execution modes automatically based on on-hand liquidity: `Own` (enough repayment asset already on the balance), `FlashLoan` (borrow from the pool, repay in the same tx), or `PreSwap` (swap an idle asset into the repayment asset first, optionally topped up with a smaller flash borrow). Any non-target collateral received is routed through `swap_providers` in the same transaction; assets listed in `assets_to_hold` skip the swap.
+**`liquidator`** models obligations and oracle prices per market, estimates net profit after gas, swap costs, and `min_profit_margin_cents`, and picks the most profitable (borrow, deposit) pair to liquidate. It chooses between two execution modes based on the keeper's on-hand liquidity: `Direct` (the keeper already holds enough of the repayment asset) or `PreSwap` (swap a held asset into the repayment asset first, then liquidate). Non-target collateral received from liquidations is later swapped by the rebalancer; assets in `assets_to_hold` are kept.
 
-**`rebalancer`** — Runs every `rebalancer_interval_blocks` ledgers. Walks the wallet, picks the first non-target asset whose dollar value exceeds `rebalancer_min_swap_amount_value_cents`, and swaps it into the rebalancer target (the first entry of `assets_to_hold`). Trade size is capped so on-chain price impact stays under `rebalancer_max_price_impact_bps`; `rebalancer_slippage_bps` is layered on top as an external slippage buffer when constructing `min_amount_out`. Bounded retries on failure.
+**`rebalancer`** runs every `rebalancer_interval_blocks` ledgers. It walks the wallet and swaps each non-target asset whose dollar value exceeds `rebalancer_min_swap_amount_value_cents` into the rebalancer target (the first entry of `assets_to_hold`). Trade size is capped so on-chain price impact stays under `rebalancer_max_price_impact_bps`; `rebalancer_slippage_bps` is added on top when constructing `min_amount_out`. Retries up to 3 times on failure.
 
-**`withdrawer`** — Watches the keeper's own deposits and withdraws idle liquidity once it can do so without pushing the pool's utilisation past a built-in safety margin. Withdrawals worth less than `min_withdraw_value_cents` are skipped to avoid dust. Bounded retries on failure.
+The **`withdrawer`** watches the keeper's own deposits and pulls idle supply out of pools once it can do so without pushing utilisation past a built-in safety margin. Withdrawals below `min_withdraw_value_cents` are skipped.
 
 ## Development
 
@@ -80,8 +80,8 @@ PR titles must follow [Conventional Commits](https://www.conventionalcommits.org
 
 ## Acknowledgements
 
-- [Artemis](https://github.com/paradigmxyz/artemis) — MEV bot framework that inspired the architecture
-- [Alula](https://alula.finance/) — the underlying lending protocol
+- [Artemis](https://github.com/paradigmxyz/artemis), the MEV bot framework that inspired the architecture
+- [Alula](https://alula.finance/), the underlying lending protocol
 
 ## Disclaimer
 
