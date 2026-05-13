@@ -178,8 +178,9 @@ impl PoolData {
     /// `total_borrowed * BPS_FACTOR / 0`.
     pub fn compute_max_safe_withdrawal(&self, safety_margin_bps: i128) -> Underlying {
         let current_utilization_bps = self.utilization_ratio_bps();
-        let utilization_considered_safe =
-            self.utilization_ratio_limit_bps.saturating_sub(safety_margin_bps);
+        let utilization_considered_safe = self
+            .utilization_ratio_limit_bps
+            .saturating_sub(safety_margin_bps);
 
         if utilization_considered_safe <= 0 {
             return Underlying::ZERO;
@@ -193,7 +194,11 @@ impl PoolData {
             .saturating_mul(crate::lending::bps::BPS_DENOMINATOR)
             / utilization_considered_safe;
 
-        Underlying(self.total_supply.saturating_sub(min_allowed_total_supply).max(0))
+        Underlying(
+            self.total_supply
+                .saturating_sub(min_allowed_total_supply)
+                .max(0),
+        )
     }
 }
 

@@ -23,7 +23,9 @@ use {
 fn build_flash_borrow_request_scval(pool_address: &str, amount: i128) -> anyhow::Result<ScVal> {
     let entries = vec![
         ScMapEntry {
-            key: ScVal::Symbol(ScSymbol("amount".try_into().map_err(|_| anyhow!("symbol"))?)),
+            key: ScVal::Symbol(ScSymbol(
+                "amount".try_into().map_err(|_| anyhow!("symbol"))?,
+            )),
             val: i128_to_scval(amount),
         },
         ScMapEntry {
@@ -53,7 +55,9 @@ fn build_flash_borrow_request_scval(pool_address: &str, amount: i128) -> anyhow:
 fn build_withdraw_request_scval(pool_address: &str, amount: i128) -> anyhow::Result<ScVal> {
     let entries = vec![
         ScMapEntry {
-            key: ScVal::Symbol(ScSymbol("amount".try_into().map_err(|_| anyhow!("symbol"))?)),
+            key: ScVal::Symbol(ScSymbol(
+                "amount".try_into().map_err(|_| anyhow!("symbol"))?,
+            )),
             val: i128_to_scval(amount),
         },
         ScMapEntry {

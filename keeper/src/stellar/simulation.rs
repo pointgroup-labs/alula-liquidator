@@ -5,10 +5,9 @@ use {
         Gateway,
         errors::is_expected_liquidation_failure,
         xdr_codec::{
-            address_to_scval, build_address_vec_scval, build_requests_vec_scval,
-            i128_to_scval, obligation_key_to_scval,
-            parse_market_data, parse_obligation, parse_obligation_keys, scval_as_vec,
-            scval_to_i128,
+            address_to_scval, build_address_vec_scval, build_requests_vec_scval, i128_to_scval,
+            obligation_key_to_scval, parse_market_data, parse_obligation, parse_obligation_keys,
+            scval_as_vec, scval_to_i128,
         },
     },
     anyhow::Context,

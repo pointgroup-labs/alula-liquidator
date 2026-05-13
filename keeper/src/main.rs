@@ -39,11 +39,23 @@ async fn main() -> anyhow::Result<()> {
 
     let Args { config, skey } = Args::parse();
     let CliConfig {
-        rpc_url, db_path, markets, xlm_address, xlm_safety_margin, network_passphrase,
-        assets_to_hold, swap_providers, min_profit_margin_cents, min_withdraw_value_cents,
-        rebalancer_max_price_impact_bps, rebalancer_slippage_bps, rebalancer_interval_blocks,
-        rebalancer_min_swap_amount_value_cents, rebalancer_max_fee_bps,
-        liquidator_gain_haircut_bps, liquidator_inclusion_fee_oracle_units,
+        rpc_url,
+        db_path,
+        markets,
+        xlm_address,
+        xlm_safety_margin,
+        network_passphrase,
+        assets_to_hold,
+        swap_providers,
+        min_profit_margin_cents,
+        min_withdraw_value_cents,
+        rebalancer_max_price_impact_bps,
+        rebalancer_slippage_bps,
+        rebalancer_interval_blocks,
+        rebalancer_min_swap_amount_value_cents,
+        rebalancer_max_fee_bps,
+        liquidator_gain_haircut_bps,
+        liquidator_inclusion_fee_oracle_units,
         metrics_bind_addr,
     } = CliConfig::load(&config)?;
 
@@ -70,20 +82,36 @@ async fn main() -> anyhow::Result<()> {
 
     // --- Strategies ---------------------------------------------------------
     let bad_debt = BadDebtRequestInitiator::new(
-        chain.clone(), gateway.clone(), skey.clone(), pkey.clone(),
-        BadDebtRequestInitiatorConfig { markets: markets.clone() },
+        chain.clone(),
+        gateway.clone(),
+        skey.clone(),
+        pkey.clone(),
+        BadDebtRequestInitiatorConfig {
+            markets: markets.clone(),
+        },
     );
 
     let withdrawer = Withdrawer::new(
-        chain.clone(), gateway.clone(), skey.clone(), pkey.clone(),
-        WithdrawerConfig { markets: markets.clone(), min_withdraw_value_cents },
+        chain.clone(),
+        gateway.clone(),
+        skey.clone(),
+        pkey.clone(),
+        WithdrawerConfig {
+            markets: markets.clone(),
+            min_withdraw_value_cents,
+        },
     );
 
     // Rebalancer is single-market by design; fan out per-market if needed later.
-    let rebalancer_market = markets.first().cloned()
+    let rebalancer_market = markets
+        .first()
+        .cloned()
         .ok_or_else(|| anyhow::anyhow!("config.markets must not be empty"))?;
     let rebalancer = Rebalancer::new(
-        chain.clone(), gateway.clone(), skey.clone(), pkey.clone(),
+        chain.clone(),
+        gateway.clone(),
+        skey.clone(),
+        pkey.clone(),
         RebalancerConfig {
             market: rebalancer_market,
             xlm_address: xlm_address.clone(),
@@ -100,7 +128,10 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let liquidator = Liquidator::new(
-        chain.clone(), gateway.clone(), skey.clone(), pkey.clone(),
+        chain.clone(),
+        gateway.clone(),
+        skey.clone(),
+        pkey.clone(),
         LiquidatorConfig {
             markets: markets.clone(),
             min_profit_margin_cents,

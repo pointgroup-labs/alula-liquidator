@@ -5,7 +5,9 @@
 
 use {
     anyhow::{Context, anyhow},
-    engine::lending::{BorrowPosition, DepositPosition, MarketData, Obligation, ObligationKey, PoolData},
+    engine::lending::{
+        BorrowPosition, DepositPosition, MarketData, Obligation, ObligationKey, PoolData,
+    },
     stellar_xdr::curr::{
         AccountId, ContractId, Hash, Int128Parts, MuxedAccount, PublicKey, ScAddress, ScMap,
         ScMapEntry, ScSymbol, ScVal, ScVec, Uint256, VecM,

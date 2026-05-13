@@ -75,8 +75,7 @@ where
     /// returns a `JoinSet` so the caller can await shutdown.
     pub async fn run(self) -> anyhow::Result<JoinSet<()>> {
         let (event_sender, _): (Sender<E>, _) = broadcast::channel(self.event_channel_capacity);
-        let (action_sender, _): (Sender<A>, _) =
-            broadcast::channel(self.action_channel_capacity);
+        let (action_sender, _): (Sender<A>, _) = broadcast::channel(self.action_channel_capacity);
 
         let mut join_set = JoinSet::new();
 

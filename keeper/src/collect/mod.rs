@@ -45,8 +45,7 @@ where
     BroadcastStream::new(receiver).filter_map(move |item| match item {
         Ok(v) => Some(v),
         Err(BroadcastStreamRecvError::Lagged(n)) => {
-            counter!("keeper_collector_lagged_events_total", "collector" => collector)
-                .increment(n);
+            counter!("keeper_collector_lagged_events_total", "collector" => collector).increment(n);
             None
         }
     })

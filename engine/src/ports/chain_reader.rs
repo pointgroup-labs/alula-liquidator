@@ -12,10 +12,8 @@ use {
 };
 
 pub trait ChainReader: Send + Sync {
-    fn read_market_data<'a>(
-        &'a self,
-        market_address: &'a str,
-    ) -> BoxFuture<'a, Result<MarketData>>;
+    fn read_market_data<'a>(&'a self, market_address: &'a str)
+    -> BoxFuture<'a, Result<MarketData>>;
 
     fn read_user_obligation<'a>(
         &'a self,

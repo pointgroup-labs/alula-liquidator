@@ -57,7 +57,9 @@ pub fn compute_received_collateral(
         .saturating_mul(borrow_pool.oracle_asset_price)
         .saturating_div(10_i128.pow(borrow_pool.token_decimals));
     let repay_value_with_bonus = repay_value
-        .saturating_mul(BPS_DENOMINATOR.saturating_add(collateral_pool.max_liquidation_incentive_bps))
+        .saturating_mul(
+            BPS_DENOMINATOR.saturating_add(collateral_pool.max_liquidation_incentive_bps),
+        )
         .saturating_div(BPS_DENOMINATOR);
     let uncapped = repay_value_with_bonus
         .saturating_mul(10_i128.pow(collateral_pool.token_decimals))

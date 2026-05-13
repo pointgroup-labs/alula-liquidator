@@ -129,7 +129,10 @@ impl BadDebtRequestInitiator {
             .is_eligible_for_bad_debt_request_issuance(&market, &borrower_key, &borrower_obligation)
             .await
         {
-            info!(?borrower_key, "obligation eligible for bad debt request issuance");
+            info!(
+                ?borrower_key,
+                "obligation eligible for bad debt request issuance"
+            );
             if let Some(action) = self.build_issue_bad_debt(&market, &borrower_key) {
                 return vec![action];
             }
@@ -190,8 +193,11 @@ impl BadDebtRequestInitiator {
             // Bug fix #1: typed conversion (j-tokens -> underlying), not the
             // inverse the original called by accident.
             let underlying_from_j = pool.j_to_underlying_floor(JToken(deposit_pos.j_tokens));
-            let total_collateral =
-                Underlying(underlying_from_j.raw().saturating_add(deposit_pos.collateral));
+            let total_collateral = Underlying(
+                underlying_from_j
+                    .raw()
+                    .saturating_add(deposit_pos.collateral),
+            );
 
             let collateral_value = match total_collateral
                 .raw()
@@ -220,7 +226,10 @@ impl BadDebtRequestInitiator {
             }
         }
 
-        info!(?obl_key, "obligation eligible: all deposits below dust threshold");
+        info!(
+            ?obl_key,
+            "obligation eligible: all deposits below dust threshold"
+        );
         true
     }
 

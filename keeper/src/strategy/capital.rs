@@ -107,12 +107,7 @@ impl CapitalLedger {
         g.reservations.remove(&op_id);
     }
 
-    pub fn available_after_reservations(
-        &self,
-        token: &str,
-        account: &str,
-        balance: i128,
-    ) -> i128 {
+    pub fn available_after_reservations(&self, token: &str, account: &str, balance: i128) -> i128 {
         let mut g = self.inner.lock();
         self.expire_locked(&mut g);
         let committed: i128 = g
@@ -157,8 +152,7 @@ impl CapitalLedger {
 
     fn expire_locked(&self, g: &mut LedgerInner) {
         let ttl = self.reservation_ttl;
-        g.reservations
-            .retain(|_, r| r.created_at.elapsed() < ttl);
+        g.reservations.retain(|_, r| r.created_at.elapsed() < ttl);
     }
 }
 

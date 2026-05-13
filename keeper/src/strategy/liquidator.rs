@@ -581,9 +581,9 @@ impl Liquidator {
         } else {
             raw_borrow_balance
         };
-        let usable_after_reservations = self
-            .ledger
-            .available_after_reservations(borrow_token, &self.pkey, usable_borrow);
+        let usable_after_reservations =
+            self.ledger
+                .available_after_reservations(borrow_token, &self.pkey, usable_borrow);
 
         if usable_after_reservations >= profitable_repay {
             let expected_seized = self.compute_seized(
@@ -604,7 +604,9 @@ impl Liquidator {
             let gain_oracle = expected_seized
                 .saturating_mul(collateral_pool.oracle_asset_price)
                 .saturating_div(10_i128.pow(collateral_pool.token_decimals));
-            let profit_margin_oracle = self.config.min_profit_margin_cents
+            let profit_margin_oracle = self
+                .config
+                .min_profit_margin_cents
                 .saturating_mul(10_i128.pow(market_data.oracle_price_decimals))
                 .saturating_div(100);
             let check = profitability::is_liquidation_profitable(
@@ -694,9 +696,9 @@ impl Liquidator {
             } else {
                 raw_balance
             };
-            let usable_balance = self
-                .ledger
-                .available_after_reservations(source_asset, &self.pkey, usable_balance);
+            let usable_balance =
+                self.ledger
+                    .available_after_reservations(source_asset, &self.pkey, usable_balance);
             if usable_balance <= 0 {
                 continue;
             }

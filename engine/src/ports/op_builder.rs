@@ -7,10 +7,7 @@
 //! pass them around as opaque tokens.
 
 use {
-    crate::{
-        lending::ObligationKey,
-        reactor::BoxFuture,
-    },
+    crate::{lending::ObligationKey, reactor::BoxFuture},
     anyhow::Result,
 };
 

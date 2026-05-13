@@ -31,9 +31,8 @@ impl ObligationsRepo {
     /// Load every obligation persisted for `market`.
     pub fn load_all(&self, market: &str) -> anyhow::Result<HashMap<ObligationKey, Obligation>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT user_address, seed, data_json FROM obligations WHERE market = ?1",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT user_address, seed, data_json FROM obligations WHERE market = ?1")?;
 
         let rows = stmt.query_map(params![market], |row| {
             Ok(ObligationRow {

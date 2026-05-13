@@ -150,8 +150,7 @@ impl Executor<Action> for SorobanExecutor {
                                     }
                                     return Err(e);
                                 }
-                                let backoff =
-                                    Duration::from_millis(250 * (attempt as u64 + 1));
+                                let backoff = Duration::from_millis(250 * (attempt as u64 + 1));
                                 tokio::time::sleep(backoff).await;
                                 continue;
                             }

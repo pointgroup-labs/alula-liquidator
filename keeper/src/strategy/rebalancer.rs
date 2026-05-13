@@ -109,7 +109,10 @@ impl Strategy<Event, Action> for Rebalancer {
 
 impl Rebalancer {
     async fn handle_new_block(&mut self, block: NewBlock) -> Vec<Action> {
-        if !block.number.is_multiple_of(self.config.refresh_interval_blocks) {
+        if !block
+            .number
+            .is_multiple_of(self.config.refresh_interval_blocks)
+        {
             return vec![];
         }
         if !self.preconditions_met() {
@@ -138,7 +141,10 @@ impl Rebalancer {
             return vec![];
         }
 
-        info!(?event, "Detected liquidator possible balance increase event");
+        info!(
+            ?event,
+            "Detected liquidator possible balance increase event"
+        );
 
         if !self.preconditions_met() {
             return vec![];
@@ -292,12 +298,9 @@ impl Rebalancer {
 
         let min_amount_out =
             amount_out.saturating_mul(BPS_FACTOR - self.config.max_slippage_bps) / BPS_FACTOR;
-        let request = self.gateway.swap_exact_tokens_request(
-            &provider,
-            amount_in,
-            min_amount_out,
-            &path,
-        )?;
+        let request =
+            self.gateway
+                .swap_exact_tokens_request(&provider, amount_in, min_amount_out, &path)?;
 
         // Single-market by design (bug fix #5): use the configured market.
         let op = self

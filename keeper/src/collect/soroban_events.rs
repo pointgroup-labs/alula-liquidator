@@ -2,8 +2,8 @@
 //! cursor across restarts via [`crate::storage::CursorRepo`].
 
 use {
-    crate::{storage::CursorRepo, stellar::errors::is_terminal_cursor_error},
     super::{Event, lag_counted_stream},
+    crate::{stellar::errors::is_terminal_cursor_error, storage::CursorRepo},
     engine::reactor::{BoxFuture, Collector, CollectorStream},
     metrics::counter,
     std::{sync::Arc, time::Duration},

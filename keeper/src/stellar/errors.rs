@@ -120,7 +120,10 @@ impl SorobanRpcError {
 fn extract_contract_code(s: &str) -> Option<u32> {
     const MARKER: &str = "Error(Contract, #";
     let start = s.find(MARKER)? + MARKER.len();
-    let digits: String = s[start..].chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = s[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     digits.parse().ok()
 }
 
@@ -167,7 +170,10 @@ pub fn is_no_simulation_results_error(err: &anyhow::Error) -> bool {
 }
 
 pub fn is_terminal_cursor_error<E: std::fmt::Display>(err: &E) -> bool {
-    matches!(SorobanRpcError::classify(err), SorobanRpcError::TerminalCursor)
+    matches!(
+        SorobanRpcError::classify(err),
+        SorobanRpcError::TerminalCursor
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +207,12 @@ mod tests {
 
     #[test]
     fn classify_bad_seq_variants() {
-        for s in ["tx_bad_seq", "TX_BAD_SEQ detected", "bad_seq from RPC", "bad seq"] {
+        for s in [
+            "tx_bad_seq",
+            "TX_BAD_SEQ detected",
+            "bad_seq from RPC",
+            "bad seq",
+        ] {
             assert_eq!(
                 SorobanRpcError::classify_str(s),
                 SorobanRpcError::BadSequence,
@@ -212,9 +223,8 @@ mod tests {
 
     #[test]
     fn classify_no_simulation_results() {
-        let e = SorobanRpcError::classify_str(
-            "simulation returned no results for get_user_obligation",
-        );
+        let e =
+            SorobanRpcError::classify_str("simulation returned no results for get_user_obligation");
         assert_eq!(e, SorobanRpcError::NoSimulationResults);
     }
 
@@ -236,7 +246,10 @@ mod tests {
 
     #[test]
     fn classify_other() {
-        assert_eq!(SorobanRpcError::classify_str("nothing to see"), SorobanRpcError::Other);
+        assert_eq!(
+            SorobanRpcError::classify_str("nothing to see"),
+            SorobanRpcError::Other
+        );
         assert_eq!(SorobanRpcError::classify_str(""), SorobanRpcError::Other);
     }
 
@@ -293,9 +306,7 @@ mod tests {
         // Realistic shape from a debug-built contract: numeric code AND the
         // debug variant name in the same diagnostic. Until the numeric list
         // is populated, the name list carries the classification.
-        let err = anyhow::anyhow!(
-            "HostError: Error(Contract, #42) ObligationIsHealthy"
-        );
+        let err = anyhow::anyhow!("HostError: Error(Contract, #42) ObligationIsHealthy");
         assert!(is_expected_liquidation_failure(&err));
     }
 
