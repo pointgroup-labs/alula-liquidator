@@ -9,7 +9,7 @@ rust-version = "1.87"
 authors = ["Poitgroup Team"]
 repository = "https://github.com/pointgroup-labs/alula-liquidator"
 readme = "./README.md"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 publish = false
 
 [workspace.lints.rust]

@@ -89,9 +89,4 @@ This software is provided as-is with no guarantees. Running a keeper carries inh
 
 ## License
 
-Dual-licensed under either of:
-
-- [MIT License](./LICENSE-MIT) ([opensource.org](https://opensource.org/licenses/MIT))
-- [Apache License, Version 2.0](./LICENSE-APACHE) ([apache.org](http://www.apache.org/licenses/LICENSE-2.0))
-
-at your option. Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project shall be dual-licensed as above, without any additional terms or conditions.
+Licensed under the [MIT License](./LICENSE). Contributions are accepted under the same terms unless explicitly stated otherwise.
