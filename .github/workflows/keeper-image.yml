@@ -1,0 +1,101 @@
+name: keeper-image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'engine/**'
+      - 'keeper/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/keeper-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: keeper-image-${{ github.ref }}
+  # Cancel superseded runs on branches; never on tag refs — a tag push
+  # always corresponds to a release artefact we want to publish.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Hard ceiling so a stuck buildx layer can't burn the runner budget.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # amd64-only: production target is amd64 cloud, and emulating arm64
+      # under QEMU is painful for a Rust build (rustc + the rusqlite/bundled
+      # C compile both run under emulation, easily 3-4× slowdown).
+      # To re-enable arm64: add `docker/setup-qemu-action@v3` here, then
+      # set `platforms: linux/amd64,linux/arm64` on the build step. For
+      # speed, prefer a matrix against `ubuntu-24.04-arm` over emulation.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/alula-keeper
+          # Tag matrix:
+          #   :edge             — moving pointer at default-branch tip
+          #   :<branch>         — sanitized branch name (e.g. :main); lets
+          #                       ops pin to a branch's latest without sha
+          #   :sha-<full-sha>   — immutable per-commit identifier
+          #   :vX.Y.Z, :vX.Y    — semver tags from `v*` git tags
+          tags: |
+            type=raw,value=edge,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=sha,format=long
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      # ISO-8601 UTC, fed to the Dockerfile's BUILD_DATE ARG so the OCI
+      # `image.created` label reflects when the image was actually built.
+      - name: Compute build date
+        id: date
+        run: echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Build args drive the OCI image labels declared in the Dockerfile
+          # (revision, created). `docker inspect` on a published image will
+          # then point straight at the commit it was built from.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.date.outputs.build_date }}
+          # Registry cache lives in ghcr alongside the image: survives across
+          # branches, isn't capped at 10 GB like type=gha, and isn't evicted
+          # when other workflows pressure the cache. `mode=max` exports the
+          # intermediate layers (including the cargo-chef cook stage) too.
+          cache-from: |
+            type=registry,ref=ghcr.io/${{ github.repository_owner }}/alula-keeper:buildcache
+            type=gha
+          cache-to: |
+            type=registry,ref=ghcr.io/${{ github.repository_owner }}/alula-keeper:buildcache,mode=max
+            type=gha,mode=max
+          provenance: false
