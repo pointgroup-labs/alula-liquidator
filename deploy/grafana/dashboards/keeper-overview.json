@@ -38,7 +38,7 @@
     {
       "id": 13,
       "type": "stat",
-      "title": "Scrape up",
+      "title": "Keeper reachable",
       "description": "up{job=\"alula-keeper\"}. 1 = Prometheus is reaching /metrics; 0 = the keeper is unreachable. Distinguishes 'bot dead' from 'bot up but idle'.",
       "datasource": {
         "type": "prometheus",
