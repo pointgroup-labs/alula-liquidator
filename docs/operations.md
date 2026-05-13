@@ -1,0 +1,73 @@
+# Operations
+
+Running, observing, and debugging a deployed keeper.
+
+## Deployment with docker compose
+
+The included [`docker-compose.yml`](../docker-compose.yml) stands up three services on a private `obs` network:
+
+| Service | Purpose | Host port |
+|---|---|---|
+| `keeper` | The bot itself. Builds from [`Dockerfile`](../Dockerfile). | — (metrics scraped internally) |
+| `prometheus` | Scrapes the keeper's `/metrics` every 10 s. | `127.0.0.1:9090` |
+| `grafana` | Renders the provisioned dashboard. | `3000` |
+
+```bash
+cp .env.example .env          # fill STELLAR_SKEY
+cp config.example.json config.json
+docker compose up -d
+docker compose logs -f keeper
+```
+
+Grafana is reachable at <http://localhost:3000> (initial login `admin`/`admin`, change on first use). Prometheus is intentionally bound to `127.0.0.1` so it is not exposed to other hosts; tunnel to it if you need raw query access.
+
+### Environment
+
+[`.env.example`](../.env.example) documents the contract:
+
+| Var | Required? | Description |
+|---|---|---|
+| `STELLAR_SKEY` | yes | Stellar secret key (`S...`, 56 chars). Forwarded into the keeper container as `--skey`. |
+| `RUST_LOG` | no | `tracing-subscriber` directive. Defaults to `info,alula_keeper=info,alula_engine=info`. |
+| `GF_ADMIN_USER` / `GF_ADMIN_PASSWORD` | no | Grafana bootstrap credentials. |
+
+Both `GIT_SHA` and `BUILD_DATE` are recognised as optional build-args (used to populate the OCI image labels) and fall back to `dev` / `unknown` when unset.
+
+### Production image
+
+The published image is `ghcr.io/pointgroup-labs/alula-keeper`. Tag matrix:
+
+- `:edge` — moving pointer at the default-branch tip.
+- `:main` (or other sanitised branch name) — latest from that branch.
+- `:sha-<short>` — per-commit pointer. Not cryptographically immutable (BUILD_DATE varies); pin by `@sha256:` digest for that.
+- `:vX.Y.Z`, `:vX.Y` — semver tags from `v*` git tags.
+
+## Dashboard tour
+
+The provisioned dashboard `Alula Liquidator` is organised into rows by what question you'd ask it.
+
+**Is the bot alive?** Look at *Scrape up* and *Time since last scan*. Both should be green within 30 s of startup; both go red on a fresh deploy if you forgot to mount the config, used the wrong RPC URL, or the network is unreachable. (Fresh-deploy panels use `or on() vector(0)` so the absence of data shows as red rather than grey.)
+
+**Is the bot doing anything?** *Plans 1h* and *TXs confirmed 1h* are activity counters. *Scan completed by outcome* shows the per-scan verdict mix — a healthy testnet typically idles on `no_opportunity` with the occasional `liquidatable`.
+
+**Is the bot doing the right thing?** The *Funnel*, *Skip reasons*, *Simulation outcomes*, *TX submission*, and *TX confirmation* panels form a pipeline view. Each step's drop-off rate tells you where opportunities are being lost — for example, a sudden rise in `simulation: insufficient_capital` against rising opportunity counts is the rebalancer falling behind, not a bug.
+
+**Is the bot positioned correctly?** *Obligations vs liquidatable* shows the universe being modelled against the subset eligible to act on. The two series live on separate Y-axes because they differ by orders of magnitude.
+
+**Is the bot keeping up?** *Back-pressure* surfaces the event-channel watermark. Sustained non-zero values mean the strategy stage cannot consume events as fast as the collectors emit them; usually a slow database or RPC. *State persistence* is the SQLite write-rate signal — if this goes to zero while *Plans 1h* is non-zero, the keeper is taking actions it cannot durably remember, and a crash will replay them.
+
+## Troubleshooting
+
+**"Scrape up is 0."** Prometheus cannot reach `keeper:9090`. Confirm `metrics_bind_addr` in the config matches the address Prometheus targets (`keeper:9090` for the docker-compose stack — note the `keeper` here is the *service* name, not the `container_name`). If you bound to `127.0.0.1`, change it to `0.0.0.0`.
+
+**"Time since last scan keeps growing."** The collector is stuck. Inspect `docker compose logs keeper` for repeated RPC errors. The most common cause is a stale event cursor in the SQLite db (`db_path`) after switching networks — delete the db file and restart; the keeper re-derives from head.
+
+**"TX submission is non-zero, TX confirmation is zero."** The RPC accepts the transaction but the network does not confirm. Usually a fee/sequence issue. Bump `liquidator_inclusion_fee_oracle_units` for the inclusion-fee margin and check the keeper's XLM balance against `xlm_safety_margin`.
+
+**"Skip reason `dust` dominates everything."** The configured thresholds (`min_profit_margin_cents`, `rebalancer_min_swap_amount_value_cents`, `min_withdraw_value_cents`) are too high for the current pool sizes. Tune them down.
+
+**"`config.example.json` doesn't load."** The keeper enforces `deny_unknown_fields`. A typo in any key fails the entire load. The error message names the offending field — copy it verbatim or remove it.
+
+## Security advisories
+
+[`.cargo/audit.toml`](../.cargo/audit.toml) lists the rustsec advisories we accept temporarily, with per-entry rationale and an explicit re-evaluation trigger (every `stellar-rpc-client` or `soroban-sdk` bump). Re-run `cargo audit` after any dependabot PR merges to refresh the picture.
