@@ -23,5 +23,5 @@
     "rebalancer_max_fee_bps": 30,
     "liquidator_gain_haircut_bps": 500,
     "liquidator_inclusion_fee_oracle_units": 0,
-    "metrics_bind_addr": "0.0.0.0:9090"
+    "metrics_bind_addr": "0.0.0.0:9000"
 }

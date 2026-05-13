@@ -62,6 +62,6 @@ USER keeper
 WORKDIR /var/lib/keeper
 
 HEALTHCHECK --interval=15s --timeout=3s --start-period=15s --retries=4 \
-    CMD curl -fsS http://localhost:9090/healthz || exit 1
+    CMD curl -fsS http://localhost:9000/healthz || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/keeper"]

@@ -17,7 +17,7 @@ The schema lives in [`keeper/src/config.rs`](../keeper/src/config.rs). [`config.
 | Field | Type | Description |
 |---|---|---|
 | `db_path` | path | Local SQLite file. Holds event cursors and persisted obligation state — losing it forces a full re-sync on next start. Mount this onto a volume in production. |
-| `metrics_bind_addr` | `host:port` | Address the Prometheus `/metrics` endpoint binds to. Use `0.0.0.0:9090` inside docker compose so the `prometheus` container can scrape it; bind to `127.0.0.1` for local-only exposure. |
+| `metrics_bind_addr` | `host:port` | Address the Prometheus `/metrics` endpoint binds to. Use `0.0.0.0:9000` inside docker compose so the `prometheus` container can scrape it; bind to `127.0.0.1` for local-only exposure. |
 
 ## Markets
 

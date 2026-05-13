@@ -30,9 +30,9 @@ services:
       - ./config.json:/etc/keeper/config.json:ro
       - keeper-data:/var/lib/keeper
     networks: [obs]
-    # /healthz is served by the same axum app as /metrics on :9090.
+    # /healthz is served by the same axum app as /metrics on :9000.
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:9090/healthz"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/healthz"]
       interval: 15s
       timeout: 3s
       retries: 4
@@ -52,7 +52,7 @@ services:
       - prometheus-data:/prometheus
     ports:
       # Bound to loopback only — prometheus UI is not for public exposure.
-      - "127.0.0.1:9091:9090"
+      - "127.0.0.1:9090:9090"
     networks: [obs]
     depends_on:
       keeper:
