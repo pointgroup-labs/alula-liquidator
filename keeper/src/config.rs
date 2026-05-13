@@ -34,6 +34,11 @@ pub struct CliConfig {
     pub swap_providers: Vec<String>,
     pub min_profit_margin_cents: i128,
     pub min_withdraw_value_cents: i128,
+    /// Headroom (bps) below pool utilization cap that the withdrawer
+    /// refuses to consume — leaves the keeper from pulling its own deposits
+    /// out so aggressively that borrowers can't draw.
+    #[serde(default = "default_withdrawer_utilization_safety_margin_bps")]
+    pub withdrawer_utilization_safety_margin_bps: i128,
     pub rebalancer_max_price_impact_bps: i128,
     pub rebalancer_slippage_bps: i128,
     pub rebalancer_interval_blocks: u32,
@@ -51,6 +56,11 @@ pub struct CliConfig {
 
 // Preserves the legacy hardcoded 500 bps when the field is absent.
 fn default_liquidator_gain_haircut_bps() -> i128 {
+    500
+}
+
+// Preserves the legacy hardcoded 500 bps when the field is absent.
+fn default_withdrawer_utilization_safety_margin_bps() -> i128 {
     500
 }
 

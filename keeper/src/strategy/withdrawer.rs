@@ -21,11 +21,11 @@ use {
 
 const REFRESH_INTERVAL_BLOCKS: u32 = 2;
 const MAX_WITHDRAWAL_RETRIES: u32 = 3;
-const UTILIZATION_SAFETY_MARGIN_BPS: i128 = 500;
 
 pub struct WithdrawerConfig {
     pub markets: Vec<String>,
     pub min_withdraw_value_cents: i128,
+    pub utilization_safety_margin_bps: i128,
 }
 
 pub struct Withdrawer {
@@ -146,7 +146,8 @@ impl Withdrawer {
             // Bug fix #3: divide-by-zero guard now lives inside
             // PoolData::compute_max_safe_withdrawal — returns Underlying::ZERO
             // if `utilization_considered_safe` collapses to ≤ 0.
-            let max_withdrawal = pool.compute_max_safe_withdrawal(UTILIZATION_SAFETY_MARGIN_BPS);
+            let max_withdrawal =
+                pool.compute_max_safe_withdrawal(self.config.utilization_safety_margin_bps);
             if max_withdrawal == Underlying::ZERO {
                 counter!("withdrawer_outcome_total", "outcome" => "pool_at_capacity").increment(1);
                 continue;

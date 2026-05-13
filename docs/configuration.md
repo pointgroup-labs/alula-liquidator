@@ -55,7 +55,8 @@ The schema lives in [`keeper/src/config.rs`](../keeper/src/config.rs). [`config.
 
 | Field | Type | Description |
 |---|---|---|
-| `min_withdraw_value_cents` | i128 (USD cents) | Skip withdrawals below this dollar value. The withdrawer's pool-utilisation safety margin is a constant in code, not a config knob. |
+| `min_withdraw_value_cents` | i128 (USD cents) | Skip withdrawals below this dollar value. |
+| `withdrawer_utilization_safety_margin_bps` | i128 (bps) | Optional; defaults to `500` (5%). Headroom kept below the pool's utilisation cap when sizing withdrawals — the withdrawer will not consume capacity above `cap - this`. Tighter (lower) values are more aggressive at pulling deposits out and risk borrowers being unable to draw; looser (higher) values leave more idle deposits. A dashboard panel dominated by `withdrawer_outcome_total{outcome="pool_at_capacity"}` means this is set too tight for current pool utilisation. |
 
 ## CLI flags
 

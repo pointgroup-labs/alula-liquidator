@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
         swap_providers,
         min_profit_margin_cents,
         min_withdraw_value_cents,
+        withdrawer_utilization_safety_margin_bps,
         rebalancer_max_price_impact_bps,
         rebalancer_slippage_bps,
         rebalancer_interval_blocks,
@@ -101,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
         WithdrawerConfig {
             markets: markets.clone(),
             min_withdraw_value_cents,
+            utilization_safety_margin_bps: withdrawer_utilization_safety_margin_bps,
         },
     );
 
