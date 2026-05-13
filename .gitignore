@@ -41,10 +41,6 @@ target
 .env.*
 !.env.example
 
-# Operator-supplied env for the deploy/ stack.
-deploy/keeper.env
-deploy/config.json
-
 .claude
 CLAUDE.md
 
