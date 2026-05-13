@@ -5,9 +5,10 @@ providers:
     orgId: 1
     folder: ''
     type: file
-    # Provisioned files are the source of truth — block UI delete so the
-    # dashboard can't disappear between provisioning cycles.
-    disableDeletion: true
+    # Default `false`: when a JSON file is removed from disk, Grafana also
+    # removes the dashboard from its DB. Setting this to true would *keep*
+    # stale DB entries after file deletion — usually not what we want.
+    disableDeletion: false
     updateIntervalSeconds: 30
     # Permit in-UI edits for iterative tuning; re-export to JSON to persist.
     allowUiUpdates: true

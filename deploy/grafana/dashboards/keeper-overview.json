@@ -20,12 +20,52 @@
   "links": [],
   "panels": [
     {
+      "id": 13,
+      "type": "stat",
+      "title": "Scrape up",
+      "description": "up{job=\"alula-keeper\"}. 1 = Prometheus is reaching /metrics; 0 = the keeper is unreachable. Distinguishes 'bot dead' from 'bot up but idle'.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=\"alula-keeper\"}",
+          "legendFormat": "scrape",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": null, "color": "red"},
+              {"value": 1, "color": "green"}
+            ]
+          },
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "DOWN"}, "1": {"text": "UP"}}}
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
       "id": 1,
       "type": "stat",
       "title": "Time since last successful scan",
-      "description": "time() - liquidator_last_successful_scan_timestamp_seconds. Green ≤30s, yellow ≤60s, red beyond. One value per market.",
+      "description": "time() - liquidator_last_successful_scan_timestamp_seconds. Green ≤30s, yellow ≤60s, red beyond. One value per market. Shows 'No data' before the first successful scan — pair with the Scrape up panel to disambiguate.",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 5, "w": 8, "x": 0, "y": 0},
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
       "targets": [
         {
           "refId": "A",
@@ -61,13 +101,13 @@
       "id": 2,
       "type": "stat",
       "title": "Plans dispatched (1h)",
-      "description": "increase(liquidator_liquidation_plans_dispatched_total[1h]). Zero on a market with live obligations is suspicious — the funnel panel below tells you where it stops.",
+      "description": "increase(liquidator_liquidation_plans_dispatched_total[1h]). Global counter (no market label). `or vector(0)` keeps the panel showing 0 (red) on fresh deploys instead of 'No data'.",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 5, "w": 8, "x": 8, "y": 0},
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(liquidator_liquidation_plans_dispatched_total[1h]))",
+          "expr": "sum(increase(liquidator_liquidation_plans_dispatched_total[1h])) or on() vector(0)",
           "legendFormat": "plans",
           "instant": true
         }
@@ -98,13 +138,13 @@
       "id": 3,
       "type": "stat",
       "title": "TXs confirmed (1h)",
-      "description": "Confirmation poll succeeded on the receipt. The bot is doing real work iff this is non-zero on a market with obligations. Red at 0.",
+      "description": "increase(keeper_tx_confirmed_total{outcome=\"confirmed\"}[1h]). Global counter (no market label). The bot is doing real work iff this is non-zero. `or vector(0)` shows red 0 on fresh deploy instead of 'No data'.",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 5, "w": 8, "x": 16, "y": 0},
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(keeper_tx_confirmed_total{outcome=\"confirmed\"}[1h]))",
+          "expr": "sum(increase(keeper_tx_confirmed_total{outcome=\"confirmed\"}[1h])) or on() vector(0)",
           "legendFormat": "confirmed",
           "instant": true
         }
@@ -135,7 +175,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "Liquidation pipeline — plans → submitted → confirmed",
-      "description": "Steady-state: all three series track each other. Plans > submitted = simulation rejects in the executor path. Submitted > confirmed = txs landed but did not finalize.",
+      "description": "Steady-state: all three series track each other. Plans > submitted = simulation rejects in the executor path. Submitted > confirmed could be pending confirmations, poll failures, or finalization failures — check the TX confirmation outcomes panel for the cause.",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 5},
       "targets": [
@@ -240,8 +280,15 @@
           }
         },
         "overrides": [
-          {"matcher": {"id": "byRegexp", "options": ".*liquidatable.*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}}]},
-          {"matcher": {"id": "byRegexp", "options": ".*obligations.*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}]}
+          {"matcher": {"id": "byRegexp", "options": ".*liquidatable.*"}, "properties": [
+            {"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}},
+            {"id": "custom.axisPlacement", "value": "right"},
+            {"id": "custom.axisLabel", "value": "liquidatable"}
+          ]},
+          {"matcher": {"id": "byRegexp", "options": ".*obligations.*"}, "properties": [
+            {"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}},
+            {"id": "custom.axisLabel", "value": "obligations"}
+          ]}
         ]
       },
       "options": {
@@ -502,6 +549,6 @@
   "timezone": "browser",
   "title": "Alula Liquidator",
   "uid": "alula-overview",
-  "version": 2,
+  "version": 3,
   "weekStart": ""
 }
