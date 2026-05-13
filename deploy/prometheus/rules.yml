@@ -42,6 +42,21 @@ groups:
             earlier than `KeeperScanStalled` so you have time to switch RPC
             providers before scans drop out entirely.
 
+      - alert: KeeperRpcSimulateTransportFailing
+        expr: |
+          60 * rate(keeper_rpc_simulate_failures_total{kind="transport"}[5m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RPC simulate transport errors >1/min ({{ $labels.function }})"
+          description: >
+            `simulate_transaction_envelope` has been failing at the network
+            layer for >10m on contract function `{{ $labels.function }}`.
+            Sustained transport errors mean the RPC endpoint is degraded
+            or unreachable — switch providers. Distinct from `sim_error`
+            which indicates a contract-level issue, not an RPC issue.
+
   - name: keeper.backpressure
     interval: 30s
     rules:

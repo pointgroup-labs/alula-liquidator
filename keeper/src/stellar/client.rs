@@ -8,6 +8,7 @@ use {
         xdr_codec::{account_strkey_to_muxed, contract_strkey_to_hash},
     },
     anyhow::anyhow,
+    metrics::{counter, histogram},
     stellar_rpc_client::AuthMode,
     stellar_xdr::curr::{
         ContractId, Hash, HostFunction, InvokeContractArgs, Memo, Operation, OperationBody,
@@ -56,11 +57,47 @@ impl Gateway {
             signatures: VecM::default(),
         });
 
-        let sim_response = self
+        let started = std::time::Instant::now();
+        let sim_response = match self
             .rpc
             .simulate_transaction_envelope(&envelope, Some(AuthMode::Record))
-            .await?;
+            .await
+        {
+            Ok(r) => {
+                // RPC roundtrip completed — record latency regardless of
+                // whether the simulation itself succeeded. The sim-error
+                // case is tracked separately below by counter.
+                histogram!(
+                    "keeper_rpc_simulate_duration_seconds",
+                    "function" => function_name.to_string(),
+                    "outcome" => "ok",
+                )
+                .record(started.elapsed().as_secs_f64());
+                r
+            }
+            Err(e) => {
+                histogram!(
+                    "keeper_rpc_simulate_duration_seconds",
+                    "function" => function_name.to_string(),
+                    "outcome" => "transport_error",
+                )
+                .record(started.elapsed().as_secs_f64());
+                counter!(
+                    "keeper_rpc_simulate_failures_total",
+                    "function" => function_name.to_string(),
+                    "kind" => "transport",
+                )
+                .increment(1);
+                return Err(e.into());
+            }
+        };
         if let Some(error) = &sim_response.error {
+            counter!(
+                "keeper_rpc_simulate_failures_total",
+                "function" => function_name.to_string(),
+                "kind" => "sim_error",
+            )
+            .increment(1);
             return Err(anyhow!("simulation failed for {function_name}: {error}"));
         }
 

@@ -664,6 +664,52 @@
         "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]},
         "tooltip": {"mode": "multi", "sort": "desc"}
       }
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "RPC simulate latency — p95 by contract function",
+      "description": "Per-function p95 of `simulate_transaction_envelope` roundtrips. This is the next-level-down view when `Market scan latency` looks bad — it tells you which contract call is slow (e.g. `get_market_data` vs `get_user_obligation` vs swap-provider quotes). Outcomes split `ok` from `transport_error` so failed RPCs don't dilute the latency signal.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 69},
+      "targets": [
+        {"refId": "A", "expr": "keeper_rpc_simulate_duration_seconds{quantile=\"0.95\", outcome=\"ok\"}", "legendFormat": "p95 {{function}}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never"}
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "RPC simulate failures by function (rate/min)",
+      "description": "Per-function rate of failed simulate calls, split by `kind`: `transport` = network-layer error (RPC unreachable / 5xx), `sim_error` = the simulator returned a structured error response. Transport errors mean switch providers; sim_errors usually mean a contract input went bad.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 69},
+      "targets": [
+        {"refId": "A", "expr": "60 * rate(keeper_rpc_simulate_failures_total[5m])", "legendFormat": "{{kind}} / {{function}}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": "^transport.*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]},
+          {"matcher": {"id": "byRegexp", "options": "^sim_error.*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "yellow"}}]}
+        ]
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
     }
   ],
   "refresh": "10s",
