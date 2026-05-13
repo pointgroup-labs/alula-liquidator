@@ -20,6 +20,7 @@ use {
             LiquidatorConfig, Rebalancer, RebalancerConfig, Withdrawer, WithdrawerConfig,
         },
     },
+    ::metrics::gauge,
     clap::Parser,
     ed25519_dalek::SigningKey,
     engine::{ports::ChainReader, reactor::Engine},
@@ -68,6 +69,12 @@ async fn main() -> anyhow::Result<()> {
     let chain: Arc<dyn ChainReader> = gateway.clone();
 
     let metrics_handle = metrics::install_prometheus_exporter();
+
+    // Surface the configured safety margin as a gauge so the dashboard can
+    // overlay it against the live XLM balance. Emitted once at startup —
+    // the value is immutable for the process lifetime.
+    gauge!("liquidator_xlm_safety_margin_stroops").set(xlm_safety_margin as f64);
+
     let mut engine: Engine<Event, Action> = Engine::new();
 
     // Single shared capital ledger across all balance-spending strategies so

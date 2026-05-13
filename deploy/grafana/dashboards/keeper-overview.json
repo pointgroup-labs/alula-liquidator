@@ -605,6 +605,37 @@
         "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"]},
         "tooltip": {"mode": "multi", "sort": "desc"}
       }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "XLM balance vs safety margin",
+      "description": "Live XLM balance overlaid against the configured xlm_safety_margin. The margin is the floor the rebalancer/liquidator refuse to spend below to preserve inclusion-fee headroom. When the balance line approaches the margin line, refill before the keeper starts skipping opportunities.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 53},
+      "targets": [
+        {"refId": "A", "expr": "liquidator_asset_balance{token_address=\"$xlm\"} / 10000000", "legendFormat": "balance (XLM)"},
+        {"refId": "B", "expr": "liquidator_xlm_safety_margin_stroops / 10000000", "legendFormat": "safety margin (XLM)"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never"}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "safety margin (XLM)"}, "properties": [
+            {"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}},
+            {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}
+          ]},
+          {"matcher": {"id": "byName", "options": "balance (XLM)"}, "properties": [
+            {"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}
+          ]}
+        ]
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "min"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
     }
   ],
   "refresh": "10s",
