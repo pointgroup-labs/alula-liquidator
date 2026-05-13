@@ -28,7 +28,7 @@ Grafana is reachable at <http://localhost:3000> (initial login `admin`/`admin`, 
 
 | Var | Required? | Description |
 |---|---|---|
-| `STELLAR_SKEY` | yes | Stellar secret key (`S...`, 56 chars). Forwarded into the keeper container as `--skey`. |
+| `STELLAR_SKEY` | yes | Stellar secret key (`S...`, 56 chars). Read by clap as the env-var fallback for `--skey`, so the secret never lands on the command line. |
 | `RUST_LOG` | no | `tracing-subscriber` directive. Defaults to `info,alula_keeper=info,alula_engine=info`. |
 | `GF_ADMIN_USER` / `GF_ADMIN_PASSWORD` | no | Grafana bootstrap credentials. |
 

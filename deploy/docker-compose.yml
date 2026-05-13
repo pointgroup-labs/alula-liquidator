@@ -8,10 +8,12 @@ services:
     image: ghcr.io/pointgroup-labs/alula-keeper:main
     restart: unless-stopped
     stop_grace_period: 30s
+    command: ["--config", "/etc/keeper/config.json"]
     env_file:
       - ./keeper.env
     volumes:
-      - ./secrets/keeper-keypair.json:/secrets/keeper-keypair.json:ro
+      - ./config.json:/etc/keeper/config.json:ro
+      - keeper-data:/var/lib/keeper
     ports:
       - '127.0.0.1:9000:9000'
     labels:
@@ -99,6 +101,7 @@ networks:
     driver: bridge
 
 volumes:
+  keeper-data:
   prom-data:
   alertmanager-data:
   grafana-data:

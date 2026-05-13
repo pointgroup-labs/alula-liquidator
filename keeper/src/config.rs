@@ -14,7 +14,10 @@ use {
 pub struct Args {
     #[arg(short, long)]
     pub config: PathBuf,
-    #[arg(short, long)]
+    // Env-var fallback so deploys (docker compose `env_file:`, k8s
+    // secrets) can supply the key without leaking it on the process
+    // command line. CLI flag still wins when both are present.
+    #[arg(short, long, env = "STELLAR_SKEY", hide_env_values = true)]
     pub skey: String,
 }
 

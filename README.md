@@ -43,7 +43,7 @@ See [`docs/operations.md`](./docs/operations.md) for the dashboard tour, env-var
 cargo run --release -- --config config.json --skey "S..."
 ```
 
-The keeper binary expects a `--config` JSON path and a `--skey` Stellar secret key (`S...`, 56 chars). Everything else lives in the config file — see [`docs/configuration.md`](./docs/configuration.md).
+The keeper binary expects a `--config` JSON path and a `--skey` Stellar secret key (`S...`, 56 chars; or set `STELLAR_SKEY` in the environment). Everything else lives in the config file — see [`docs/configuration.md`](./docs/configuration.md).
 
 ## How it works
 
