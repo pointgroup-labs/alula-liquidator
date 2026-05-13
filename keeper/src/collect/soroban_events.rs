@@ -75,10 +75,10 @@ impl SorobanEventCollector {
     }
 }
 
-/// Heuristic: which RPC errors mean the saved cursor is permanently bad and
-/// must be replaced with a fresh head ledger? Routed through
-/// [`crate::stellar::errors`] so the substring patterns are unit-tested
-/// alongside the other classification helpers.
+// Heuristic: which RPC errors mean the saved cursor is permanently bad and
+// must be replaced with a fresh head ledger? Routed through
+// [`crate::stellar::errors`] so the substring patterns are unit-tested
+// alongside the other classification helpers.
 
 impl Collector<Event> for SorobanEventCollector {
     fn get_event_stream(&mut self) -> BoxFuture<'_, anyhow::Result<CollectorStream<'_, Event>>> {

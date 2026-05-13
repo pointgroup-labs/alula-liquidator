@@ -84,6 +84,12 @@ pub struct Liquidator {
 }
 
 impl Liquidator {
+    // 8/7 args triggers clippy::too_many_arguments. Each parameter is a
+    // distinct collaborator (chain, gateway, signing key, public key,
+    // config, two repos, ledger) with no natural sub-grouping. A
+    // builder/config-struct refactor is tracked separately; not worth
+    // forcing here just to silence the lint.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         chain: Arc<dyn ChainReader>,
         gateway: Arc<Gateway>,

@@ -204,6 +204,13 @@ impl PoolData {
 
 #[cfg(test)]
 mod tests {
+    // Stellar amounts are denominated in stroops (1 unit = 10^7 stroops).
+    // Test literals deliberately separate the whole-unit portion from the
+    // stroop suffix, e.g. `1_000_000_0000000`, which clippy reads as
+    // inconsistent digit grouping. The convention is load-bearing for
+    // readability against the contract spec — keep it.
+    #![allow(clippy::inconsistent_digit_grouping)]
+
     use super::*;
 
     fn create_test_pool() -> PoolData {
