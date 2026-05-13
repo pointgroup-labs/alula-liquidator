@@ -19,7 +19,7 @@ services:
       - --config
       - /etc/keeper/config.json
       - --skey
-      - ${KEEPER_SKEY:?KEEPER_SKEY must be set in .env}
+      - ${STELLAR_SKEY:?STELLAR_SKEY must be set in .env}
     environment:
       RUST_LOG: info
     volumes:
@@ -41,8 +41,8 @@ services:
     image: prom/prometheus:v3.0.1
     restart: unless-stopped
     volumes:
-      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./config/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
       - prom-data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -61,7 +61,7 @@ services:
       - --config.file=/etc/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
     volumes:
-      - ./config/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager-data:/alertmanager
     ports:
       - "127.0.0.1:9093:9093"
@@ -77,8 +77,8 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
     volumes:
-      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
       - "127.0.0.1:3000:3000"
