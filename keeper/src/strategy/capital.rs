@@ -49,14 +49,19 @@ pub struct CapitalLedger {
     inner: Mutex<LedgerInner>,
     reservation_ttl: Duration,
     balance_ttl: Duration,
+    xlm_address: String,
 }
 
 impl CapitalLedger {
-    pub fn new() -> Self {
-        Self::with_ttls(DEFAULT_RESERVATION_TTL, DEFAULT_BALANCE_TTL)
+    pub fn new(xlm_address: String) -> Self {
+        Self::with_ttls(xlm_address, DEFAULT_RESERVATION_TTL, DEFAULT_BALANCE_TTL)
     }
 
-    pub fn with_ttls(reservation_ttl: Duration, balance_ttl: Duration) -> Self {
+    pub fn with_ttls(
+        xlm_address: String,
+        reservation_ttl: Duration,
+        balance_ttl: Duration,
+    ) -> Self {
         Self {
             inner: Mutex::new(LedgerInner {
                 reservations: HashMap::new(),
@@ -64,6 +69,7 @@ impl CapitalLedger {
             }),
             reservation_ttl,
             balance_ttl,
+            xlm_address,
         }
     }
 
@@ -136,6 +142,12 @@ impl CapitalLedger {
         // so funding-health panels show a value from process start without
         // depending on whether a liquidation path happened to fire.
         gauge!("liquidator_asset_balance", "token_address" => token.to_string()).set(value as f64);
+        // Unlabelled XLM-specific gauge so `rules.yml` can alert on funding
+        // without hardcoding the network's XLM SAC address. Only emitted
+        // when this fetch is for the configured XLM token.
+        if token == self.xlm_address {
+            gauge!("liquidator_xlm_balance_stroops").set(value as f64);
+        }
         let mut g = self.inner.lock();
         g.balances.insert(
             key,
@@ -276,7 +288,7 @@ mod tests {
 
     #[test]
     fn reserve_up_to_balance_succeeds() {
-        let l = CapitalLedger::new();
+        let l = CapitalLedger::new("XLM".into());
         assert!(l.reserve(1, "T", "A", 60, 100));
         assert!(l.reserve(2, "T", "A", 40, 100));
         assert_eq!(l.available_after_reservations("T", "A", 100), 0);
@@ -284,7 +296,7 @@ mod tests {
 
     #[test]
     fn reserve_over_balance_fails() {
-        let l = CapitalLedger::new();
+        let l = CapitalLedger::new("XLM".into());
         assert!(l.reserve(1, "T", "A", 70, 100));
         assert!(!l.reserve(2, "T", "A", 31, 100));
         // failed reservation must not have committed
@@ -293,7 +305,7 @@ mod tests {
 
     #[test]
     fn reserve_then_release_returns_capacity() {
-        let l = CapitalLedger::new();
+        let l = CapitalLedger::new("XLM".into());
         assert!(l.reserve(1, "T", "A", 80, 100));
         assert!(!l.reserve(2, "T", "A", 30, 100));
         l.release(1);
@@ -302,7 +314,7 @@ mod tests {
 
     #[test]
     fn parallel_reservations_interleave_correctly() {
-        let l = Arc::new(CapitalLedger::new());
+        let l = Arc::new(CapitalLedger::new("XLM".into()));
         let mut handles = Vec::new();
         // 10 threads each try to reserve 15 against a balance of 100; only
         // 6 should succeed (sum 90 ≤ 100, 7th would push to 105).
@@ -330,7 +342,11 @@ mod tests {
     #[tokio::test]
     async fn balance_cache_ttl_refresh() {
         let chain = Arc::new(StubChain::new(vec![100, 200]));
-        let l = CapitalLedger::with_ttls(Duration::from_secs(30), Duration::from_millis(50));
+        let l = CapitalLedger::with_ttls(
+            "XLM".into(),
+            Duration::from_secs(30),
+            Duration::from_millis(50),
+        );
         let v1 = l.cached_balance(&*chain, "T", "A").await.unwrap();
         let v2 = l.cached_balance(&*chain, "T", "A").await.unwrap();
         assert_eq!(v1, 100);

@@ -113,6 +113,39 @@ groups:
             view. >6 retries/minute sustained suggests parallel submitters
             against the same source account or a stuck in-flight tx.
 
+  - name: keeper.funding
+    interval: 30s
+    rules:
+      - alert: KeeperXlmFundingLow
+        expr: |
+          liquidator_xlm_balance_stroops
+          < liquidator_xlm_safety_margin_stroops * 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "XLM balance within 2x of safety margin"
+          description: >
+            The keeper's XLM balance is approaching the configured
+            `xlm_safety_margin`. Below the margin the rebalancer and
+            liquidator refuse to spend XLM to preserve inclusion-fee
+            headroom, so liquidation opportunities will start being
+            skipped. Refill the keeper account.
+
+      - alert: KeeperXlmFundingCritical
+        expr: |
+          liquidator_xlm_balance_stroops
+          < liquidator_xlm_safety_margin_stroops * 1.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "XLM balance at safety margin — keeper is freezing"
+          description: >
+            The keeper's XLM balance is within 10% of the configured
+            `xlm_safety_margin`. The next opportunity will be skipped
+            with `insufficient_capital`. Refill immediately.
+
   - name: keeper.persistence
     interval: 30s
     rules:

@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
     // Liquidator and Rebalancer cannot double-commit the same wallet capacity.
     // The executor releases reservations on every terminal tx outcome; the
     // ledger TTL is only a safety ceiling for hooks lost to task panics.
-    let capital = Arc::new(CapitalLedger::new());
+    let capital = Arc::new(CapitalLedger::new(xlm_address.clone()));
 
     let bad_debt = BadDebtRequestInitiator::new(
         chain.clone(),
