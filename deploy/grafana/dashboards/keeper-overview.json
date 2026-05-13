@@ -764,6 +764,59 @@
         "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "mean", "max"]},
         "tooltip": {"mode": "multi", "sort": "desc"}
       }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Rebalancer outcomes (per/min)",
+      "description": "What the rebalancer decided each time it ran or evaluated a candidate. `dispatched` is the only success outcome; everything else means it consciously did nothing. `nothing_to_swap` is normal (most assets already in target); `precondition_no_target` / `precondition_no_providers` means a config mistake; `evaluation_error` and `reservation_lost` mean trouble. A rebalancer silent in metrics is a rebalancer that isn't running — check the soroban-event topic filter or the `refresh_interval_blocks` cadence.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 85},
+      "targets": [
+        {"refId": "A", "expr": "60 * rate(rebalancer_outcome_total[5m])", "legendFormat": "{{outcome}}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "stacking": {"mode": "normal"}}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "dispatched"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+          {"matcher": {"id": "byName", "options": "nothing_to_swap"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}]},
+          {"matcher": {"id": "byName", "options": "below_dust"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "yellow"}}]},
+          {"matcher": {"id": "byRegexp", "options": "^(precondition|evaluation_error|reservation_lost|no_viable_provider)"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
+        ]
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Rebalancer dispatched swap size (USD p50 / p95)",
+      "description": "USD value distribution of swaps actually emitted. Sourced from `compute_value_cents(amount_in, info)` at dispatch time and divided by 100. The floor is `rebalancer_min_swap_amount_value_cents` from config; p50 hugging the floor means the rebalancer is bottom-feeding dust and you could relax (or tighten) the threshold to taste.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 85},
+      "targets": [
+        {"refId": "A", "expr": "rebalancer_dispatched_swap_value_cents{quantile=\"0.5\"} / 100", "legendFormat": "p50"},
+        {"refId": "B", "expr": "rebalancer_dispatched_swap_value_cents{quantile=\"0.95\"} / 100", "legendFormat": "p95"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never"}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "p50"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+          {"matcher": {"id": "byName", "options": "p95"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "yellow"}}]}
+        ]
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
     }
   ],
   "refresh": "10s",

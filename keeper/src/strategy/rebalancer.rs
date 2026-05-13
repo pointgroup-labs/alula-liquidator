@@ -17,6 +17,7 @@ use {
         ports::{ChainReader, EventCodec, OpBuilder, OperationEvent},
         reactor::{BoxFuture, Strategy},
     },
+    metrics::{counter, histogram},
     std::{
         collections::{HashMap, HashSet},
         sync::Arc,
@@ -156,10 +157,14 @@ impl Rebalancer {
     fn preconditions_met(&self) -> bool {
         if self.config.assets_to_hold.is_empty() {
             warn!("Rebalancer: assets_to_hold is empty; skipping rebalance");
+            counter!("rebalancer_outcome_total", "outcome" => "precondition_no_target")
+                .increment(1);
             return false;
         }
         if self.config.swap_providers.is_empty() {
             warn!("Rebalancer: swap_providers is empty; skipping rebalance");
+            counter!("rebalancer_outcome_total", "outcome" => "precondition_no_providers")
+                .increment(1);
             return false;
         }
         true
@@ -207,7 +212,11 @@ impl Rebalancer {
             {
                 Ok(Some(a)) => actions.push(a),
                 Ok(None) => {}
-                Err(e) => warn!(?e, %candidate, "candidate evaluation failed"),
+                Err(e) => {
+                    warn!(?e, %candidate, "candidate evaluation failed");
+                    counter!("rebalancer_outcome_total", "outcome" => "evaluation_error")
+                        .increment(1);
+                }
             }
         }
         actions
@@ -250,6 +259,7 @@ impl Rebalancer {
                 .available_after_reservations(candidate, &self.pkey, safety_floor);
         if !balance_to_swap.is_positive() {
             debug!(%candidate, raw_balance, balance_to_swap, "Nothing to swap");
+            counter!("rebalancer_outcome_total", "outcome" => "nothing_to_swap").increment(1);
             return Ok(None);
         }
 
@@ -283,6 +293,7 @@ impl Rebalancer {
             }
         }
         let Some((provider, amount_in, amount_out)) = best_provider else {
+            counter!("rebalancer_outcome_total", "outcome" => "no_viable_provider").increment(1);
             return Ok(None);
         };
 
@@ -293,6 +304,7 @@ impl Rebalancer {
         let value_cents = compute_value_cents(amount_in, info);
         if value_cents < self.config.min_swap_amount_value_cents {
             info!(%candidate, amount_in, value_cents, "below dust threshold");
+            counter!("rebalancer_outcome_total", "outcome" => "below_dust").increment(1);
             return Ok(None);
         }
 
@@ -317,6 +329,7 @@ impl Rebalancer {
         {
             warn!(%candidate, amount_in, balance_to_swap,
                 "rebalancer: reservation lost race; skipping submission");
+            counter!("rebalancer_outcome_total", "outcome" => "reservation_lost").increment(1);
             return Ok(None);
         }
 
@@ -325,6 +338,11 @@ impl Rebalancer {
             min_amount_out, market = %self.config.market,
             "Rebalancer: submitting swap"
         );
+        counter!("rebalancer_outcome_total", "outcome" => "dispatched").increment(1);
+        // Cents are the natural unit here: `min_swap_amount_value_cents` is the
+        // configured floor, so the histogram and the threshold share scale and
+        // can be eyeballed against each other.
+        histogram!("rebalancer_dispatched_swap_value_cents").record(value_cents.max(0) as f64);
 
         Ok(Some(Action::SubmitTx(SubmitStellarTx {
             op,
