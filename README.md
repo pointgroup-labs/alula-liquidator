@@ -86,3 +86,12 @@ PR titles must follow [Conventional Commits](https://www.conventionalcommits.org
 ## Disclaimer
 
 This software is provided as-is with no guarantees. Running a keeper carries inherent financial risk — you may lose funds due to price movements, failed transactions, swap slippage, or bugs. Always test thoroughly on Stellar testnet before deploying to mainnet. The authors accept no liability for losses incurred while running this bot.
+
+## License
+
+Dual-licensed under either of:
+
+- [MIT License](./LICENSE-MIT) ([opensource.org](https://opensource.org/licenses/MIT))
+- [Apache License, Version 2.0](./LICENSE-APACHE) ([apache.org](http://www.apache.org/licenses/LICENSE-2.0))
+
+at your option. Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project shall be dual-licensed as above, without any additional terms or conditions.

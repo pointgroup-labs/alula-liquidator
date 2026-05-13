@@ -42,7 +42,8 @@ LABEL org.opencontainers.image.title="alula-keeper" \
       org.opencontainers.image.source="https://github.com/pointgroup-labs/alula-liquidator" \
       org.opencontainers.image.revision="${GIT_SHA}" \
       org.opencontainers.image.version="${VERSION}" \
-      org.opencontainers.image.created="${BUILD_DATE}"
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.licenses="MIT OR Apache-2.0"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl tini \
