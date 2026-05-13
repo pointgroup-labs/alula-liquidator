@@ -13,6 +13,7 @@
 
 use {
     engine::ports::ChainReader,
+    metrics::gauge,
     parking_lot::Mutex,
     std::{
         collections::HashMap,
@@ -131,6 +132,10 @@ impl CapitalLedger {
             return Ok(b);
         }
         let value = chain.read_token_balance(token, account).await?;
+        // Centralised emit: every uncached wallet read populates the gauge,
+        // so funding-health panels show a value from process start without
+        // depending on whether a liquidation path happened to fire.
+        gauge!("liquidator_asset_balance", "token_address" => token.to_string()).set(value as f64);
         let mut g = self.inner.lock();
         g.balances.insert(
             key,

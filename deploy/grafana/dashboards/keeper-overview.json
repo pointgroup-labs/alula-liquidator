@@ -25,7 +25,7 @@
       "title": "Scrape up",
       "description": "up{job=\"alula-keeper\"}. 1 = Prometheus is reaching /metrics; 0 = the keeper is unreachable. Distinguishes 'bot dead' from 'bot up but idle'.",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "gridPos": {"h": 5, "w": 4, "x": 0, "y": 0},
       "targets": [
         {
           "refId": "A",
@@ -65,7 +65,7 @@
       "title": "Time since last successful scan",
       "description": "time() - liquidator_last_successful_scan_timestamp_seconds. Green ≤30s, yellow ≤60s, red beyond. One value per market. Shows 'No data' before the first successful scan — pair with the Scrape up panel to disambiguate.",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "gridPos": {"h": 5, "w": 4, "x": 4, "y": 0},
       "targets": [
         {
           "refId": "A",
@@ -103,7 +103,7 @@
       "title": "Plans dispatched (1h)",
       "description": "increase(liquidator_liquidation_plans_dispatched_total[1h]). Global counter (no market label). `or vector(0)` keeps the panel showing 0 (red) on fresh deploys instead of 'No data'.",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "gridPos": {"h": 5, "w": 4, "x": 8, "y": 0},
       "targets": [
         {
           "refId": "A",
@@ -140,7 +140,7 @@
       "title": "TXs confirmed (1h)",
       "description": "increase(keeper_tx_confirmed_total{outcome=\"confirmed\"}[1h]). Global counter (no market label). The bot is doing real work iff this is non-zero. `or vector(0)` shows red 0 on fresh deploy instead of 'No data'.",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "gridPos": {"h": 5, "w": 4, "x": 12, "y": 0},
       "targets": [
         {
           "refId": "A",
@@ -167,6 +167,45 @@
         "orientation": "auto",
         "textMode": "auto",
         "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "XLM funding",
+      "description": "Keeper's XLM wallet balance (in XLM, not stroops). XLM funds inclusion fees; once it falls below `xlm_safety_margin` the bot stops submitting. Set the `xlm` dashboard variable to the XLM SAC contract address on your deployed network.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 5, "w": 8, "x": 16, "y": 0},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "liquidator_asset_balance{token_address=\"$xlm\"} / 10000000",
+          "legendFormat": "XLM",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": null, "color": "red"},
+              {"value": 100, "color": "yellow"},
+              {"value": 1000, "color": "green"}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
         "graphMode": "area",
         "justifyMode": "auto"
       }
@@ -586,6 +625,15 @@
         "allValue": ".*",
         "current": {"selected": false, "text": "All", "value": "$__all"},
         "options": [],
+        "hide": 0
+      },
+      {
+        "name": "xlm",
+        "label": "XLM SAC address",
+        "type": "textbox",
+        "description": "Soroban Asset Contract address for native XLM on the deployed network. Used by the funding-health stat tile.",
+        "current": {"selected": true, "text": "", "value": ""},
+        "query": "",
         "hide": 0
       }
     ]
