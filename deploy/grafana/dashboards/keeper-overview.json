@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Operational view for the alula-liquidator keeper. Top row answers 'is the bot alive?'; middle rows answer 'what did it do and why?'; bottom rows answer 'is the plumbing healthy?'.",
+  "description": "Operational view of the keeper. Rows are grouped by the question an on-call would ask; each panel answers a slice of it.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 2,
@@ -39,7 +39,7 @@
       "id": 13,
       "type": "stat",
       "title": "Keeper reachable",
-      "description": "up{job=\"alula-keeper\"}. 1 = Prometheus is reaching /metrics; 0 = the keeper is unreachable. Distinguishes 'bot dead' from 'bot up but idle'.",
+      "description": "Green = Prometheus can reach the keeper's `/metrics` endpoint. Red = the keeper is unreachable. Pair with *Time since last successful scan* to tell 'down' from 'up but idle'.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -109,7 +109,7 @@
       "id": 1,
       "type": "stat",
       "title": "Time since last successful scan",
-      "description": "time() - liquidator_last_successful_scan_timestamp_seconds. Green \u226430s, yellow \u226460s, red beyond. One value per market. Shows 'No data' before the first successful scan \u2014 pair with the Scrape up panel to disambiguate.",
+      "description": "How long since each market completed a scan. Green ≤30s, yellow ≤60s, red beyond. Shows 'No data' until the first scan lands — pair with *Keeper reachable* to tell 'starting up' from 'stuck'.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -170,7 +170,7 @@
       "id": 2,
       "type": "stat",
       "title": "Plans dispatched (1h)",
-      "description": "increase(liquidator_liquidation_plans_dispatched_total[1h]). Global counter (no market label). `or vector(0)` keeps the panel showing 0 (red) on fresh deploys instead of 'No data'.",
+      "description": "Liquidation plans the keeper decided to act on in the last hour. Red 0 = nothing was liquidatable or the strategy is stuck; correlate with *Skip reasons*.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -201,7 +201,7 @@
               },
               {
                 "value": 1,
-                "color": "blue"
+                "color": "green"
               }
             ]
           }
@@ -227,7 +227,7 @@
       "id": 3,
       "type": "stat",
       "title": "TXs confirmed (1h)",
-      "description": "increase(keeper_tx_confirmed_total{outcome=\"confirmed\"}[1h]). Global counter (no market label). The bot is doing real work iff this is non-zero. `or vector(0)` shows red 0 on fresh deploy instead of 'No data'.",
+      "description": "Liquidations confirmed on-chain in the last hour. The bot is doing real-money work iff this is non-zero. If *Plans dispatched* is non-zero but this is 0, see *TX confirmation outcomes*.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -284,7 +284,7 @@
       "id": 16,
       "type": "stat",
       "title": "XLM funding",
-      "description": "Keeper's XLM wallet balance (in XLM, not stroops). XLM funds inclusion fees; once it falls below `xlm_safety_margin` the bot stops submitting. Set the `xlm` dashboard variable to the XLM SAC contract address on your deployed network.",
+      "description": "Keeper's XLM wallet balance. XLM pays inclusion fees — once it falls below `xlm_safety_margin` the bot stops submitting. See *XLM balance vs safety margin* for the headroom curve.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -358,8 +358,8 @@
     {
       "id": 4,
       "type": "timeseries",
-      "title": "Liquidation pipeline \u2014 plans \u2192 submitted \u2192 confirmed",
-      "description": "Steady-state: all three series track each other. Plans > submitted = simulation rejects in the executor path. Submitted > confirmed could be pending confirmations, poll failures, or finalization failures \u2014 check the TX confirmation outcomes panel for the cause.",
+      "title": "Liquidation pipeline — plans → submitted → confirmed",
+      "description": "Steady-state: all three series track each other. Plans > submitted = simulations rejecting in the executor. Submitted > confirmed = submissions not landing — see *TX confirmation outcomes* for the breakdown.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -419,8 +419,8 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "Scan loop \u2014 completed by outcome",
-      "description": "rate(liquidator_scan_completed_total[5m]) by outcome. 'ok' should dominate; 'no_obligations' is expected on quiet markets; 'no_market_data' on sustained basis means the data feed is broken.",
+      "title": "Scan outcomes",
+      "description": "Per-scan verdict mix. `ok` should dominate; `no_obligations` is expected on quiet markets; sustained `no_market_data` means the data feed is broken.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -520,7 +520,7 @@
       "id": 9,
       "type": "timeseries",
       "title": "Obligations vs liquidatable positions",
-      "description": "Watched borrower count (liquidator_obligations_total) vs the subset currently flagged liquidatable per market. Sustained zero liquidatable with non-zero obligations is suspicious \u2014 likely engine/oracle drift.",
+      "description": "Borrowers being modelled vs the subset flagged liquidatable, per market. Sustained zero liquidatable against non-zero obligations is suspicious — usually engine or oracle drift.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -619,7 +619,7 @@
       "id": 5,
       "type": "timeseries",
       "title": "Skip reasons",
-      "description": "Why try_liquidate returned None. Fixed taxonomy of \u22648 reasons. A reason spiking 10\u00d7 vs baseline is the early signal worth investigating.",
+      "description": "Why the strategy declined to act on an opportunity. A reason spiking 10× over baseline is the early signal worth investigating.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -719,7 +719,7 @@
       "id": 6,
       "type": "timeseries",
       "title": "Simulation outcomes",
-      "description": "sum by (call, outcome) (rate(keeper_simulation_total[5m])). A growing 'not_liquidatable' bucket means engine/contract drift; growing 'error' means RPC trouble.",
+      "description": "Outcome of each simulated contract call. Growing `not_liquidatable` means engine/contract drift; growing `error` means RPC trouble.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -819,7 +819,7 @@
       "id": 7,
       "type": "timeseries",
       "title": "TX submission outcomes",
-      "description": "sum by (outcome) (rate(keeper_tx_submitted_total[5m])). 'retry_exhausted' or 'sim_empty' sustained is a red flag.",
+      "description": "Outcome of each transaction submission attempt. Sustained `retry_exhausted` or `sim_empty` is a red flag.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -919,7 +919,7 @@
       "id": 8,
       "type": "timeseries",
       "title": "TX confirmation outcomes",
-      "description": "sum by (outcome) (rate(keeper_tx_confirmed_total[5m])). 'failed_on_chain' is the realisation-tax tail — tx made it to the network but ended FAILED (gas spent, nothing seized). 'submission_timeout' is uncertainty (tx may yet land). 'transport_error' / 'hash_decode_failed' indicate an RPC-layer regression.",
+      "description": "Outcome of each submitted transaction once we wait for confirmation. `failed_on_chain` is the realisation-tax tail — tx landed but reverted, gas spent. `submission_timeout` is uncertainty (tx may yet land). `transport_error` / `unexpected_status` indicate an RPC regression.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1017,7 +1017,7 @@
       "id": 14,
       "type": "timeseries",
       "title": "Wallet balances per asset",
-      "description": "Raw on-chain balances per asset the keeper holds. Falling to zero blocks Own/PreSwap liquidation modes and dust-stops the rebalancer. XLM caps inclusion-fee headroom (xlm_safety_margin).",
+      "description": "On-chain balances per asset held by the keeper. Zero balances block `Own` and `PreSwap` execution modes and stop the rebalancer at dust.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1065,7 +1065,7 @@
       "id": 15,
       "type": "timeseries",
       "title": "Keeper self-position per market",
-      "description": "The keeper's own jTokens (supply), dTokens (borrow), and plain collateral per market. The withdrawer strategy acts on the jToken series; non-zero dTokens mean the keeper is itself a borrower and is exposed to liquidation risk.",
+      "description": "What the keeper itself holds in each market — supply (jTokens), borrow (dTokens), plain collateral. The withdrawer operates on supply; non-zero borrow means the keeper is exposed to liquidation itself.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1123,7 +1123,7 @@
       "id": 17,
       "type": "timeseries",
       "title": "XLM balance vs safety margin",
-      "description": "Live XLM balance overlaid against the configured xlm_safety_margin. The margin is the floor the rebalancer/liquidator refuse to spend below to preserve inclusion-fee headroom. When the balance line approaches the margin line, refill before the keeper starts skipping opportunities.",
+      "description": "Live XLM balance against the configured `xlm_safety_margin` floor. Below the floor the keeper refuses to spend XLM to preserve inclusion-fee headroom. Refill when the green line approaches the red dashed line.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1231,8 +1231,8 @@
     {
       "id": 10,
       "type": "timeseries",
-      "title": "Reactor back-pressure (dropped events)",
-      "description": "Any non-zero rate means the engine is dropping events because a downstream consumer (strategy, executor) couldn't keep up. Always operationally urgent.",
+      "title": "Dropped events (back-pressure)",
+      "description": "Any non-zero rate means events are being dropped because a downstream consumer can't keep up. Always urgent — investigate immediately.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1292,7 +1292,7 @@
       "id": 12,
       "type": "timeseries",
       "title": "State persistence & sequence retries",
-      "description": "Cursor save failures = the keeper can't persist its event cursor (SQLite IO trouble). Bad-seq retries = stellar sequence-number contention on the signing key.",
+      "description": "`cursor save fail` = the keeper can't write to SQLite, so events would replay after a restart. `bad_seq retries` = Stellar sequence-number contention; sustained values mean another process is using the same signing key.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1377,8 +1377,8 @@
     {
       "id": 18,
       "type": "timeseries",
-      "title": "Market scan latency (per-market quantiles)",
-      "description": "Wall-clock time spent inside one market evaluation, by outcome. Sustained p95 above ~1s usually means RPC roundtrips are slow (`read_market_data` or `read_user_obligation`); flat-but-rising p50 means more obligations are being checked. The `outcome` dimension separates fast early-exits (`no_market_data`, `no_obligations`) from full scans (`ok`).",
+      "title": "Market scan latency",
+      "description": "Wall-clock time to evaluate one market end-to-end, split by outcome. Sustained p95 above ~1s usually means RPC roundtrips are slow; flat-but-rising p50 means more obligations are being modelled. `KeeperScanSlow` fires at 5s.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1483,8 +1483,8 @@
     {
       "id": 19,
       "type": "timeseries",
-      "title": "RPC simulate latency \u2014 p95 by contract function",
-      "description": "Per-function p95 of `simulate_transaction_envelope` roundtrips. This is the next-level-down view when `Market scan latency` looks bad \u2014 it tells you which contract call is slow (e.g. `get_market_data` vs `get_user_obligation` vs swap-provider quotes). Outcomes split `ok` from `transport_error` so failed RPCs don't dilute the latency signal.",
+      "title": "RPC simulate latency by function (p95)",
+      "description": "Per-function p95 of `simulate_transaction` roundtrips. Drill-down for *Market scan latency* — tells you which contract call is the slow one. Outcomes split `ok` from `transport_error` so failed RPCs don't dilute the latency signal.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1532,8 +1532,8 @@
     {
       "id": 20,
       "type": "timeseries",
-      "title": "RPC simulate failures by function (rate/min)",
-      "description": "Per-function rate of failed simulate calls, split by `kind`: `transport` = network-layer error (RPC unreachable / 5xx), `sim_error` = the simulator returned a structured error response. Transport errors mean switch providers; sim_errors usually mean a contract input went bad.",
+      "title": "RPC simulate failures by function",
+      "description": "Per-function rate of failing simulate calls. `transport` = network or RPC-server error (switch providers); `sim_error` = the simulator returned a structured contract error (bad inputs).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1626,8 +1626,8 @@
     {
       "id": 21,
       "type": "timeseries",
-      "title": "Expected profit per plan \u2014 p50 / p95 (USD)",
-      "description": "Per-market distribution of the expected net profit on each dispatched liquidation plan. Sourced from `plan.net_profit_oracle` at the moment the best (borrow, deposit) pair is picked, before tx submission \u2014 so this is the modelled gain, not realised. Oracle units divided by 10^7 (standard SAC scaling). p50 climbing means richer opportunities; p50 collapsing means we're scraping dust and should re-tune `min_profit_margin_cents`.",
+      "title": "Expected profit per plan",
+      "description": "Distribution of modelled profit on each dispatched liquidation plan, per market. This is the dispatch-time profit, not the realised on-chain amount. p50 collapse means we're scraping dust — re-tune `min_profit_margin_cents`.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1712,8 +1712,8 @@
     {
       "id": 22,
       "type": "timeseries",
-      "title": "Expected vs realised profit dispatched (USD/hour)",
-      "description": "Hourly run-rate of profit on dispatched plans, summed across markets. `expected total` counts the moment the liquidator decides to submit; `realised total` counts only when the resulting tx is confirmed on-chain. The gap between the two lines is the realisation tax (submission failures, simulation drift, retries exhausted). Both series are still modelled-not-on-chain-read \u2014 they use `plan.net_profit_oracle`, not the actual seized amount. Per-market `expected` series are included for breakdown.",
+      "title": "Expected vs realised profit",
+      "description": "Hourly run-rate of profit on dispatched plans. `expected` totals at dispatch; `realised` totals only when the tx is confirmed on-chain. The gap is the realisation tax — submission failures, simulation drift, retries exhausted. Both lines remain modelled (use `plan.net_profit_oracle`, not seized amounts).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1825,8 +1825,8 @@
     {
       "id": 23,
       "type": "timeseries",
-      "title": "Rebalancer outcomes (per/min)",
-      "description": "What the rebalancer decided each time it ran or evaluated a candidate. `dispatched` is the only success outcome; everything else means it consciously did nothing. `nothing_to_swap` is normal (most assets already in target); `precondition_no_target` / `precondition_no_providers` means a config mistake; `evaluation_error` and `reservation_lost` mean trouble. A rebalancer silent in metrics is a rebalancer that isn't running \u2014 check the soroban-event topic filter or the `refresh_interval_blocks` cadence.",
+      "title": "Rebalancer outcomes",
+      "description": "What the rebalancer decided per candidate. `dispatched` is the only success outcome. `nothing_to_swap` is normal; `precondition_*` means config; `evaluation_error` / `reservation_lost` mean trouble. A silent panel means the rebalancer isn't being invoked — check the soroban-event topic filter or `refresh_interval_blocks`.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1939,8 +1939,8 @@
     {
       "id": 24,
       "type": "timeseries",
-      "title": "Rebalancer dispatched swap size (USD p50 / p95)",
-      "description": "USD value distribution of swaps actually emitted. Sourced from `compute_value_cents(amount_in, info)` at dispatch time and divided by 100. The floor is `rebalancer_min_swap_amount_value_cents` from config; p50 hugging the floor means the rebalancer is bottom-feeding dust and you could relax (or tighten) the threshold to taste.",
+      "title": "Rebalancer swap size (p50 / p95)",
+      "description": "USD value of swaps actually emitted. The floor is `rebalancer_min_swap_amount_value_cents`; p50 hugging the floor means dust-only activity — re-tune the threshold.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -2038,8 +2038,8 @@
     {
       "id": 25,
       "type": "timeseries",
-      "title": "Withdrawer outcomes (per/min)",
-      "description": "What the withdrawer decided on each deposit position it considered. `dispatched` = action emitted. `pool_at_capacity` / `below_threshold` are normal pauses (utilization safety floor or `min_withdraw_value_cents`). `no_obligations` is the steady state when the keeper isn't depositor on a market. `pool_missing` / `build_error` / `no_market_data` are red flags.",
+      "title": "Withdrawer outcomes",
+      "description": "What the withdrawer decided per position. `dispatched` = action emitted. `pool_at_capacity` / `below_threshold` are normal pauses (utilization safety floor and `min_withdraw_value_cents`). `no_obligations` is steady-state for non-depositor markets. `pool_missing` / `build_error` / `no_market_data` are red flags.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -2137,8 +2137,8 @@
     {
       "id": 26,
       "type": "timeseries",
-      "title": "Bad-debt initiator outcomes (per/min)",
-      "description": "Per-Liquidate-event decisions of the bad-debt request initiator. `ineligible` is the overwhelming common case (most liquidations leave healthy residual collateral). `dispatched` fires when a borrower is left underwater \u2014 i.e., the protocol needs to socialize the loss. `parse_error` / `decode_op_error` / `build_failed` indicate the strategy can't even evaluate eligibility \u2014 chase those in logs. Non-Liquidate event types are filtered upstream and don't count here.",
+      "title": "Bad-debt initiator outcomes",
+      "description": "What the bad-debt initiator decided per Liquidate event. `ineligible` is the steady state (most liquidations leave healthy residual collateral). `dispatched` fires only when a borrower is underwater. `parse_error` / `decode_op_error` / `build_failed` mean the strategy can't even evaluate — chase via logs.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -2266,7 +2266,8 @@
           "value": "$__all"
         },
         "options": [],
-        "hide": 0
+        "hide": 0,
+        "description": "Filter panels by market. Defaults to All."
       }
     ]
   },
