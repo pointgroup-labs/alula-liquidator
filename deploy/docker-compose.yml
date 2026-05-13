@@ -108,13 +108,14 @@ services:
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
       - --entrypoints.websecure.address=:443
-      - --certificatesresolvers.le.acme.email=${ACME_EMAIL:?ACME_EMAIL must be set in .env}
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL:admin@alula.finance}
       - --certificatesresolvers.le.acme.storage=/acme/acme.json
       - --certificatesresolvers.le.acme.httpchallenge=true
       - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
     ports:
-      - "80:80"
-      - "443:443"
+      - "80:80/tcp" # http
+      - "443:443/tcp" # https
+      - "443:443/udp" # https http3 quic
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-acme:/acme
