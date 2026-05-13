@@ -5,8 +5,11 @@ providers:
     orgId: 1
     folder: ''
     type: file
-    disableDeletion: false
+    # Provisioned files are the source of truth — block UI delete so the
+    # dashboard can't disappear between provisioning cycles.
+    disableDeletion: true
     updateIntervalSeconds: 30
+    # Permit in-UI edits for iterative tuning; re-export to JSON to persist.
     allowUiUpdates: true
     options:
       path: /var/lib/grafana/dashboards
