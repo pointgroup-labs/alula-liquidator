@@ -298,7 +298,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "liquidator_asset_balance{token_address=\"$xlm\"} / 10000000",
+          "expr": "liquidator_xlm_balance_stroops / 10000000",
           "legendFormat": "XLM",
           "instant": true
         }
@@ -1137,7 +1137,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "liquidator_asset_balance{token_address=\"$xlm\"} / 10000000",
+          "expr": "liquidator_xlm_balance_stroops / 10000000",
           "legendFormat": "balance (XLM)"
         },
         {
@@ -2266,19 +2266,6 @@
           "value": "$__all"
         },
         "options": [],
-        "hide": 0
-      },
-      {
-        "name": "xlm",
-        "label": "XLM SAC address",
-        "type": "textbox",
-        "description": "Soroban Asset Contract address for native XLM on the deployed network. Used by the funding-health stat tile.",
-        "current": {
-          "selected": true,
-          "text": "",
-          "value": ""
-        },
-        "query": "",
         "hide": 0
       }
     ]
