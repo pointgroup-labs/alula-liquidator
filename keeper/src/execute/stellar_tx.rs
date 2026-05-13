@@ -320,7 +320,9 @@ async fn build_and_send(
         assembled_tx.ext = TransactionExt::V1(transaction_data);
     }
 
-    // Apply recorded authorization data to operations.
+    // Only invoke-host-function ops with non-empty recorded auth need the
+    // simulator's auth payload merged back in; the inner gate avoids touching
+    // ops the simulator didn't decorate.
     let operations_vec: Vec<Operation> = assembled_tx.operations.iter().cloned().collect();
     let mut new_operations: Vec<Operation> = Vec::new();
     for (i, mut operation) in operations_vec.into_iter().enumerate() {

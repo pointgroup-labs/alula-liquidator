@@ -37,7 +37,10 @@ pub fn compute_profit_margin_in_borrow_token(
         .saturating_div(borrow_pool.oracle_asset_price)
 }
 
-/// Cap on `repay_amount` when using flash loans to bridge liquidity gaps.
+/// Cap on `repay_amount` when bridging the keeper's liquidity gap with a
+/// flash borrow. Three branches: the wallet covers `needed_amount` outright,
+/// the pool can fund the shortfall (so `needed_amount` is achievable), or
+/// the pool lacks the capacity (return 0).
 pub fn compute_flash_loan_repay_cap(
     needed_amount: i128,
     liquidator_balance: i128,
@@ -141,10 +144,6 @@ pub fn compute_repay_cap_from_collateral(
 fn _floor_marker(a: i128, b: i128) -> i128 {
     fixed_mul_floor(a, b)
 }
-
-// ---------------------------------------------------------------------------
-// Profitability gate
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProfitabilityCheck {

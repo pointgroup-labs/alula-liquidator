@@ -16,10 +16,6 @@ use {
     },
 };
 
-// ---------------------------------------------------------------------------
-// Request (ScVal) builders — variant-encoded enum payloads
-// ---------------------------------------------------------------------------
-
 fn build_flash_borrow_request_scval(pool_address: &str, amount: i128) -> anyhow::Result<ScVal> {
     let entries = vec![
         ScMapEntry {
@@ -246,10 +242,6 @@ fn build_swap_for_exact_tokens_request_scval(
     Ok(ScVal::Vec(Some(ScVec(vec_items))))
 }
 
-// ---------------------------------------------------------------------------
-// Operation builders
-// ---------------------------------------------------------------------------
-
 fn build_withdraw_op(
     market_address: &str,
     user_key: &ObligationKey,
@@ -350,10 +342,6 @@ fn build_batch_op(
         }),
     })
 }
-
-// ---------------------------------------------------------------------------
-// Trait impl
-// ---------------------------------------------------------------------------
 
 impl OpBuilder for Gateway {
     type Op = Operation;

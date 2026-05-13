@@ -134,9 +134,9 @@ impl PoolData {
     }
 }
 
-// --- Typed conversion layer ----------------------------------------------------
-// Strategies in step 7 should migrate to these methods. They surface the
-// j-token <-> underlying inversion bug at compile time.
+// Typed conversion layer over the raw i128 methods above: callers using
+// these wrappers surface the j-token <-> underlying inversion bug at
+// compile time.
 
 impl PoolData {
     pub fn j_to_underlying_floor(&self, j: JToken) -> Underlying {

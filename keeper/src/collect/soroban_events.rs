@@ -13,7 +13,9 @@ use {
     url::Url,
 };
 
-/// Filter passed to `get_events`.
+/// Subscription filter forwarded to [`Client::get_events`]. `topics` is a
+/// list of per-position alternatives; an empty inner vec matches anything
+/// at that position.
 #[derive(Debug, Clone)]
 pub struct EventFilter {
     pub topics: Vec<Vec<String>>,

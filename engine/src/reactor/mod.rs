@@ -79,7 +79,6 @@ where
 
         let mut join_set = JoinSet::new();
 
-        // Executors
         for executor in self.executors {
             let mut receiver = action_sender.subscribe();
             join_set.spawn(async move {
@@ -112,7 +111,6 @@ where
             });
         }
 
-        // Strategies
         for mut strategy in self.strategies {
             let mut event_receiver = event_sender.subscribe();
             let action_sender = action_sender.clone();
@@ -146,7 +144,6 @@ where
             });
         }
 
-        // Collectors
         for mut collector in self.collectors {
             let event_sender = event_sender.clone();
             join_set.spawn(async move {

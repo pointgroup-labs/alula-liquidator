@@ -127,13 +127,9 @@ fn extract_contract_code(s: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-// ---------------------------------------------------------------------------
-// Convenience predicates
-//
-// Each one replaces a previous `.contains("…")` call site. They take
-// `anyhow::Error` because that's what every call site holds; an internal
-// classify() call does the work.
-// ---------------------------------------------------------------------------
+// Convenience predicates take `anyhow::Error` (what every call site holds)
+// and route through `classify()`. They replace the `.contains("…")` checks
+// previously scattered across the keeper.
 
 /// `true` if the error means "this borrower is not liquidatable", i.e. one of
 /// the lending-market preconditions failed.
@@ -175,10 +171,6 @@ pub fn is_terminal_cursor_error<E: std::fmt::Display>(err: &E) -> bool {
         SorobanRpcError::TerminalCursor
     )
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

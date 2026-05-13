@@ -19,7 +19,10 @@ pub enum LendingError {
     PoolNotFound { pool_address: String },
 }
 
-/// Compute the maximum repayable amount for a single borrow position.
+/// Upper bound on tokens repayable in one `liquidate` call. Applies the
+/// d-token → underlying ceil rate, inflates by `LIQUIDATION_INTEREST_BUFFER_BPS`
+/// so a "full" liquidation also clears recently accrued interest, then
+/// applies the close factor.
 pub fn compute_max_repay_amount(
     d_tokens: i128,
     d_token_rate_ceil_bps: i128,
@@ -139,7 +142,9 @@ pub fn compute_is_liquidatable(obligation: &Obligation, md: &MarketData) -> bool
     debt_value_scaled > collateral_value_scaled.saturating_sub(buffer)
 }
 
-/// Returns `true` if the obligation has any collateral value across all deposits.
+/// Cheap pre-filter used by [`compute_is_liquidatable`] to short-circuit
+/// obligations with no real collateral (`j_tokens × j_rate_floor + plain
+/// collateral == 0` across every deposit).
 pub fn has_any_collateral(obligation: &Obligation, pools: &[PoolData]) -> bool {
     obligation.deposits.iter().any(|dep| {
         let pool = match pools.iter().find(|p| p.pool_address == dep.pool_address) {
@@ -206,7 +211,9 @@ pub fn compute_obligation_collateral_value(
     Ok(total)
 }
 
-/// Cap on `repay_amount` from the close factor.
+/// Close-factor cap on `repay_amount`. Insolvent obligations skip the cap
+/// — any participant may close the whole debt — while solvent ones apply
+/// `liquidation_close_factor_bps` per the protocol's partial-liquidation rule.
 pub fn compute_close_factor_repay_cap(
     position_debt_tokens: i128,
     liquidation_close_factor_bps: i128,
@@ -293,7 +300,10 @@ pub fn compute_expected_seized_collateral(
     seized.max(0)
 }
 
-/// Returns `true` if the obligation is insolvent.
+/// Insolvency check: total debt (scaled by per-pool liability factor, ceil)
+/// exceeds total collateral (scaled by the market-wide `insolvency_ltv_bps`,
+/// floor). Distinct from [`compute_is_liquidatable`], which uses per-pool
+/// `close_ltv_bps` and a `min_collateral_value_cents` buffer.
 pub fn compute_is_insolvent(obligation: &Obligation, market_data: &MarketData) -> bool {
     let mut debt_value_scaled: i128 = 0;
     for bor in &obligation.borrows {

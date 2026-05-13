@@ -31,10 +31,6 @@ pub enum ParseError {
     },
 }
 
-// ---------------------------------------------------------------------------
-// i128 / ScVal primitives
-// ---------------------------------------------------------------------------
-
 pub(super) fn i128_from_parts(parts: &Int128Parts) -> i128 {
     ((parts.hi as i128) << 64) | (parts.lo as i128)
 }
@@ -214,10 +210,6 @@ pub(super) fn obligation_key_to_scval(obl: &ObligationKey) -> anyhow::Result<ScV
         entries.try_into().map_err(|_| anyhow!("map conversion"))?,
     ))))
 }
-
-// ---------------------------------------------------------------------------
-// Domain parsers
-// ---------------------------------------------------------------------------
 
 pub(super) fn parse_obligation_key(val: &ScVal) -> anyhow::Result<ObligationKey> {
     let map = scval_as_map(val)?;
@@ -403,10 +395,6 @@ pub(super) fn parse_market_data(val: &ScVal) -> anyhow::Result<MarketData> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Request / op builders (low-level ScVal constructors)
-// ---------------------------------------------------------------------------
-
 pub(super) fn build_address_vec_scval(addresses: &[&str]) -> anyhow::Result<ScVal> {
     let mut items = Vec::with_capacity(addresses.len());
     for addr in addresses {
@@ -426,11 +414,8 @@ pub(super) fn build_requests_vec_scval(requests: &[ScVal]) -> anyhow::Result<ScV
     Ok(ScVal::Vec(Some(ScVec(vec_m))))
 }
 
-// ---------------------------------------------------------------------------
-// Display helper
-// ---------------------------------------------------------------------------
-
-/// Format an `ScVal` for display/logging.
+/// Render an `ScVal` for human-readable logs. Lossy and non-canonical:
+/// not suitable for hashing, equality checks, or round-tripping back to XDR.
 pub fn scval_display(val: &ScVal) -> String {
     match val {
         ScVal::Address(addr) => addr.to_string(),

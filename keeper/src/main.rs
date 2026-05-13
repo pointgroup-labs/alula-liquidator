@@ -63,14 +63,12 @@ async fn main() -> anyhow::Result<()> {
     let pkey = pubkey_to_strkey(&skey);
     info!(%pkey, "keeper identity");
 
-    // --- Storage + adapter --------------------------------------------------
     let store = SqliteStore::open(&db_path)?;
     let gateway = Arc::new(Gateway::new(&rpc_url, pkey.clone())?);
     // Same Arc<Gateway> satisfies Arc<dyn ChainReader> for the read surface;
     // the firewall stays intact at the trait level.
     let chain: Arc<dyn ChainReader> = gateway.clone();
 
-    // --- Engine + metrics ---------------------------------------------------
     let metrics_handle = metrics::install_prometheus_exporter();
     let mut engine: Engine<Event, Action> = Engine::new();
 
@@ -80,7 +78,6 @@ async fn main() -> anyhow::Result<()> {
     // ledger TTL is only a safety ceiling for hooks lost to task panics.
     let capital = Arc::new(CapitalLedger::new());
 
-    // --- Strategies ---------------------------------------------------------
     let bad_debt = BadDebtRequestInitiator::new(
         chain.clone(),
         gateway.clone(),
@@ -152,7 +149,6 @@ async fn main() -> anyhow::Result<()> {
     engine.add_strategy(Box::new(rebalancer));
     engine.add_strategy(Box::new(liquidator));
 
-    // --- Collectors ---------------------------------------------------------
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::new(
         &rpc_url,
@@ -165,10 +161,8 @@ async fn main() -> anyhow::Result<()> {
     )?));
     engine.add_collector(Box::new(BlockCollector::new(&rpc_url)));
 
-    // --- Executor -----------------------------------------------------------
     engine.add_executor(Box::new(SorobanExecutor::new(gateway, network_passphrase)));
 
-    // --- Run ----------------------------------------------------------------
     tokio::select! {
         _ = run_engine(engine) => {}
         res = metrics::serve(metrics_handle, metrics_bind_addr) => {
@@ -181,8 +175,6 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
 
 async fn run_engine(engine: Engine<Event, Action>) {
     match engine.run().await {

@@ -565,7 +565,6 @@ impl Liquidator {
             profit_margin_borrow,
         )?;
 
-        // --- Direct branch ---
         let raw_borrow_balance = match self
             .ledger
             .cached_balance(&*self.chain, borrow_token, &self.pkey)

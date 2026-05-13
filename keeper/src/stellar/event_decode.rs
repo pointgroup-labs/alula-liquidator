@@ -15,10 +15,6 @@ use {
     stellar_xdr::curr::{Limits, ReadXdr as _, ScMap, ScVal},
 };
 
-// ---------------------------------------------------------------------------
-// Event-data parsers (free functions — used by strategies in step 7)
-// ---------------------------------------------------------------------------
-
 fn parse_obligation_from_event_value_inner(
     value_xdr_base64: &str,
     obligation_field_name: &str,
@@ -38,10 +34,6 @@ fn parse_obligation_from_event_value_inner(
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// EventCodec
-// ---------------------------------------------------------------------------
 
 impl EventCodec for Gateway {
     type RawEvent = stellar_rpc_client::Event;
