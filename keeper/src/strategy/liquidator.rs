@@ -7,7 +7,7 @@ use {
         collect::{Event, block::NewBlock},
         execute::{
             Action,
-            stellar_tx::{SettleHook, SubmitStellarTx},
+            stellar_tx::{LiquidationOutcomeMetric, SettleHook, SubmitStellarTx},
         },
         stellar::Gateway,
         storage::{CursorRepo, ObligationsRepo},
@@ -1077,6 +1077,10 @@ impl Liquidator {
                     on_settle: Some(SettleHook {
                         ledger: self.ledger.clone(),
                         op_id,
+                        liquidation_outcome: Some(LiquidationOutcomeMetric {
+                            market: market.to_string(),
+                            expected_net_oracle: plan.net_profit_oracle,
+                        }),
                     }),
                 }))
             }

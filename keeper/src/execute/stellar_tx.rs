@@ -17,7 +17,7 @@ use {
     anyhow::Result,
     ed25519_dalek::{Signer, SigningKey},
     engine::reactor::{BoxFuture, Executor},
-    metrics::counter,
+    metrics::{counter, histogram},
     sha2::{Digest, Sha256},
     std::{sync::Arc, time::Duration},
     stellar_rpc_client::{AuthMode, Client},
@@ -35,6 +35,18 @@ use {
 /// Default fee for simulation transactions (in stroops).
 const DEFAULT_SIMULATION_FEE: u32 = 100_000;
 
+/// Optional metric payload attached by liquidation strategies. When present,
+/// the executor emits a "realised" counter on the `confirmed` settlement
+/// path so the dashboard can compare expected-at-dispatch against
+/// expected-on-tx-actually-confirmed. The gap between the two surfaces the
+/// realisation tax — submission failures and confirmation drift — without
+/// reading on-chain settlement values.
+#[derive(Debug, Clone)]
+pub struct LiquidationOutcomeMetric {
+    pub market: String,
+    pub expected_net_oracle: i128,
+}
+
 /// Released by the executor on every terminal path: confirm-success,
 /// confirm-failure, simulation-no-results skip, or retry-exhaustion. The
 /// `op_id` was minted by the issuing strategy when it called
@@ -43,6 +55,9 @@ const DEFAULT_SIMULATION_FEE: u32 = 100_000;
 pub struct SettleHook {
     pub ledger: Arc<CapitalLedger>,
     pub op_id: u64,
+    /// `Some` only for liquidation plans; `None` for capital-neutral or
+    /// non-profit operations (rebalancer swaps, withdrawals).
+    pub liquidation_outcome: Option<LiquidationOutcomeMetric>,
 }
 
 impl SettleHook {
@@ -248,6 +263,21 @@ fn spawn_confirmation_poll(rpc: Arc<Client>, hash_hex: String, on_settle: Option
                     "outcome" => "confirmed",
                 )
                 .increment(1);
+                if let Some(hook) = &on_settle
+                    && let Some(metric) = &hook.liquidation_outcome
+                {
+                    let net = metric.expected_net_oracle.max(0);
+                    counter!(
+                        "liquidator_plan_realised_net_profit_oracle_units_total",
+                        "market" => metric.market.clone(),
+                    )
+                    .increment(net as u64);
+                    histogram!(
+                        "liquidator_plan_realised_net_profit_oracle_units",
+                        "market" => metric.market.clone(),
+                    )
+                    .record(net as f64);
+                }
             }
             Err(e) => {
                 warn!(hash = %hash_hex, %e, "tx confirmation poll failed");

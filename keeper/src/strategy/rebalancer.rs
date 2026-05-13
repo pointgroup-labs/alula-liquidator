@@ -351,6 +351,7 @@ impl Rebalancer {
             on_settle: Some(SettleHook {
                 ledger: self.ledger.clone(),
                 op_id,
+                liquidation_outcome: None,
             }),
         })))
     }
