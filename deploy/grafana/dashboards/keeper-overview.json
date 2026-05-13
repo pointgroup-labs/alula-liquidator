@@ -123,7 +123,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - liquidator_last_successful_scan_timestamp_seconds{market=~\"$market\"}",
+          "expr": "time() - liquidator_last_successful_scan_timestamp_seconds",
           "legendFormat": "{{market}}",
           "instant": true
         }
@@ -434,7 +434,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (outcome) (rate(liquidator_scan_completed_total{market=~\"$market\"}[5m]))",
+          "expr": "sum by (outcome) (rate(liquidator_scan_completed_total[5m]))",
           "legendFormat": "{{outcome}}"
         }
       ],
@@ -534,12 +534,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "liquidator_obligations_total{market=~\"$market\"}",
+          "expr": "liquidator_obligations_total",
           "legendFormat": "{{market}} obligations"
         },
         {
           "refId": "B",
-          "expr": "liquidator_liquidatable_positions{market=~\"$market\"}",
+          "expr": "liquidator_liquidatable_positions",
           "legendFormat": "{{market}} liquidatable"
         }
       ],
@@ -1392,17 +1392,17 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "liquidator_market_scan_duration_seconds{quantile=\"0.5\", market=~\"$market\"}",
+          "expr": "liquidator_market_scan_duration_seconds{quantile=\"0.5\"}",
           "legendFormat": "p50 {{market}} / {{outcome}}"
         },
         {
           "refId": "B",
-          "expr": "liquidator_market_scan_duration_seconds{quantile=\"0.95\", market=~\"$market\"}",
+          "expr": "liquidator_market_scan_duration_seconds{quantile=\"0.95\"}",
           "legendFormat": "p95 {{market}} / {{outcome}}"
         },
         {
           "refId": "C",
-          "expr": "liquidator_market_scan_duration_seconds{quantile=\"0.99\", market=~\"$market\"}",
+          "expr": "liquidator_market_scan_duration_seconds{quantile=\"0.99\"}",
           "legendFormat": "p99 {{market}} / {{outcome}}"
         }
       ],
@@ -1641,12 +1641,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "liquidator_plan_expected_net_profit_oracle_units{quantile=\"0.5\", market=~\"$market\"} / 10000000",
+          "expr": "liquidator_plan_expected_net_profit_oracle_units{quantile=\"0.5\"} / 10000000",
           "legendFormat": "p50 {{market}}"
         },
         {
           "refId": "B",
-          "expr": "liquidator_plan_expected_net_profit_oracle_units{quantile=\"0.95\", market=~\"$market\"} / 10000000",
+          "expr": "liquidator_plan_expected_net_profit_oracle_units{quantile=\"0.95\"} / 10000000",
           "legendFormat": "p95 {{market}}"
         }
       ],
@@ -1727,17 +1727,17 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (market) (3600 * rate(liquidator_plan_expected_net_profit_oracle_units_total{market=~\"$market\"}[15m])) / 10000000",
+          "expr": "sum by (market) (3600 * rate(liquidator_plan_expected_net_profit_oracle_units_total[15m])) / 10000000",
           "legendFormat": "expected {{market}}"
         },
         {
           "refId": "B",
-          "expr": "sum(3600 * rate(liquidator_plan_expected_net_profit_oracle_units_total{market=~\"$market\"}[15m])) / 10000000",
+          "expr": "sum(3600 * rate(liquidator_plan_expected_net_profit_oracle_units_total[15m])) / 10000000",
           "legendFormat": "expected total"
         },
         {
           "refId": "C",
-          "expr": "sum(3600 * rate(liquidator_plan_realised_net_profit_oracle_units_total{market=~\"$market\"}[15m])) / 10000000",
+          "expr": "sum(3600 * rate(liquidator_plan_realised_net_profit_oracle_units_total[15m])) / 10000000",
           "legendFormat": "realised total"
         }
       ],
@@ -2241,28 +2241,7 @@
     "liquidator"
   ],
   "templating": {
-    "list": [
-      {
-        "name": "market",
-        "label": "Market",
-        "type": "constant",
-        "query": ".*",
-        "current": {
-          "selected": true,
-          "text": ".*",
-          "value": ".*"
-        },
-        "options": [
-          {
-            "selected": true,
-            "text": ".*",
-            "value": ".*"
-          }
-        ],
-        "hide": 2,
-        "description": "Constant `.*` so every `{market=~\"$market\"}` query matches all markets. Constant-type avoids datasource roundtrips that public dashboards can't perform; promote back to `query` when there are multiple markets and the picker is worth restoring."
-      }
-    ]
+    "list": []
   },
   "time": {
     "from": "now-6h",
