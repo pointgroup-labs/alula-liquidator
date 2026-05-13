@@ -4,12 +4,13 @@ Running, observing, and debugging a deployed keeper.
 
 ## Deployment with docker compose
 
-The included [`docker-compose.yml`](../docker-compose.yml) stands up three services on a private `obs` network:
+The included [`docker-compose.yml`](../docker-compose.yml) stands up four services on a private `obs` network:
 
 | Service | Purpose | Host port |
 |---|---|---|
-| `keeper` | The bot itself. Builds from [`Dockerfile`](../Dockerfile). | — (metrics scraped internally) |
+| `keeper` | The bot itself. Builds from [`Dockerfile`](../Dockerfile). | `127.0.0.1:9000` (metrics scraped internally) |
 | `prometheus` | Scrapes the keeper's `/metrics` every 10 s. | `127.0.0.1:9090` |
+| `alertmanager` | Routes Prometheus alerts to the configured webhook. | `127.0.0.1:9093` |
 | `grafana` | Renders the provisioned dashboard. | `3000` |
 
 ```bash
@@ -58,7 +59,7 @@ The provisioned dashboard `Alula Liquidator` is organised into rows by what ques
 
 ## Troubleshooting
 
-**"Scrape up is 0."** Prometheus cannot reach `keeper:9090`. Confirm `metrics_bind_addr` in the config matches the address Prometheus targets (`keeper:9090` for the docker-compose stack — note the `keeper` here is the *service* name, not the `container_name`). If you bound to `127.0.0.1`, change it to `0.0.0.0`.
+**"Scrape up is 0."** Prometheus cannot reach `keeper:9000`. Confirm `metrics_bind_addr` in the config matches the address Prometheus targets (`keeper:9000` for the docker-compose stack — note the `keeper` here is the *service* name, not the `container_name`). If you bound to `127.0.0.1`, change it to `0.0.0.0`.
 
 **"Time since last scan keeps growing."** The collector is stuck. Inspect `docker compose logs keeper` for repeated RPC errors. The most common cause is a stale event cursor in the SQLite db (`db_path`) after switching networks — delete the db file and restart; the keeper re-derives from head.
 

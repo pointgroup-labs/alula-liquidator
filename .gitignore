@@ -41,6 +41,10 @@ target
 .env.*
 !.env.example
 
+# Operator-supplied env and secrets for the deploy/ stack.
+deploy/keeper.env
+deploy/secrets/
+
 .claude
 CLAUDE.md
 
