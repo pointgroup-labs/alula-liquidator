@@ -2245,29 +2245,30 @@
       {
         "name": "market",
         "label": "Market",
-        "type": "query",
-        "datasource": {
-          "type": "prometheus",
-          "uid": "prometheus"
-        },
-        "query": {
-          "qryType": 1,
-          "query": "label_values(liquidator_last_successful_scan_timestamp_seconds, market)",
-          "refId": "PrometheusVariableQueryEditor-VariableQuery"
-        },
-        "refresh": 2,
-        "sort": 1,
+        "type": "custom",
+        "query": "CCWYUCUX7QHREMI6R74RAQGCIOXRTELECS2TKYMRD4MDPIYNFSSQUFUS",
         "multi": true,
         "includeAll": true,
         "allValue": ".*",
         "current": {
-          "selected": false,
-          "text": "All",
-          "value": "$__all"
+          "selected": true,
+          "text": ["All"],
+          "value": ["$__all"]
         },
-        "options": [],
+        "options": [
+          {
+            "selected": true,
+            "text": "All",
+            "value": "$__all"
+          },
+          {
+            "selected": false,
+            "text": "CCWYUCUX7QHREMI6R74RAQGCIOXRTELECS2TKYMRD4MDPIYNFSSQUFUS",
+            "value": "CCWYUCUX7QHREMI6R74RAQGCIOXRTELECS2TKYMRD4MDPIYNFSSQUFUS"
+          }
+        ],
         "hide": 0,
-        "description": "Filter panels by market. Defaults to All."
+        "description": "Filter panels by market. Custom-type so the public-dashboard view (which can't run `label_values()` against Prometheus) still resolves without firing `panels/undefined/query` errors. Update the options list when markets are added."
       }
     ]
   },
