@@ -570,11 +570,7 @@ impl Liquidator {
             .cached_balance(&*self.chain, borrow_token, &self.pkey)
             .await
         {
-            Ok(b) => {
-                gauge!("liquidator_asset_balance", "token_address" => borrow_token.to_string())
-                    .set(b as f64);
-                b
-            }
+            Ok(b) => b,
             Err(e) => {
                 warn!(?e, %borrow_token, "balance query failed");
                 counter!("liquidator_skip_total", "reason" => "balance_query_failed").increment(1);
@@ -686,11 +682,7 @@ impl Liquidator {
                 .cached_balance(&*self.chain, source_asset, &self.pkey)
                 .await
             {
-                Ok(b) => {
-                    gauge!("liquidator_asset_balance", "token_address" => source_asset.clone())
-                        .set(b as f64);
-                    b
-                }
+                Ok(b) => b,
                 Err(e) => {
                     warn!(?e, %source_asset, "balance query failed");
                     continue;
