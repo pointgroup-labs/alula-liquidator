@@ -57,8 +57,13 @@ jobs:
           #   :edge             — moving pointer at default-branch tip
           #   :<branch>         — sanitized branch name (e.g. :main); lets
           #                       ops pin to a branch's latest without sha
-          #   :sha-<short-sha>  — immutable per-commit identifier. Full SHA
-          #                       lives in the OCI image.revision label.
+          #   :sha-<short-sha>  — per-commit pointer. The tag itself is not
+          #                       cryptographically immutable (a rebuild of
+          #                       the same commit produces a different
+          #                       BUILD_DATE and therefore a different
+          #                       digest), but it uniquely identifies the
+          #                       source commit. Pin by `@sha256:` digest
+          #                       for true immutability.
           #   :vX.Y.Z, :vX.Y    — semver tags from `v*` git tags
           tags: |
             type=raw,value=edge,enable={{is_default_branch}}
@@ -89,6 +94,12 @@ jobs:
           build-args: |
             GIT_SHA=${{ github.sha }}
             BUILD_DATE=${{ steps.date.outputs.build_date }}
+            # metadata-action's `version` output is the primary tag chosen
+            # for this build (semver for tag pushes, "edge"/branch for
+            # branch pushes). Without this the Dockerfile's VERSION ARG
+            # stays pinned at its 0.0.1 default and the OCI `image.version`
+            # label lies about what was shipped.
+            VERSION=${{ steps.meta.outputs.version }}
           # Registry cache lives in ghcr alongside the image: survives across
           # branches, isn't capped at 10 GB like type=gha, and isn't evicted
           # when other workflows pressure the cache. `mode=max` exports the

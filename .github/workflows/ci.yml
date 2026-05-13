@@ -71,7 +71,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      # rustsec/audit-check posts findings as PR review comments.
+      # Job-level permissions REPLACE the top-level block, so we have to
+      # re-declare `contents: read` for actions/checkout to work on
+      # private repos.
+      contents: read
+      # rustsec/audit-check posts findings as PR review comments / checks.
+      # Fork PRs receive a read-only GITHUB_TOKEN; the action degrades to
+      # log-only output in that case rather than failing.
       issues: write
       checks: write
     steps:

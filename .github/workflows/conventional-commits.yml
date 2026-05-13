@@ -4,6 +4,10 @@ on:
   pull_request:
     types: [opened, reopened, edited, synchronize]
 
+# The job only reads `github.event.pull_request.title` and runs a regex —
+# no repo, issues, or check writes are needed. Drop the token to no scopes.
+permissions: {}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -22,7 +26,9 @@ jobs:
       #   verb(scope): description
       #   verb(scope)!: description
       - run: |
-          if [[ "$TITLE" =~ ^(feat|fix|chore|build|ci|docs|style|refactor|perf|test|revert)(\([-a-zA-Z0-9,]+\))?\!?\: ]]; then
+          # Scope class allows `_` and `.` so titles like `chore(deps-dev):`
+          # or `fix(ci.github):` pass. Commas keep multi-scope notation.
+          if [[ "$TITLE" =~ ^(feat|fix|chore|build|ci|docs|style|refactor|perf|test|revert)(\([-_.a-zA-Z0-9,]+\))?\!?\: ]]; then
             echo pass
           else
             echo "PR title does not match Conventional Commits"
