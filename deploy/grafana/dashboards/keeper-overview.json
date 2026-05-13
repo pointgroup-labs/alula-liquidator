@@ -25,7 +25,7 @@
     {
       "id": 100,
       "type": "row",
-      "title": "Is the bot alive? (and doing anything)",
+      "title": "Is the bot alive?",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -2245,30 +2245,22 @@
       {
         "name": "market",
         "label": "Market",
-        "type": "custom",
-        "query": "CCWYUCUX7QHREMI6R74RAQGCIOXRTELECS2TKYMRD4MDPIYNFSSQUFUS",
-        "multi": true,
-        "includeAll": true,
-        "allValue": ".*",
+        "type": "constant",
+        "query": ".*",
         "current": {
           "selected": true,
-          "text": ["All"],
-          "value": ["$__all"]
+          "text": ".*",
+          "value": ".*"
         },
         "options": [
           {
             "selected": true,
-            "text": "All",
-            "value": "$__all"
-          },
-          {
-            "selected": false,
-            "text": "CCWYUCUX7QHREMI6R74RAQGCIOXRTELECS2TKYMRD4MDPIYNFSSQUFUS",
-            "value": "CCWYUCUX7QHREMI6R74RAQGCIOXRTELECS2TKYMRD4MDPIYNFSSQUFUS"
+            "text": ".*",
+            "value": ".*"
           }
         ],
-        "hide": 0,
-        "description": "Filter panels by market. Custom-type so the public-dashboard view (which can't run `label_values()` against Prometheus) still resolves without firing `panels/undefined/query` errors. Update the options list when markets are added."
+        "hide": 2,
+        "description": "Constant `.*` so every `{market=~\"$market\"}` query matches all markets. Constant-type avoids datasource roundtrips that public dashboards can't perform; promote back to `query` when there are multiple markets and the picker is worth restoring."
       }
     ]
   },
