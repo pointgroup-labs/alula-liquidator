@@ -345,7 +345,7 @@
     {
       "id": 101,
       "type": "row",
-      "title": "Is the bot doing the right thing? \u2014 pipeline",
+      "title": "Are liquidations landing?",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1218,7 +1218,7 @@
     {
       "id": 103,
       "type": "row",
-      "title": "Is the bot keeping up?",
+      "title": "Is the bot keeping up with the chain?",
       "collapsed": false,
       "gridPos": {
         "h": 1,
