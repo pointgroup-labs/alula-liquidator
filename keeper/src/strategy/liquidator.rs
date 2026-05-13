@@ -22,7 +22,7 @@ use {
         ports::{BatchSimulator, ChainReader, EventCodec, OpBuilder, OperationEvent},
         reactor::{BoxFuture, Strategy},
     },
-    metrics::{counter, gauge},
+    metrics::{counter, gauge, histogram},
     std::{collections::HashMap, sync::Arc},
     stellar_rpc_client::Event as SorobanEvent,
     tracing::{debug, error, info, warn},
@@ -348,6 +348,7 @@ impl Liquidator {
 
 impl Liquidator {
     async fn evaluate_market(&self, market: &str) -> Vec<Action> {
+        let started = std::time::Instant::now();
         let Some(market_data) = self.market_data.get(market) else {
             counter!(
                 "liquidator_scan_completed_total",
@@ -355,6 +356,12 @@ impl Liquidator {
                 "outcome" => "no_market_data",
             )
             .increment(1);
+            histogram!(
+                "liquidator_market_scan_duration_seconds",
+                "market" => market.to_string(),
+                "outcome" => "no_market_data",
+            )
+            .record(started.elapsed().as_secs_f64());
             return vec![];
         };
         let Some(obligations) = self.obligations.get(market).filter(|m| !m.is_empty()) else {
@@ -364,6 +371,12 @@ impl Liquidator {
                 "outcome" => "no_obligations",
             )
             .increment(1);
+            histogram!(
+                "liquidator_market_scan_duration_seconds",
+                "market" => market.to_string(),
+                "outcome" => "no_obligations",
+            )
+            .record(started.elapsed().as_secs_f64());
             return vec![];
         };
 
@@ -400,6 +413,12 @@ impl Liquidator {
             "outcome" => "ok",
         )
         .increment(1);
+        histogram!(
+            "liquidator_market_scan_duration_seconds",
+            "market" => market.to_string(),
+            "outcome" => "ok",
+        )
+        .record(started.elapsed().as_secs_f64());
         // Liveness gauge. Pair with `time() - …` alerts to detect stalled scans.
         if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             gauge!(

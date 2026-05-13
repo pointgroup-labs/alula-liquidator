@@ -27,6 +27,21 @@ groups:
             stuck — typically RPC timeouts or the SQLite mutex blocked by a
             long write. Inspect logs for repeated `get_events` failures.
 
+      - alert: KeeperScanSlow
+        expr: |
+          liquidator_market_scan_duration_seconds{quantile="0.95", outcome="ok"} > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Market scan p95 >5s ({{ $labels.market }})"
+          description: >
+            The 95th-percentile latency of a full market scan has exceeded
+            5 seconds for >10m. Usually upstream RPC degradation
+            (`read_market_data` / `read_user_obligation` roundtrips). Fires
+            earlier than `KeeperScanStalled` so you have time to switch RPC
+            providers before scans drop out entirely.
+
   - name: keeper.backpressure
     interval: 30s
     rules:

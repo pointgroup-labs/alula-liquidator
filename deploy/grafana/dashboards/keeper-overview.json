@@ -636,6 +636,34 @@
         "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "min"]},
         "tooltip": {"mode": "multi", "sort": "desc"}
       }
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Market scan latency (per-market quantiles)",
+      "description": "Wall-clock time spent inside one market evaluation, by outcome. Sustained p95 above ~1s usually means RPC roundtrips are slow (`read_market_data` or `read_user_obligation`); flat-but-rising p50 means more obligations are being checked. The `outcome` dimension separates fast early-exits (`no_market_data`, `no_obligations`) from full scans (`ok`).",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 61},
+      "targets": [
+        {"refId": "A", "expr": "liquidator_market_scan_duration_seconds{quantile=\"0.5\", market=~\"$market\"}", "legendFormat": "p50 {{market}} / {{outcome}}"},
+        {"refId": "B", "expr": "liquidator_market_scan_duration_seconds{quantile=\"0.95\", market=~\"$market\"}", "legendFormat": "p95 {{market}} / {{outcome}}"},
+        {"refId": "C", "expr": "liquidator_market_scan_duration_seconds{quantile=\"0.99\", market=~\"$market\"}", "legendFormat": "p99 {{market}} / {{outcome}}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never"}
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": "^p50.*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+          {"matcher": {"id": "byRegexp", "options": "^p95.*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "yellow"}}]},
+          {"matcher": {"id": "byRegexp", "options": "^p99.*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
+        ]
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
     }
   ],
   "refresh": "10s",
