@@ -919,7 +919,7 @@
       "id": 8,
       "type": "timeseries",
       "title": "TX confirmation outcomes",
-      "description": "sum by (outcome) (rate(keeper_tx_confirmed_total[5m])). 'poll_failed' or 'hash_decode_failed' indicates an RPC layer regression.",
+      "description": "sum by (outcome) (rate(keeper_tx_confirmed_total[5m])). 'failed_on_chain' is the realisation-tax tail — tx made it to the network but ended FAILED (gas spent, nothing seized). 'submission_timeout' is uncertainty (tx may yet land). 'transport_error' / 'hash_decode_failed' indicate an RPC-layer regression.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -970,7 +970,7 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "poll_failed|hash_decode_failed"
+              "options": "failed_on_chain|transport_error|unexpected_status|hash_decode_failed"
             },
             "properties": [
               {

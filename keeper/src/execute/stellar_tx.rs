@@ -10,7 +10,7 @@ use {
     crate::{
         stellar::{
             Gateway,
-            errors::{is_bad_seq_error, is_no_simulation_results_error},
+            errors::{SorobanRpcError, is_bad_seq_error, is_no_simulation_results_error},
         },
         strategy::CapitalLedger,
     },
@@ -281,9 +281,17 @@ fn spawn_confirmation_poll(rpc: Arc<Client>, hash_hex: String, on_settle: Option
             }
             Err(e) => {
                 warn!(hash = %hash_hex, %e, "tx confirmation poll failed");
+                let outcome = match SorobanRpcError::classify(&e) {
+                    SorobanRpcError::TxFailedOnChain | SorobanRpcError::Contract { .. } => {
+                        "failed_on_chain"
+                    }
+                    SorobanRpcError::SubmissionTimeout => "submission_timeout",
+                    SorobanRpcError::UnexpectedStatus => "unexpected_status",
+                    _ => "transport_error",
+                };
                 counter!(
                     "keeper_tx_confirmed_total",
-                    "outcome" => "poll_failed",
+                    "outcome" => outcome,
                 )
                 .increment(1);
             }
