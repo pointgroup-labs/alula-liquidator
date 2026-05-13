@@ -1,0 +1,52 @@
+# `cargo audit` / rustsec/audit-check@v2 advisory ignore list.
+#
+# Every entry here is a deliberate, time-limited acceptance of a finding
+# that we cannot fix without an upstream release. Each line carries:
+#   1. the upstream blocker that makes the bump impossible, and
+#   2. a reachability note for this keeper specifically.
+#
+# Re-run `cargo audit` whenever bumping `stellar-rpc-client` or any
+# `soroban-sdk*` crate; most of these will clear once those dependency
+# trees move to `rustls 0.22+` and modern macro/derive crates.
+
+[advisories]
+ignore = [
+    # --- Vulnerabilities ---------------------------------------------------
+
+    # Reachable panic in CRL parsing in rustls-webpki <0.101.8 / <0.102.7.
+    # Blocker: stellar-rpc-client 25.x → jsonrpsee-http-client 0.20.x →
+    # hyper-rustls 0.24.x → rustls 0.21 → rustls-webpki 0.101.x. No 0.101.x
+    # patch released; fix lives in 0.102+. Reachability: the keeper does
+    # not parse caller-supplied CRLs — only acts as an HTTPS client to
+    # operator-configured Soroban RPC endpoints — so this code path is
+    # not driven by attacker input in our deployment shape.
+    "RUSTSEC-2026-0104",
+
+    # Name constraints for URI names were incorrectly accepted by
+    # rustls-webpki <0.101.8. Same dependency chain as 2026-0104. The
+    # keeper connects to operator-trusted RPC URLs (configured at deploy
+    # time), not to attacker-chosen hosts, so a forged-cert attack would
+    # require also compromising the operator config.
+    "RUSTSEC-2026-0098",
+
+    # Name constraints accepted for certificates asserting a wildcard
+    # name. Same chain, same reachability argument as 2026-0098.
+    "RUSTSEC-2026-0099",
+
+    # --- Unmaintained ----------------------------------------------------
+
+    # `derivative` is unmaintained. Transitive of soroban-env-host /
+    # soroban-sdk 23.x. Will clear when the Stellar org migrates off it
+    # (tracked upstream). Not a security defect — informational only.
+    "RUSTSEC-2024-0388",
+
+    # `paste` is no longer maintained. Same situation as `derivative`:
+    # pulled by soroban-wasmi → soroban-env-host. Pure proc-macro,
+    # no runtime surface.
+    "RUSTSEC-2024-0436",
+
+    # `rustls-pemfile 1.0.x` is unmaintained. Pulled by hyper-rustls
+    # 0.24.x via the same stellar-rpc-client chain as the rustls-webpki
+    # advisories above. Clears when that chain moves to rustls 0.22+.
+    "RUSTSEC-2025-0134",
+]
