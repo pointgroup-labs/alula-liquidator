@@ -181,17 +181,17 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(liquidator_liquidation_plans_dispatched_total[5m]))",
+          "expr": "sum(rate(liquidator_liquidation_plans_dispatched_total[5m])) or on() vector(0)",
           "legendFormat": "plans dispatched"
         },
         {
           "refId": "B",
-          "expr": "sum(rate(keeper_tx_submitted_total{outcome=\"ok\"}[5m]))",
+          "expr": "sum(rate(keeper_tx_submitted_total{outcome=\"ok\"}[5m])) or on() vector(0)",
           "legendFormat": "tx submitted ok"
         },
         {
           "refId": "C",
-          "expr": "sum(rate(keeper_tx_confirmed_total{outcome=\"confirmed\"}[5m]))",
+          "expr": "sum(rate(keeper_tx_confirmed_total{outcome=\"confirmed\"}[5m])) or on() vector(0)",
           "legendFormat": "tx confirmed"
         }
       ],
@@ -454,12 +454,12 @@
         },
         {
           "refId": "B",
-          "expr": "rate(engine_strategy_lagged_events_total[5m])",
+          "expr": "rate(engine_strategy_lagged_events_total[5m]) or on() vector(0)",
           "legendFormat": "strategy"
         },
         {
           "refId": "C",
-          "expr": "rate(engine_executor_lagged_actions_total[5m])",
+          "expr": "rate(engine_executor_lagged_actions_total[5m]) or on() vector(0)",
           "legendFormat": "executor"
         }
       ],
@@ -495,7 +495,7 @@
         },
         {
           "refId": "B",
-          "expr": "rate(keeper_tx_bad_seq_retries_total[5m])",
+          "expr": "rate(keeper_tx_bad_seq_retries_total[5m]) or on() vector(0)",
           "legendFormat": "bad_seq retries"
         }
       ],
