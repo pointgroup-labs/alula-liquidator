@@ -10,6 +10,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # `:-` keeps the build working when these aren't exported (e.g. on
+        # a fresh checkout). CI should set GIT_SHA/BUILD_DATE explicitly.
+        GIT_SHA: ${GIT_SHA:-dev}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     image: alula-keeper:local
     container_name: alula-keeper
     restart: unless-stopped

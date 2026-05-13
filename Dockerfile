@@ -30,10 +30,19 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 FROM debian:bookworm-slim AS runtime
 
+# Build args populated by CI / docker-compose so `docker inspect` reveals
+# which commit produced this image. Defaults keep ad-hoc `docker build .`
+# working without ceremony.
+ARG GIT_SHA=unknown
+ARG BUILD_DATE=unknown
+ARG VERSION=0.0.1
+
 LABEL org.opencontainers.image.title="alula-keeper" \
       org.opencontainers.image.description="Stellar/Soroban liquidator keeper" \
-      org.opencontainers.image.source="https://github.com/tiamo/alula-liquidator" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.source="https://github.com/pointgroup-labs/alula-liquidator" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl tini \
