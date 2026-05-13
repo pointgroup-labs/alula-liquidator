@@ -822,6 +822,58 @@
         "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]},
         "tooltip": {"mode": "multi", "sort": "desc"}
       }
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Withdrawer outcomes (per/min)",
+      "description": "What the withdrawer decided on each deposit position it considered. `dispatched` = action emitted. `pool_at_capacity` / `below_threshold` are normal pauses (utilization safety floor or `min_withdraw_value_cents`). `no_obligations` is the steady state when the keeper isn't depositor on a market. `pool_missing` / `build_error` / `no_market_data` are red flags.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 93},
+      "targets": [
+        {"refId": "A", "expr": "60 * rate(withdrawer_outcome_total[5m])", "legendFormat": "{{outcome}}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "stacking": {"mode": "normal"}}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "dispatched"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+          {"matcher": {"id": "byRegexp", "options": "^(no_obligations|pool_at_capacity|below_threshold)$"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}]},
+          {"matcher": {"id": "byRegexp", "options": "^(no_market_data|pool_missing|build_error)$"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
+        ]
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Bad-debt initiator outcomes (per/min)",
+      "description": "Per-Liquidate-event decisions of the bad-debt request initiator. `ineligible` is the overwhelming common case (most liquidations leave healthy residual collateral). `dispatched` fires when a borrower is left underwater — i.e., the protocol needs to socialize the loss. `parse_error` / `decode_op_error` / `build_failed` indicate the strategy can't even evaluate eligibility — chase those in logs. Non-Liquidate event types are filtered upstream and don't count here.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 93},
+      "targets": [
+        {"refId": "A", "expr": "60 * rate(bad_debt_outcome_total[5m])", "legendFormat": "{{outcome}}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "stacking": {"mode": "normal"}}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "dispatched"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+          {"matcher": {"id": "byRegexp", "options": "^(ineligible|obligation_cleared)$"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}]},
+          {"matcher": {"id": "byRegexp", "options": "^(parse_error|decode_op_error|build_failed)$"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
+        ]
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
     }
   ],
   "refresh": "10s",

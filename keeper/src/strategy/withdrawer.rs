@@ -13,6 +13,7 @@ use {
         ports::{ChainReader, EventCodec, OpBuilder, OperationEvent},
         reactor::{BoxFuture, Strategy},
     },
+    metrics::counter,
     std::{collections::HashMap, sync::Arc},
     stellar_rpc_client::Event as SorobanEvent,
     tracing::{error, info, trace, warn},
@@ -121,10 +122,12 @@ impl Withdrawer {
     fn find_withdrawal_opportunities(&self, market_address: &str) -> Vec<Action> {
         let Some(market_data) = self.market_data.get(market_address) else {
             warn!(?market_address, "No market data available");
+            counter!("withdrawer_outcome_total", "outcome" => "no_market_data").increment(1);
             return vec![];
         };
         let Some(liquidator_obligation) = self.liquidator_obligations.get(market_address) else {
             info!(market = %market_address, "No liquidator obligations for market");
+            counter!("withdrawer_outcome_total", "outcome" => "no_obligations").increment(1);
             return vec![];
         };
 
@@ -136,6 +139,7 @@ impl Withdrawer {
                 .find(|p| p.pool_address == deposit_pos.pool_address)
             else {
                 warn!(pool = deposit_pos.pool_address, "Pool not found");
+                counter!("withdrawer_outcome_total", "outcome" => "pool_missing").increment(1);
                 continue;
             };
 
@@ -144,6 +148,7 @@ impl Withdrawer {
             // if `utilization_considered_safe` collapses to ≤ 0.
             let max_withdrawal = pool.compute_max_safe_withdrawal(UTILIZATION_SAFETY_MARGIN_BPS);
             if max_withdrawal == Underlying::ZERO {
+                counter!("withdrawer_outcome_total", "outcome" => "pool_at_capacity").increment(1);
                 continue;
             }
 
@@ -172,9 +177,19 @@ impl Withdrawer {
                     &pool.pool_address,
                     withdrawal_amount,
                 ) {
-                    Ok(action) => actions.push(action),
-                    Err(e) => error!(?e, "Failed to build withdrawal action"),
+                    Ok(action) => {
+                        actions.push(action);
+                        counter!("withdrawer_outcome_total", "outcome" => "dispatched")
+                            .increment(1);
+                    }
+                    Err(e) => {
+                        error!(?e, "Failed to build withdrawal action");
+                        counter!("withdrawer_outcome_total", "outcome" => "build_error")
+                            .increment(1);
+                    }
                 };
+            } else {
+                counter!("withdrawer_outcome_total", "outcome" => "below_threshold").increment(1);
             }
         }
 
