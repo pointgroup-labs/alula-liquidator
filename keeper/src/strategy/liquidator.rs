@@ -500,6 +500,22 @@ impl Liquidator {
         }
 
         let plan = best?;
+        // Expected profitability of the dispatched plan. Net oracle units
+        // are non-negative here by construction (gated upstream); the
+        // `.max(0)` is a defensive belt-and-braces against future invariant
+        // drift. Oracle units divide by 10^7 for USD at standard SAC
+        // 7-decimal scaling (`cents * 10^oracle_decimals / 100`).
+        let net_oracle = plan.net_profit_oracle.max(0);
+        histogram!(
+            "liquidator_plan_expected_net_profit_oracle_units",
+            "market" => market.to_string(),
+        )
+        .record(net_oracle as f64);
+        counter!(
+            "liquidator_plan_expected_net_profit_oracle_units_total",
+            "market" => market.to_string(),
+        )
+        .increment(net_oracle as u64);
         info!(
             ?plan.borrower_key,
             borrow_pool = %plan.borrow_pool_address,

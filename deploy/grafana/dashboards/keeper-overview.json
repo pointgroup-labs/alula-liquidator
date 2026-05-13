@@ -710,6 +710,60 @@
         "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]},
         "tooltip": {"mode": "multi", "sort": "desc"}
       }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Expected profit per plan — p50 / p95 (USD)",
+      "description": "Per-market distribution of the expected net profit on each dispatched liquidation plan. Sourced from `plan.net_profit_oracle` at the moment the best (borrow, deposit) pair is picked, before tx submission — so this is the modelled gain, not realised. Oracle units divided by 10^7 (standard SAC scaling). p50 climbing means richer opportunities; p50 collapsing means we're scraping dust and should re-tune `min_profit_margin_cents`.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 77},
+      "targets": [
+        {"refId": "A", "expr": "liquidator_plan_expected_net_profit_oracle_units{quantile=\"0.5\", market=~\"$market\"} / 10000000", "legendFormat": "p50 {{market}}"},
+        {"refId": "B", "expr": "liquidator_plan_expected_net_profit_oracle_units{quantile=\"0.95\", market=~\"$market\"} / 10000000", "legendFormat": "p95 {{market}}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never"}
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": "^p50.*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+          {"matcher": {"id": "byRegexp", "options": "^p95.*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "yellow"}}]}
+        ]
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Expected profit dispatched (USD/hour)",
+      "description": "Hourly run-rate of expected profit on dispatched plans, summed across markets. This is the headline 'is the bot making money?' chart, with the caveat that it tracks expected rather than realised profit — submission failures and adverse simulation drift between plan-build and on-chain execution will widen the gap. Use this trend alongside `TX confirmation outcomes` to gauge realisation.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 77},
+      "targets": [
+        {"refId": "A", "expr": "sum by (market) (3600 * rate(liquidator_plan_expected_net_profit_oracle_units_total{market=~\"$market\"}[15m])) / 10000000", "legendFormat": "{{market}}"},
+        {"refId": "B", "expr": "sum(3600 * rate(liquidator_plan_expected_net_profit_oracle_units_total{market=~\"$market\"}[15m])) / 10000000", "legendFormat": "total"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never"}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "total"}, "properties": [
+            {"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}},
+            {"id": "custom.lineWidth", "value": 3}
+          ]}
+        ]
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "mean", "max"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
     }
   ],
   "refresh": "10s",
