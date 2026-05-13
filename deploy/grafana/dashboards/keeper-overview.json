@@ -518,6 +518,54 @@
         "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "lastNotNull"]},
         "tooltip": {"mode": "multi", "sort": "desc"}
       }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Wallet balances per asset",
+      "description": "Raw on-chain balances per asset the keeper holds. Falling to zero blocks Own/PreSwap liquidation modes and dust-stops the rebalancer. XLM caps inclusion-fee headroom (xlm_safety_margin).",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 45},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "liquidator_asset_balance",
+          "legendFormat": "{{token_address}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never"}
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Keeper self-position per market",
+      "description": "The keeper's own jTokens (supply), dTokens (borrow), and plain collateral per market. The withdrawer strategy acts on the jToken series; non-zero dTokens mean the keeper is itself a borrower and is exposed to liquidation risk.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 45},
+      "targets": [
+        {"refId": "A", "expr": "liquidator_self_j_tokens_underlying", "legendFormat": "supply {{token_symbol}}"},
+        {"refId": "B", "expr": "liquidator_self_d_tokens_underlying", "legendFormat": "borrow {{token_symbol}}"},
+        {"refId": "C", "expr": "liquidator_self_plain_collateral", "legendFormat": "collateral {{token_symbol}}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never"}
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"]},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
     }
   ],
   "refresh": "10s",
