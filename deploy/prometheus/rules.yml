@@ -176,6 +176,40 @@ groups:
             `xlm_safety_margin`. The next opportunity will be skipped
             with `insufficient_capital`. Refill immediately.
 
+  - name: keeper.side_strategies
+    interval: 30s
+    rules:
+      - alert: KeeperBadDebtSchemaDrift
+        expr: |
+          60 * sum(rate(bad_debt_outcome_total{outcome=~"decode_op_error|parse_error"}[10m])) > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bad-debt initiator failing to decode liquidation events"
+          description: >
+            `bad_debt_outcome_total{outcome=~"decode_op_error|parse_error"}`
+            is incrementing >1/min sustained. Either the contract event
+            topology changed under a deploy and the gateway codec is out of
+            sync, or upstream is producing malformed values. The strategy
+            will silently miss bad-debt-cover opportunities until fixed.
+
+      - alert: KeeperWithdrawerErrors
+        expr: |
+          60 * sum(rate(withdrawer_outcome_total{outcome=~"no_market_data|pool_missing|build_error"}[10m])) > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Withdrawer hitting unexpected errors ({{ $labels.outcome }})"
+          description: >
+            Withdrawer red-path outcomes are firing sustained. `no_market_data`
+            points at RPC degradation against `read_market_data`; `pool_missing`
+            means the obligation references a pool not in the market data
+            response (config/contract drift); `build_error` is a gateway op
+            build failure. Distinct from `pool_at_capacity` and `below_threshold`
+            which are healthy tuning verdicts.
+
   - name: keeper.persistence
     interval: 30s
     rules:
