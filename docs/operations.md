@@ -75,6 +75,26 @@ The provisioned dashboard `Alula Liquidator` is organised into rows by what ques
 
 **"`config.example.json` doesn't load."** The keeper enforces `deny_unknown_fields`. A typo in any key fails the entire load. The error message names the offending field — copy it verbatim or remove it.
 
+## Alert reference
+
+Source of truth is [`deploy/prometheus/rules.yml`](../deploy/prometheus/rules.yml). The table below is the on-call shortcut from page → first action; the rules file itself carries the long-form `description:` annotation.
+
+| Alert | Severity | What it means | First move |
+|---|---|---|---|
+| `KeeperDown` | critical | Scrape failing >1m. | `docker compose logs keeper`; check crash loop. |
+| `KeeperScanStalled` | critical | No successful scan in 5m. | Inspect logs for repeated `get_events` errors; rotate RPC. |
+| `KeeperScanSlow` | warning | Scan p95 > 5s for 10m. | Pre-cursor to stall — switch RPC before it tips. |
+| `KeeperRpcSimulateTransportFailing` | warning | Network-layer simulate failures >1/min for 10m. | RPC degraded — switch provider. |
+| `KeeperEventsDropped` / `KeeperActionsDropped` | critical | Reactor channels overflowing. | Raise channel capacity or speed up the lagging stage. |
+| `KeeperCollectorLagging` | warning | Upstream of strategy lag. | Inspect the named `collector` label. |
+| `KeeperOpportunitiesNotDispatched` | critical | Liquidatable positions visible but no plans in 10m. | Money-leaving. Check `liquidator_skip_total` and capital ledger. |
+| `KeeperTxConfirmationRateLow` | critical | <50% confirm over 15m. | Fee/sequence — bump `liquidator_inclusion_fee_oracle_units`. |
+| `KeeperBadSeqRetriesElevated` | warning | Sequence racing. | Check for parallel submitters on the same source account. |
+| `KeeperXlmFundingLow` / `KeeperXlmFundingCritical` | warning / critical | XLM at 2x / 1.1x of margin. | Refill the keeper account. |
+| `KeeperBadDebtSchemaDrift` | warning | Bad-debt strategy failing to decode events. | Contract event topology likely drifted — re-check gateway codec. |
+| `KeeperWithdrawerErrors` | warning | Withdrawer red-path outcomes climbing. | `no_market_data`/`pool_missing`/`build_error` — RPC or gateway, not config. |
+| `KeeperCursorSaveFailing` | critical | SQLite cursor writes failing. | Check `db_path` mount and disk space. |
+
 ## Security advisories
 
 [`.cargo/audit.toml`](../.cargo/audit.toml) lists the rustsec advisories we accept temporarily, with per-entry rationale and an explicit re-evaluation trigger (every `stellar-rpc-client` or `soroban-sdk` bump). Re-run `cargo audit` after any dependabot PR merges to refresh the picture.
