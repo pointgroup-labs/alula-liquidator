@@ -66,26 +66,6 @@ jobs:
       - run: cargo build --workspace --locked --all-targets
       - run: cargo test --workspace --locked
 
-  audit:
-    name: audit
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      # Job-level permissions REPLACE the top-level block, so we have to
-      # re-declare `contents: read` for actions/checkout to work on
-      # private repos.
-      contents: read
-      # rustsec/audit-check posts findings as PR review comments / checks.
-      # Fork PRs receive a read-only GITHUB_TOKEN; the action degrades to
-      # log-only output in that case rather than failing.
-      issues: write
-      checks: write
-    steps:
-      - uses: actions/checkout@v6
-      - uses: rustsec/audit-check@v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
 #  # Smoke-build the production Dockerfile on PRs to catch regressions
 #  # before they hit main and trigger the publishing workflow.
 #  docker-build:

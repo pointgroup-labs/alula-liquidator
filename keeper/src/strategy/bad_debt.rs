@@ -17,6 +17,7 @@ use {
         ports::{ChainReader, EventCodec, OpBuilder, OperationEvent},
         reactor::{BoxFuture, Strategy},
     },
+    metrics::counter,
     std::sync::Arc,
     stellar_rpc_client::Event as SorobanEvent,
     tracing::{debug, error, info, warn},
@@ -87,6 +88,7 @@ impl BadDebtRequestInitiator {
             Ok(_) => return vec![],
             Err(e) => {
                 debug!(?e, "decode_operation failed");
+                counter!("bad_debt_outcome_total", "outcome" => "decode_op_error").increment(1);
                 return vec![];
             }
         }
@@ -105,6 +107,7 @@ impl BadDebtRequestInitiator {
             Ok(k) => k,
             Err(e) => {
                 warn!(?e, "cannot parse borrower obligation key");
+                counter!("bad_debt_outcome_total", "outcome" => "parse_error").increment(1);
                 return vec![];
             }
         };
@@ -117,10 +120,12 @@ impl BadDebtRequestInitiator {
             Ok(Some(obl)) => obl,
             Ok(None) => {
                 debug!(?borrower_key, "borrower obligation removed; nothing to do");
+                counter!("bad_debt_outcome_total", "outcome" => "obligation_cleared").increment(1);
                 return vec![];
             }
             Err(e) => {
                 warn!(?e, ?borrower_key, "failed to parse borrower obligation");
+                counter!("bad_debt_outcome_total", "outcome" => "parse_error").increment(1);
                 return vec![];
             }
         };
@@ -134,8 +139,12 @@ impl BadDebtRequestInitiator {
                 "obligation eligible for bad debt request issuance"
             );
             if let Some(action) = self.build_issue_bad_debt(&market, &borrower_key) {
+                counter!("bad_debt_outcome_total", "outcome" => "dispatched").increment(1);
                 return vec![action];
             }
+            counter!("bad_debt_outcome_total", "outcome" => "build_failed").increment(1);
+        } else {
+            counter!("bad_debt_outcome_total", "outcome" => "ineligible").increment(1);
         }
 
         vec![]

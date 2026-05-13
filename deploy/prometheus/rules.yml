@@ -27,6 +27,36 @@ groups:
             stuck — typically RPC timeouts or the SQLite mutex blocked by a
             long write. Inspect logs for repeated `get_events` failures.
 
+      - alert: KeeperScanSlow
+        expr: |
+          liquidator_market_scan_duration_seconds{quantile="0.95", outcome="ok"} > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Market scan p95 >5s ({{ $labels.market }})"
+          description: >
+            The 95th-percentile latency of a full market scan has exceeded
+            5 seconds for >10m. Usually upstream RPC degradation
+            (`read_market_data` / `read_user_obligation` roundtrips). Fires
+            earlier than `KeeperScanStalled` so you have time to switch RPC
+            providers before scans drop out entirely.
+
+      - alert: KeeperRpcSimulateTransportFailing
+        expr: |
+          60 * rate(keeper_rpc_simulate_failures_total{kind="transport"}[5m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RPC simulate transport errors >1/min ({{ $labels.function }})"
+          description: >
+            `simulate_transaction_envelope` has been failing at the network
+            layer for >10m on contract function `{{ $labels.function }}`.
+            Sustained transport errors mean the RPC endpoint is degraded
+            or unreachable — switch providers. Distinct from `sim_error`
+            which indicates a contract-level issue, not an RPC issue.
+
   - name: keeper.backpressure
     interval: 30s
     rules:
@@ -112,6 +142,73 @@ groups:
             The local sequence-number cursor is repeatedly racing the RPC's
             view. >6 retries/minute sustained suggests parallel submitters
             against the same source account or a stuck in-flight tx.
+
+  - name: keeper.funding
+    interval: 30s
+    rules:
+      - alert: KeeperXlmFundingLow
+        expr: |
+          liquidator_xlm_balance_stroops
+          < liquidator_xlm_safety_margin_stroops * 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "XLM balance within 2x of safety margin"
+          description: >
+            The keeper's XLM balance is approaching the configured
+            `xlm_safety_margin`. Below the margin the rebalancer and
+            liquidator refuse to spend XLM to preserve inclusion-fee
+            headroom, so liquidation opportunities will start being
+            skipped. Refill the keeper account.
+
+      - alert: KeeperXlmFundingCritical
+        expr: |
+          liquidator_xlm_balance_stroops
+          < liquidator_xlm_safety_margin_stroops * 1.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "XLM balance at safety margin — keeper is freezing"
+          description: >
+            The keeper's XLM balance is within 10% of the configured
+            `xlm_safety_margin`. The next opportunity will be skipped
+            with `insufficient_capital`. Refill immediately.
+
+  - name: keeper.side_strategies
+    interval: 30s
+    rules:
+      - alert: KeeperBadDebtSchemaDrift
+        expr: |
+          60 * sum(rate(bad_debt_outcome_total{outcome=~"decode_op_error|parse_error"}[10m])) > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bad-debt initiator failing to decode liquidation events"
+          description: >
+            `bad_debt_outcome_total{outcome=~"decode_op_error|parse_error"}`
+            is incrementing >1/min sustained. Either the contract event
+            topology changed under a deploy and the gateway codec is out of
+            sync, or upstream is producing malformed values. The strategy
+            will silently miss bad-debt-cover opportunities until fixed.
+
+      - alert: KeeperWithdrawerErrors
+        expr: |
+          60 * sum(rate(withdrawer_outcome_total{outcome=~"no_market_data|pool_missing|build_error"}[10m])) > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Withdrawer hitting unexpected errors ({{ $labels.outcome }})"
+          description: >
+            Withdrawer red-path outcomes are firing sustained. `no_market_data`
+            points at RPC degradation against `read_market_data`; `pool_missing`
+            means the obligation references a pool not in the market data
+            response (config/contract drift); `build_error` is a gateway op
+            build failure. Distinct from `pool_at_capacity` and `below_threshold`
+            which are healthy tuning verdicts.
 
   - name: keeper.persistence
     interval: 30s

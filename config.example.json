@@ -16,6 +16,7 @@
     "xlm_safety_margin": 200000000,
     "min_profit_margin_cents": 50,
     "min_withdraw_value_cents": 500,
+    "withdrawer_utilization_safety_margin_bps": 500,
     "rebalancer_max_price_impact_bps": 100,
     "rebalancer_slippage_bps": 30,
     "rebalancer_interval_blocks": 2,

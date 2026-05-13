@@ -20,6 +20,17 @@ pub enum SorobanRpcError {
     /// RPC rejected the cursor (cursor expired / out of retention).
     /// Terminal: the caller must reset to a fresh head ledger.
     TerminalCursor,
+    /// Transaction made it to the network but ended in `FAILED` status —
+    /// gas was spent, no seized amount realised. This is the realisation-tax
+    /// tail, distinct from RPC transport errors during the confirm poll.
+    TxFailedOnChain,
+    /// `get_transaction_polling` exhausted its retry budget without seeing
+    /// SUCCESS or FAILED. The tx may yet land; not a definitive verdict.
+    SubmissionTimeout,
+    /// RPC returned a status string that isn't SUCCESS / FAILED / NOT_FOUND.
+    /// Either a protocol bump on the RPC or a serialization bug — surface
+    /// it distinctly so it doesn't get filed as a transient transport error.
+    UnexpectedStatus,
     /// Anything we did not recognise.
     Other,
 }
@@ -90,6 +101,18 @@ impl SorobanRpcError {
             || (lower.contains("ledger") && lower.contains("too old"))
         {
             return Self::TerminalCursor;
+        }
+        if lower.contains("transaction submission timeout") {
+            return Self::SubmissionTimeout;
+        }
+        if lower.contains("expected transaction status") {
+            return Self::UnexpectedStatus;
+        }
+        // Order matters: `transaction submission failed` is a substring of
+        // some `transaction failed` renders too, so this stays after the
+        // more specific status/timeout checks above and before `Other`.
+        if lower.contains("transaction failed") || lower.contains("transaction submission failed") {
+            return Self::TxFailedOnChain;
         }
 
         Self::Other
@@ -227,6 +250,47 @@ mod tests {
             SorobanRpcError::Other
         );
         assert_eq!(SorobanRpcError::classify_str(""), SorobanRpcError::Other);
+    }
+
+    #[test]
+    fn classify_tx_failed_on_chain() {
+        for s in [
+            "transaction submission failed: ...",
+            "transaction failed: out of gas",
+        ] {
+            assert_eq!(
+                SorobanRpcError::classify_str(s),
+                SorobanRpcError::TxFailedOnChain,
+                "input: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_submission_timeout() {
+        assert_eq!(
+            SorobanRpcError::classify_str("transaction submission timeout"),
+            SorobanRpcError::SubmissionTimeout
+        );
+    }
+
+    #[test]
+    fn classify_unexpected_status() {
+        assert_eq!(
+            SorobanRpcError::classify_str("expected transaction status: WEIRD_NEW_STATUS"),
+            SorobanRpcError::UnexpectedStatus
+        );
+    }
+
+    #[test]
+    fn contract_code_wins_over_tx_failed_substring() {
+        // A failed tx whose result includes a contract error should land
+        // as Contract { code }, not TxFailedOnChain — the contract code is
+        // the more actionable classification.
+        let e = SorobanRpcError::classify_str(
+            "transaction submission failed: ... Error(Contract, #601) ...",
+        );
+        assert_eq!(e, SorobanRpcError::Contract { code: 601 });
     }
 
     #[test]

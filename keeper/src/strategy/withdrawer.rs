@@ -13,6 +13,7 @@ use {
         ports::{ChainReader, EventCodec, OpBuilder, OperationEvent},
         reactor::{BoxFuture, Strategy},
     },
+    metrics::counter,
     std::{collections::HashMap, sync::Arc},
     stellar_rpc_client::Event as SorobanEvent,
     tracing::{error, info, trace, warn},
@@ -20,11 +21,11 @@ use {
 
 const REFRESH_INTERVAL_BLOCKS: u32 = 2;
 const MAX_WITHDRAWAL_RETRIES: u32 = 3;
-const UTILIZATION_SAFETY_MARGIN_BPS: i128 = 500;
 
 pub struct WithdrawerConfig {
     pub markets: Vec<String>,
     pub min_withdraw_value_cents: i128,
+    pub utilization_safety_margin_bps: i128,
 }
 
 pub struct Withdrawer {
@@ -121,10 +122,12 @@ impl Withdrawer {
     fn find_withdrawal_opportunities(&self, market_address: &str) -> Vec<Action> {
         let Some(market_data) = self.market_data.get(market_address) else {
             warn!(?market_address, "No market data available");
+            counter!("withdrawer_outcome_total", "outcome" => "no_market_data").increment(1);
             return vec![];
         };
         let Some(liquidator_obligation) = self.liquidator_obligations.get(market_address) else {
             info!(market = %market_address, "No liquidator obligations for market");
+            counter!("withdrawer_outcome_total", "outcome" => "no_obligations").increment(1);
             return vec![];
         };
 
@@ -136,18 +139,34 @@ impl Withdrawer {
                 .find(|p| p.pool_address == deposit_pos.pool_address)
             else {
                 warn!(pool = deposit_pos.pool_address, "Pool not found");
+                counter!("withdrawer_outcome_total", "outcome" => "pool_missing").increment(1);
                 continue;
             };
 
             // Bug fix #3: divide-by-zero guard now lives inside
             // PoolData::compute_max_safe_withdrawal — returns Underlying::ZERO
             // if `utilization_considered_safe` collapses to ≤ 0.
-            let max_withdrawal = pool.compute_max_safe_withdrawal(UTILIZATION_SAFETY_MARGIN_BPS);
+            let max_withdrawal =
+                pool.compute_max_safe_withdrawal(self.config.utilization_safety_margin_bps);
             if max_withdrawal == Underlying::ZERO {
+                counter!("withdrawer_outcome_total", "outcome" => "pool_at_capacity").increment(1);
                 continue;
             }
 
             let liquidator_underlying = pool.j_to_underlying_floor(JToken(deposit_pos.j_tokens));
+            // A zero-balance deposit row would otherwise dribble into the
+            // `below_threshold` bucket below (any min_withdraw_value_cents
+            // > 0 dwarfs a 0-token position), misdirecting the operator
+            // toward tuning the threshold that wouldn't fix anything.
+            // Worse, the `withdrawal_amount == liquidator_underlying.raw()`
+            // branch immediately below would flip `withdrawal_amount` to
+            // i128::MAX on a 0-balance row, building a withdraw-everything
+            // op against a position that has nothing — surface this as its
+            // own outcome and skip.
+            if liquidator_underlying.raw() == 0 {
+                counter!("withdrawer_outcome_total", "outcome" => "empty_position").increment(1);
+                continue;
+            }
             let mut withdrawal_amount = liquidator_underlying.raw().min(max_withdrawal.raw());
             let withdrawal_value_cents =
                 self.calculate_withdrawal_value_cents(market_data, pool, withdrawal_amount);
@@ -172,9 +191,19 @@ impl Withdrawer {
                     &pool.pool_address,
                     withdrawal_amount,
                 ) {
-                    Ok(action) => actions.push(action),
-                    Err(e) => error!(?e, "Failed to build withdrawal action"),
+                    Ok(action) => {
+                        actions.push(action);
+                        counter!("withdrawer_outcome_total", "outcome" => "dispatched")
+                            .increment(1);
+                    }
+                    Err(e) => {
+                        error!(?e, "Failed to build withdrawal action");
+                        counter!("withdrawer_outcome_total", "outcome" => "build_error")
+                            .increment(1);
+                    }
                 };
+            } else {
+                counter!("withdrawer_outcome_total", "outcome" => "below_threshold").increment(1);
             }
         }
 

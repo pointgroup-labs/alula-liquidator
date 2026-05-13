@@ -7,7 +7,7 @@ use {
         collect::{Event, block::NewBlock},
         execute::{
             Action,
-            stellar_tx::{SettleHook, SubmitStellarTx},
+            stellar_tx::{LiquidationOutcomeMetric, SettleHook, SubmitStellarTx},
         },
         stellar::Gateway,
         storage::{CursorRepo, ObligationsRepo},
@@ -22,7 +22,7 @@ use {
         ports::{BatchSimulator, ChainReader, EventCodec, OpBuilder, OperationEvent},
         reactor::{BoxFuture, Strategy},
     },
-    metrics::{counter, gauge},
+    metrics::{counter, gauge, histogram},
     std::{collections::HashMap, sync::Arc},
     stellar_rpc_client::Event as SorobanEvent,
     tracing::{debug, error, info, warn},
@@ -348,6 +348,7 @@ impl Liquidator {
 
 impl Liquidator {
     async fn evaluate_market(&self, market: &str) -> Vec<Action> {
+        let started = std::time::Instant::now();
         let Some(market_data) = self.market_data.get(market) else {
             counter!(
                 "liquidator_scan_completed_total",
@@ -355,6 +356,12 @@ impl Liquidator {
                 "outcome" => "no_market_data",
             )
             .increment(1);
+            histogram!(
+                "liquidator_market_scan_duration_seconds",
+                "market" => market.to_string(),
+                "outcome" => "no_market_data",
+            )
+            .record(started.elapsed().as_secs_f64());
             return vec![];
         };
         let Some(obligations) = self.obligations.get(market).filter(|m| !m.is_empty()) else {
@@ -364,6 +371,12 @@ impl Liquidator {
                 "outcome" => "no_obligations",
             )
             .increment(1);
+            histogram!(
+                "liquidator_market_scan_duration_seconds",
+                "market" => market.to_string(),
+                "outcome" => "no_obligations",
+            )
+            .record(started.elapsed().as_secs_f64());
             return vec![];
         };
 
@@ -400,6 +413,12 @@ impl Liquidator {
             "outcome" => "ok",
         )
         .increment(1);
+        histogram!(
+            "liquidator_market_scan_duration_seconds",
+            "market" => market.to_string(),
+            "outcome" => "ok",
+        )
+        .record(started.elapsed().as_secs_f64());
         // Liveness gauge. Pair with `time() - …` alerts to detect stalled scans.
         if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             gauge!(
@@ -481,6 +500,22 @@ impl Liquidator {
         }
 
         let plan = best?;
+        // Expected profitability of the dispatched plan. Net oracle units
+        // are non-negative here by construction (gated upstream); the
+        // `.max(0)` is a defensive belt-and-braces against future invariant
+        // drift. Oracle units divide by 10^7 for USD at standard SAC
+        // 7-decimal scaling (`cents * 10^oracle_decimals / 100`).
+        let net_oracle = plan.net_profit_oracle.max(0);
+        histogram!(
+            "liquidator_plan_expected_net_profit_oracle_units",
+            "market" => market.to_string(),
+        )
+        .record(net_oracle as f64);
+        counter!(
+            "liquidator_plan_expected_net_profit_oracle_units_total",
+            "market" => market.to_string(),
+        )
+        .increment(net_oracle as u64);
         info!(
             ?plan.borrower_key,
             borrow_pool = %plan.borrow_pool_address,
@@ -570,11 +605,7 @@ impl Liquidator {
             .cached_balance(&*self.chain, borrow_token, &self.pkey)
             .await
         {
-            Ok(b) => {
-                gauge!("liquidator_asset_balance", "token_address" => borrow_token.to_string())
-                    .set(b as f64);
-                b
-            }
+            Ok(b) => b,
             Err(e) => {
                 warn!(?e, %borrow_token, "balance query failed");
                 counter!("liquidator_skip_total", "reason" => "balance_query_failed").increment(1);
@@ -686,11 +717,7 @@ impl Liquidator {
                 .cached_balance(&*self.chain, source_asset, &self.pkey)
                 .await
             {
-                Ok(b) => {
-                    gauge!("liquidator_asset_balance", "token_address" => source_asset.clone())
-                        .set(b as f64);
-                    b
-                }
+                Ok(b) => b,
                 Err(e) => {
                     warn!(?e, %source_asset, "balance query failed");
                     continue;
@@ -1050,6 +1077,10 @@ impl Liquidator {
                     on_settle: Some(SettleHook {
                         ledger: self.ledger.clone(),
                         op_id,
+                        liquidation_outcome: Some(LiquidationOutcomeMetric {
+                            market: market.to_string(),
+                            expected_net_oracle: plan.net_profit_oracle,
+                        }),
                     }),
                 }))
             }

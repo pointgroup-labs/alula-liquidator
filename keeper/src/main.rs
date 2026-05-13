@@ -20,6 +20,7 @@ use {
             LiquidatorConfig, Rebalancer, RebalancerConfig, Withdrawer, WithdrawerConfig,
         },
     },
+    ::metrics::gauge,
     clap::Parser,
     ed25519_dalek::SigningKey,
     engine::{ports::ChainReader, reactor::Engine},
@@ -47,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
         swap_providers,
         min_profit_margin_cents,
         min_withdraw_value_cents,
+        withdrawer_utilization_safety_margin_bps,
         rebalancer_max_price_impact_bps,
         rebalancer_slippage_bps,
         rebalancer_interval_blocks,
@@ -68,13 +70,19 @@ async fn main() -> anyhow::Result<()> {
     let chain: Arc<dyn ChainReader> = gateway.clone();
 
     let metrics_handle = metrics::install_prometheus_exporter();
+
+    // Surface the configured safety margin as a gauge so the dashboard can
+    // overlay it against the live XLM balance. Emitted once at startup —
+    // the value is immutable for the process lifetime.
+    gauge!("liquidator_xlm_safety_margin_stroops").set(xlm_safety_margin as f64);
+
     let mut engine: Engine<Event, Action> = Engine::new();
 
     // Single shared capital ledger across all balance-spending strategies so
     // Liquidator and Rebalancer cannot double-commit the same wallet capacity.
     // The executor releases reservations on every terminal tx outcome; the
     // ledger TTL is only a safety ceiling for hooks lost to task panics.
-    let capital = Arc::new(CapitalLedger::new());
+    let capital = Arc::new(CapitalLedger::new(xlm_address.clone()));
 
     let bad_debt = BadDebtRequestInitiator::new(
         chain.clone(),
@@ -94,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
         WithdrawerConfig {
             markets: markets.clone(),
             min_withdraw_value_cents,
+            utilization_safety_margin_bps: withdrawer_utilization_safety_margin_bps,
         },
     );
 
