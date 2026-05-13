@@ -89,16 +89,23 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # Build args drive the OCI image labels declared in the Dockerfile
-          # (revision, created). `docker inspect` on a published image will
-          # then point straight at the commit it was built from.
+          # (revision, created, version). `docker inspect` on a published
+          # image then points straight at the commit it was built from.
+          #
+          # On VERSION: metadata-action's `version` output is the primary
+          # tag chosen for this build (semver for tag pushes, "edge" or the
+          # sanitized branch name for branch pushes). Passing it through
+          # keeps the Dockerfile's VERSION ARG from sticking at its 0.0.1
+          # default so the OCI `image.version` label reflects reality.
+          #
+          # Comments must stay OUTSIDE the `build-args: |` block. The
+          # block is a YAML literal scalar whose contents are forwarded
+          # verbatim to `docker/build-push-action`; while the action
+          # currently strips `#` lines via csv-parser, that is undocumented
+          # action behaviour, not a YAML guarantee.
           build-args: |
             GIT_SHA=${{ github.sha }}
             BUILD_DATE=${{ steps.date.outputs.build_date }}
-            # metadata-action's `version` output is the primary tag chosen
-            # for this build (semver for tag pushes, "edge"/branch for
-            # branch pushes). Without this the Dockerfile's VERSION ARG
-            # stays pinned at its 0.0.1 default and the OCI `image.version`
-            # label lies about what was shipped.
             VERSION=${{ steps.meta.outputs.version }}
           # Registry cache lives in ghcr alongside the image: survives across
           # branches, isn't capped at 10 GB like type=gha, and isn't evicted
