@@ -1,5 +1,7 @@
 # Alula Liquidator
 
+[![ci](https://github.com/pointgroup-labs/alula-liquidator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pointgroup-labs/alula-liquidator/actions/workflows/ci.yml)
+
 An automated keeper bot for [Alula](https://alula.finance/) lending pools on Stellar/Soroban.
 
 The bot tracks on-chain events from Alula's money-market contracts and runs a set of cooperating strategies that keep the keeper's positions healthy and capture liquidation opportunities. Architecture is loosely inspired by [Artemis](https://github.com/paradigmxyz/artemis): collectors stream events into a shared engine, strategies turn events into intents, and a Soroban executor signs and submits the resulting transactions.
