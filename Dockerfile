@@ -1,11 +1,9 @@
 # syntax=docker/dockerfile:1.7
 #
-# Multi-stage build for the keeper binary. Runtime is debian-slim because
-# rusqlite is bundled and TLS is rustls, so we only need ca-certs + tini +
-# curl (for the compose healthcheck).
+# debian-slim runtime: rusqlite is bundled and TLS is rustls, so only
+# ca-certs + tini + curl (for the healthcheck) are needed at runtime.
 
-# Prebuilt image with cargo-chef already installed — avoids re-running
-# `cargo install cargo-chef` on every cache miss.
+# Prebuilt image — skips `cargo install cargo-chef` on every cache miss.
 FROM lukemathwalker/cargo-chef:0.1.77-rust-1.95-bookworm AS chef
 WORKDIR /app
 
@@ -14,31 +12,35 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
+
+# Incremental is pure cost in cache-mounted container builds (no prior
+# state to update against). line-tables-only pairs with runtime
+# RUST_BACKTRACE=1 for file:line panic frames at ~5-10% size cost.
+ENV CARGO_INCREMENTAL=0 \
+    CARGO_NET_RETRY=10 \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    CARGO_PROFILE_RELEASE_DEBUG=line-tables-only
+
 COPY --from=planner /app/recipe.json recipe.json
-# Cache the crates.io registry and the target/ directory across builds.
-# `sharing=locked` serialises concurrent builds touching the same cache.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo chef cook --release --locked --recipe-path recipe.json
+    cargo chef cook --release --locked --bin keeper --recipe-path recipe.json
 COPY . .
-# The cache mount means /app/target is NOT in the final layer, so we copy
-# the binary out within the same RUN.
+# Cache mounts don't persist into the layer; cp out within the RUN.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
     cargo build --release --locked --bin keeper \
     && cp /app/target/release/keeper /usr/local/bin/keeper
 
 FROM debian:bookworm-slim AS runtime
 
-# Build args populated by CI / docker-compose so `docker inspect` reveals
-# which commit produced this image. Defaults keep ad-hoc `docker build .`
-# working without ceremony.
 ARG GIT_SHA=unknown
 ARG BUILD_DATE=unknown
-ARG VERSION=0.0.1
+ARG VERSION=unknown
 
 LABEL org.opencontainers.image.title="alula-keeper" \
-      org.opencontainers.image.description="Stellar/Soroban liquidator keeper" \
       org.opencontainers.image.source="https://github.com/pointgroup-labs/alula-liquidator" \
       org.opencontainers.image.revision="${GIT_SHA}" \
       org.opencontainers.image.version="${VERSION}" \
@@ -46,21 +48,29 @@ LABEL org.opencontainers.image.title="alula-keeper" \
       org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tini \
+    && apt-get install -y --no-install-recommends --no-install-suggests \
+       ca-certificates curl tini \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system --gid 10001 keeper \
     && useradd  --system --uid 10001 --gid keeper --no-create-home keeper \
-    && mkdir -p /var/lib/keeper /etc/keeper \
+    && mkdir -p /var/lib/keeper \
     && chown keeper:keeper /var/lib/keeper
 
 COPY --link --from=builder /usr/local/bin/keeper /usr/local/bin/keeper
 
 USER keeper
-# WORKDIR matches the keeper-data volume mount so `db_path: "./data.db"` in
-# config.example.json lands on the persistent volume.
+# WORKDIR matches the keeper-data volume mount so `db_path: "./data.db"`
+# in config.example.json lands on the persistent volume.
 WORKDIR /var/lib/keeper
 
+ENV RUST_BACKTRACE=1 \
+    TINI_KILL_PROCESS_GROUP=1
+
+EXPOSE 9000
+STOPSIGNAL SIGTERM
+
+# Compose redeclares this; kept here so `docker run` standalone works too.
 HEALTHCHECK --interval=15s --timeout=3s --start-period=15s --retries=4 \
     CMD curl -fsS http://localhost:9000/healthz || exit 1
 
