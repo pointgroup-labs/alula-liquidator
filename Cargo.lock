@@ -58,7 +58,7 @@ dependencies = [
  "soroban-fixed-point-math",
  "stellar-rpc-client",
  "stellar-strkey 0.0.16",
- "stellar-xdr 25.0.1",
+ "stellar-xdr 27.0.0",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -2964,6 +2964,20 @@ dependencies = [
  "hex",
  "serde",
  "serde_with",
+ "sha2 0.10.9",
+ "stellar-strkey 0.0.13",
+]
+
+[[package]]
+name = "stellar-xdr"
+version = "27.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05ff843326969bdf1ef673dcdba94c08f4a3c8f1e58d6e6ef39b1bd4f749179a"
+dependencies = [
+ "crate-git-revision",
+ "escape-bytes",
+ "ethnum",
+ "hex",
  "sha2 0.10.9",
  "stellar-strkey 0.0.13",
 ]
