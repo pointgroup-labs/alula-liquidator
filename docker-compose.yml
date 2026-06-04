@@ -1,0 +1,88 @@
+# Local dev / staging stack: keeper + prometheus + grafana.
+#
+# Usage:
+#   cp .env.example .env             # then fill STELLAR_SKEY
+#   cp config.example.json config.json
+#   docker compose up -d --build
+
+services:
+  keeper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # `:-` keeps the build working when these aren't exported (e.g. on
+        # a fresh checkout). CI should set GIT_SHA/BUILD_DATE explicitly.
+        GIT_SHA: ${GIT_SHA:-dev}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    image: alula-keeper:local
+    container_name: alula-keeper
+    restart: unless-stopped
+    command:
+      - --config
+      - /etc/keeper/config.json
+      - --skey
+      # `:?` aborts compose with a clear error if STELLAR_SKEY is unset.
+      - ${STELLAR_SKEY:?STELLAR_SKEY must be set (see .env.example)}
+    environment:
+      RUST_LOG: ${RUST_LOG:-info,alula_keeper=info,alula_engine=info}
+    volumes:
+      - ./config.json:/etc/keeper/config.json:ro
+      - keeper-data:/var/lib/keeper
+    networks: [obs]
+    # /healthz is served by the same axum app as /metrics on :9000.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 4
+      start_period: 15s
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: alula-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      # Bound to loopback only — prometheus UI is not for public exposure.
+      - "127.0.0.1:9090:9090"
+    networks: [obs]
+    depends_on:
+      keeper:
+        condition: service_started
+
+  grafana:
+    image: grafana/grafana:13.0.1
+    container_name: alula-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks: [obs]
+    depends_on:
+      prometheus:
+        condition: service_started
+
+networks:
+  obs:
+    driver: bridge
+
+volumes:
+  keeper-data:
+  prometheus-data:
+  grafana-data:

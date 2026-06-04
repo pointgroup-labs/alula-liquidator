@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Cancel superseded runs on PR branches; never on main.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  # Reproducible builds: refuse to update Cargo.lock during CI.
+  # Failing in CI is preferable to silently producing a different artefact.
+  CARGO_LOCKED: --locked
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache from the test job so a test cache miss doesn't
+          # block clippy from finishing quickly.
+          shared-key: clippy
+      # Workspace lints are already configured in Cargo.toml. `-D warnings`
+      # makes CI fail on anything clippy considers a warning, including
+      # those raised by the workspace lint table.
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+      - run: cargo build --workspace --locked --all-targets
+      - run: cargo test --workspace --locked
+
+#  # Smoke-build the production Dockerfile on PRs to catch regressions
+#  # before they hit main and trigger the publishing workflow.
+#  docker-build:
+#    name: docker-build
+#    if: github.event_name == 'pull_request'
+#    runs-on: ubuntu-24.04
+#    timeout-minutes: 25
+#    steps:
+#      - uses: actions/checkout@v6
+#      - uses: docker/setup-buildx-action@v4
+#      - uses: docker/build-push-action@v7
+#        with:
+#          context: .
+#          file: Dockerfile
+#          push: false
+#          load: false
+#          # GHA cache is shared with keeper-image.yml's cache-to, so the
+#          # production build benefits from PR-build warmup and vice versa.
+#          cache-from: type=gha
+#          cache-to: type=gha,mode=max
+#          build-args: |
+#            GIT_SHA=${{ github.sha }}
