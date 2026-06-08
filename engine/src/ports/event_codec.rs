@@ -4,7 +4,7 @@
 
 use {
     crate::{
-        lending::{Obligation, ObligationKey},
+        lending_model::{Obligation, ObligationKey},
         ports::operation_event::OperationEvent,
     },
     anyhow::Result,

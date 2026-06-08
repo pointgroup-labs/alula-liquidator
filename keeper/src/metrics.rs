@@ -1,6 +1,6 @@
 //! Prometheus exposition (`/metrics`) and liveness (`/healthz`). The recorder
 //! installs globally so any crate can emit via `metrics::{counter, gauge,
-//! histogram}` without plumbing a handle through.
+//! histogram}`.
 
 use {
     axum::{Router, extract::State, routing::get},
@@ -8,28 +8,6 @@ use {
     std::net::SocketAddr,
     tracing::info,
 };
-
-#[derive(Clone)]
-struct AppState {
-    metrics: PrometheusHandle,
-}
-
-async fn metrics_handler(State(state): State<AppState>) -> String {
-    state.metrics.render()
-}
-
-async fn healthz_handler() -> &'static str {
-    "ok"
-}
-
-/// Install the global Prometheus recorder and return its handle.
-///
-/// Must be called exactly once for the lifetime of the process.
-pub fn install_prometheus_exporter() -> PrometheusHandle {
-    PrometheusBuilder::new()
-        .install_recorder()
-        .expect("global prometheus recorder already installed")
-}
 
 /// Bind `addr` and serve the metrics + healthz routes until the server stops.
 pub async fn serve(handle: PrometheusHandle, addr: SocketAddr) -> anyhow::Result<()> {
@@ -43,4 +21,24 @@ pub async fn serve(handle: PrometheusHandle, addr: SocketAddr) -> anyhow::Result
 
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Install the global Prometheus recorder and return its handle.
+pub fn install_prometheus_recorder() -> PrometheusHandle {
+    PrometheusBuilder::new()
+        .install_recorder()
+        .expect("global prometheus recorder already installed")
+}
+
+#[derive(Clone)]
+struct AppState {
+    metrics: PrometheusHandle,
+}
+
+async fn metrics_handler(State(state): State<AppState>) -> String {
+    state.metrics.render()
+}
+
+async fn healthz_handler() -> &'static str {
+    "ok"
 }

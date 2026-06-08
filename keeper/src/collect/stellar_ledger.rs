@@ -1,4 +1,4 @@
-//! Polls the Stellar RPC for the latest ledger and emits `NewBlock` events.
+//! Polls the Stellar RPC for the latest ledger and emits [`NewLedger`] events.
 
 use {
     super::{Event, lag_counted_stream},
@@ -13,64 +13,64 @@ use {
 
 /// Emitted whenever the ledger sequence advances.
 #[derive(Debug, Clone)]
-pub struct NewBlock {
-    pub number: u32,
+pub struct NewLedger {
+    pub seq_num: u32,
 }
 
 /// Polls the Stellar RPC for the latest ledger sequence and emits a
-/// [`NewBlock`] each time it advances.
-pub struct BlockCollector {
+/// [`NewLedger`] each time it advances.
+pub struct LedgerCollector {
     network_url: Url,
-    last_block_num: u32,
+    last_seq_num: u32,
 }
 
-impl BlockCollector {
+impl LedgerCollector {
     pub fn new(url: &Url) -> Self {
         Self {
             network_url: url.clone(),
-            last_block_num: 0,
+            last_seq_num: 0,
         }
     }
 }
 
-impl Collector<Event> for BlockCollector {
+impl Collector<Event> for LedgerCollector {
     fn get_event_stream(&mut self) -> BoxFuture<'_, Result<CollectorStream<'_, Event>>> {
         Box::pin(async {
             let (sender, receiver) = broadcast::channel(512);
             let url = self.network_url.clone();
-            let mut last_block_num = self.last_block_num;
+            let mut last_seq_num = self.last_seq_num;
 
             tokio::spawn(async move {
                 let server = match Client::new(url.as_str()) {
                     Ok(s) => s,
                     Err(e) => {
-                        error!(?e, "BlockCollector: failed to create RPC client");
+                        error!(?e, "LedgerCollector: failed to create RPC client");
                         return;
                     }
                 };
 
                 loop {
                     match server.get_latest_ledger().await {
-                        Ok(block) if block.sequence > last_block_num => {
-                            last_block_num = block.sequence;
-                            debug!(seq = block.sequence, "new ledger");
-                            if let Err(err) = sender.send(Event::NewBlock(NewBlock {
-                                number: block.sequence,
+                        Ok(ledger) if ledger.sequence > last_seq_num => {
+                            last_seq_num = ledger.sequence;
+                            debug!(seq = ledger.sequence, "new ledger");
+                            if let Err(err) = sender.send(Event::NewLedger(NewLedger {
+                                seq_num: ledger.sequence,
                             })) {
-                                warn!(?err, "BlockCollector: no receivers left, stopping");
+                                warn!(?err, "LedgerCollector: no receivers left, stopping");
                                 return;
                             }
                         }
                         Ok(_) => { /* ledger hasn't advanced yet */ }
                         Err(e) => {
-                            warn!("BlockCollector: get_latest_ledger failed: {e:#}");
+                            warn!("LedgerCollector: get_latest_ledger failed: {e:#}");
                         }
                     }
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             });
 
-            let stream = lag_counted_stream(receiver, "block");
+            let stream = lag_counted_stream(receiver, "ledger");
             Ok(Box::pin(stream) as CollectorStream<'_, Event>)
         })
     }

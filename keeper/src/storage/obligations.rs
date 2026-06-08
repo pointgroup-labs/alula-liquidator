@@ -6,7 +6,7 @@
 //! `serde_json` here.
 
 use {
-    engine::lending::{Obligation, ObligationKey},
+    engine::lending_model::{Obligation, ObligationKey},
     parking_lot::Mutex,
     rusqlite::{Connection, params},
     std::{collections::HashMap, sync::Arc},
@@ -20,7 +20,7 @@ struct ObligationRow {
 }
 
 pub struct ObligationsRepo {
-    conn: Arc<Mutex<Connection>>,
+    conn: Arc<Mutex<Connection>>, // TODO: Unify Arc visibility across the repo
 }
 
 impl ObligationsRepo {
@@ -53,6 +53,7 @@ impl ObligationsRepo {
             let obligation: Obligation = serde_json::from_str(&row.data_json)?;
             out.insert(key, obligation);
         }
+
         Ok(out)
     }
 
@@ -64,22 +65,26 @@ impl ObligationsRepo {
         obligation: &Obligation,
     ) -> anyhow::Result<()> {
         let conn = self.conn.lock();
+
         let data_json = serde_json::to_string(obligation)?;
         conn.execute(
             "INSERT OR REPLACE INTO obligations (market, user_address, seed, data_json)
              VALUES (?1, ?2, ?3, ?4)",
             params![market, &key.user, key.seed_as_str(), data_json],
         )?;
+
         Ok(())
     }
 
     /// Delete an obligation (no-op if absent).
     pub fn delete(&self, market: &str, key: &ObligationKey) -> anyhow::Result<()> {
         let conn = self.conn.lock();
+
         conn.execute(
             "DELETE FROM obligations WHERE market = ?1 AND user_address = ?2 AND seed = ?3",
             params![market, &key.user, key.seed_as_str()],
         )?;
+
         Ok(())
     }
 }

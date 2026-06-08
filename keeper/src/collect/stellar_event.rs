@@ -3,7 +3,7 @@
 
 use {
     super::{Event, lag_counted_stream},
-    crate::{stellar::errors::is_terminal_cursor_error, storage::CursorRepo},
+    crate::{stellar::errors::is_terminal_cursor_error, storage::cursor::CursorRepo},
     engine::reactor::{BoxFuture, Collector, CollectorStream},
     metrics::counter,
     std::{sync::Arc, time::Duration},
@@ -39,8 +39,7 @@ pub struct SorobanEventCollector {
 
 impl SorobanEventCollector {
     /// Construct a collector, seeding the resume cursor from `cursor_repo`
-    /// if one was previously persisted. (This is the only constructor — the
-    /// previous "head-only" `new` was footgunny and has been removed.)
+    /// if one was previously persisted.
     pub fn new(
         network_url: &Url,
         filter: EventFilter,
@@ -78,11 +77,6 @@ impl SorobanEventCollector {
         Ok(me)
     }
 }
-
-// Heuristic: which RPC errors mean the saved cursor is permanently bad and
-// must be replaced with a fresh head ledger? Routed through
-// [`crate::stellar::errors`] so the substring patterns are unit-tested
-// alongside the other classification helpers.
 
 impl Collector<Event> for SorobanEventCollector {
     fn get_event_stream(&mut self) -> BoxFuture<'_, anyhow::Result<CollectorStream<'_, Event>>> {

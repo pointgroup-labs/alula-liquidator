@@ -3,18 +3,18 @@
 
 use {
     crate::{
-        collect::{Event, block::NewBlock},
+        collect::{Event, stellar_ledger::NewLedger},
         execute::{
             Action,
             stellar_tx::{SettleHook, SubmitStellarTx},
         },
         stellar::Gateway,
-        strategy::capital::{CapitalLedger, random_op_id},
+        strategy::LiquidatorCapital,
     },
     ed25519_dalek::SigningKey,
     engine::{
-        lending::{MarketData, ObligationKey},
-        ports::{ChainReader, EventCodec, OpBuilder, OperationEvent},
+        lending_model::{MarketData, ObligationKey},
+        ports::{EventCodec, LedgerReader, OperationBuilder, OperationEvent},
         reactor::{BoxFuture, Strategy},
     },
     metrics::{counter, histogram},
@@ -26,6 +26,7 @@ use {
     tracing::{debug, error, info, warn},
 };
 
+// This all must be configurable
 const BPS_FACTOR: i128 = 10_000;
 const MAX_SWAP_RETRIES: u32 = 3;
 const MAX_PROBE_STABILITY_RETRIES: u32 = 2;
@@ -33,20 +34,16 @@ const MAX_PROBE_STABILITY_RETRIES: u32 = 2;
 const PROBE_LARGE_LO: i128 = 10i128.pow(9);
 const PROBE_LARGE_HI: i128 = 10i128.pow(10);
 
-pub struct RebalancerConfig {
-    /// Bug fix #5: chosen the simpler interpretation — the rebalancer is
-    /// single-market by design. Multi-market routing would need per-candidate
-    /// market plumbing; the original code silently used `markets[0]` for all
-    /// candidates regardless of provenance.
+pub struct BalancerConfig {
     pub market: String,
+    pub max_fee_bps: i128,
     pub xlm_address: String,
+    pub max_slippage_bps: i128,
     pub xlm_safety_margin: i128,
-    /// First element is the swap target.
+    pub max_price_impact_bps: i128,
+    /// First element is for now the swap target.
     pub assets_to_hold: Vec<String>,
     pub swap_providers: Vec<String>,
-    pub max_price_impact_bps: i128,
-    pub max_slippage_bps: i128,
-    pub max_fee_bps: i128,
     pub refresh_interval_blocks: u32,
     pub min_swap_amount_value_cents: i128,
 }
@@ -57,43 +54,44 @@ struct AssetInfo {
     oracle_decimals: u32,
 }
 
-pub struct Rebalancer {
-    chain: Arc<dyn ChainReader>,
-    gateway: Arc<Gateway>,
-    skey: SigningKey,
+pub struct Balancer {
     pkey: String,
-    config: RebalancerConfig,
+    skey: SigningKey,
+    gateway: Arc<Gateway>,
+    config: BalancerConfig,
+    ledger: Arc<LiquidatorCapital>,
     liquidator_key: ObligationKey,
-    asset_index: HashMap<String, AssetInfo>,
     market_data: Option<MarketData>,
-    ledger: Arc<CapitalLedger>,
+    ledger_reader: Arc<dyn LedgerReader>,
+    asset_index: HashMap<String, AssetInfo>,
 }
 
-impl Rebalancer {
+impl Balancer {
     pub fn new(
-        chain: Arc<dyn ChainReader>,
-        gateway: Arc<Gateway>,
-        skey: SigningKey,
         pkey: String,
-        config: RebalancerConfig,
-        ledger: Arc<CapitalLedger>,
+        skey: SigningKey,
+        gateway: Arc<Gateway>,
+        config: BalancerConfig,
+        ledger: Arc<LiquidatorCapital>,
+        ledger_reader: Arc<dyn LedgerReader>,
     ) -> Self {
         let liquidator_key = ObligationKey::new(pkey.clone());
+
         Self {
-            chain,
-            gateway,
             skey,
             pkey,
-            config,
-            liquidator_key,
-            asset_index: HashMap::new(),
-            market_data: None,
             ledger,
+            config,
+            gateway,
+            ledger_reader,
+            liquidator_key,
+            market_data: None,
+            asset_index: HashMap::new(),
         }
     }
 }
 
-impl Strategy<Event, Action> for Rebalancer {
+impl Strategy<Event, Action> for Balancer {
     fn sync_state(&mut self) -> BoxFuture<'_, anyhow::Result<()>> {
         Box::pin(async { Ok(()) })
     }
@@ -101,17 +99,17 @@ impl Strategy<Event, Action> for Rebalancer {
     fn process_event(&mut self, event: Event) -> BoxFuture<'_, Vec<Action>> {
         Box::pin(async move {
             match event {
-                Event::NewBlock(b) => self.handle_new_block(b).await,
+                Event::NewLedger(b) => self.handle_new_ledger(b).await,
                 Event::SorobanEvents(e) => self.handle_soroban_event(e).await,
             }
         })
     }
 }
 
-impl Rebalancer {
-    async fn handle_new_block(&mut self, block: NewBlock) -> Vec<Action> {
-        if !block
-            .number
+impl Balancer {
+    async fn handle_new_ledger(&mut self, ledger: NewLedger) -> Vec<Action> {
+        if !ledger
+            .seq_num
             .is_multiple_of(self.config.refresh_interval_blocks)
         {
             return vec![];
@@ -119,16 +117,12 @@ impl Rebalancer {
         if !self.preconditions_met() {
             return vec![];
         }
+
         self.refresh_market().await;
         self.find_rebalance_actions().await
     }
 
     async fn handle_soroban_event(&mut self, event: SorobanEvent) -> Vec<Action> {
-        // Bug fix #C1: the topic index that identifies "us" depends on the
-        // operation kind. Liquidate emits topic[1]=liquidator (topic[2] is the
-        // borrower being seized); Withdraw emits topic[2]=obligation key whose
-        // .user is the withdrawer. Previously this gate read topic[2] for both
-        // and silently suppressed every self-liquidation.
         let is_ours = match self.gateway.decode_operation(&event) {
             Ok(OperationEvent::Liquidate) => self.gateway.decode_topic(&event, 1) == self.pkey,
             Ok(OperationEvent::Withdraw) => self
@@ -144,7 +138,7 @@ impl Rebalancer {
 
         info!(
             ?event,
-            "Detected liquidator possible balance increase event"
+            "Detected possible liquidator balance increase event"
         );
 
         if !self.preconditions_met() {
@@ -152,32 +146,6 @@ impl Rebalancer {
         }
         self.refresh_market().await;
         self.find_rebalance_actions().await
-    }
-
-    fn preconditions_met(&self) -> bool {
-        if self.config.assets_to_hold.is_empty() {
-            warn!("Rebalancer: assets_to_hold is empty; skipping rebalance");
-            counter!("rebalancer_outcome_total", "outcome" => "precondition_no_target")
-                .increment(1);
-            return false;
-        }
-        if self.config.swap_providers.is_empty() {
-            warn!("Rebalancer: swap_providers is empty; skipping rebalance");
-            counter!("rebalancer_outcome_total", "outcome" => "precondition_no_providers")
-                .increment(1);
-            return false;
-        }
-        true
-    }
-
-    async fn refresh_market(&mut self) {
-        match self.chain.read_market_data(&self.config.market).await {
-            Ok(md) => {
-                info!(market = %self.config.market, "Rebalancer: refreshed market data");
-                self.market_data = Some(md);
-            }
-            Err(e) => error!(?e, market = %self.config.market, "Rebalancer: refresh failed"),
-        }
     }
 
     async fn find_rebalance_actions(&mut self) -> Vec<Action> {
@@ -222,6 +190,39 @@ impl Rebalancer {
         actions
     }
 
+    async fn refresh_market(&mut self) {
+        match self
+            .ledger_reader
+            .read_market_data(&self.config.market)
+            .await
+        {
+            Ok(md) => {
+                info!(market = %self.config.market, "Rebalancer: refreshed market data");
+                self.market_data = Some(md);
+            }
+            Err(e) => error!(?e, market = %self.config.market, "Rebalancer: refresh failed"),
+        }
+    }
+
+    fn preconditions_met(&self) -> bool {
+        if self.config.assets_to_hold.is_empty() {
+            warn!("Rebalancer: assets_to_hold is empty; skipping rebalance");
+            counter!("rebalancer_outcome_total", "outcome" => "precondition_no_target")
+                .increment(1);
+
+            return false;
+        }
+        if self.config.swap_providers.is_empty() {
+            warn!("Rebalancer: swap_providers is empty; skipping rebalance");
+            counter!("rebalancer_outcome_total", "outcome" => "precondition_no_providers")
+                .increment(1);
+
+            return false;
+        }
+
+        true
+    }
+
     fn rebuild_asset_index(&mut self) {
         self.asset_index.clear();
         let Some(md) = &self.market_data else { return };
@@ -243,20 +244,16 @@ impl Rebalancer {
         candidate: &str,
     ) -> anyhow::Result<Option<Action>> {
         // Use the shared ledger for balance reads so the cache is hot for the
-        // liquidator (and vice versa), and so `available_after_reservations`
-        // accounts for in-flight liquidations against this token.
+        // liquidator (and vice versa).
         let raw_balance = self
             .ledger
-            .cached_balance(&*self.chain, candidate, &self.pkey)
+            .cached_balance(candidate, &self.pkey, &*self.ledger_reader)
             .await?;
-        let safety_floor = if candidate == self.config.xlm_address {
+        let balance_to_swap = if candidate == self.config.xlm_address {
             raw_balance.saturating_sub(self.config.xlm_safety_margin)
         } else {
             raw_balance
         };
-        let balance_to_swap =
-            self.ledger
-                .available_after_reservations(candidate, &self.pkey, safety_floor);
         if !balance_to_swap.is_positive() {
             debug!(%candidate, raw_balance, balance_to_swap, "Nothing to swap");
             counter!("rebalancer_outcome_total", "outcome" => "nothing_to_swap").increment(1);
@@ -314,7 +311,7 @@ impl Rebalancer {
             self.gateway
                 .swap_exact_tokens_request(&provider, amount_in, min_amount_out, &path)?;
 
-        // Single-market by design (bug fix #5): use the configured market.
+        // Single-market by design: use the configured market.
         let op = self
             .gateway
             .batch_op(&self.config.market, &self.liquidator_key, &[request])?;
@@ -322,16 +319,18 @@ impl Rebalancer {
         // Reserve against the shared ledger before emitting; if reservation
         // fails (some other in-flight tx already committed the capacity) we
         // skip rather than risk a double-spend on the same token.
-        let op_id = random_op_id();
-        if !self
+        let op_id = match self
             .ledger
-            .reserve(op_id, candidate, &self.pkey, amount_in, balance_to_swap)
+            .reserve(candidate, &self.pkey, amount_in, balance_to_swap)
         {
-            warn!(%candidate, amount_in, balance_to_swap,
-                "rebalancer: reservation lost race; skipping submission");
-            counter!("rebalancer_outcome_total", "outcome" => "reservation_lost").increment(1);
-            return Ok(None);
-        }
+            Ok(id) => id,
+            Err(e) => {
+                warn!(?e, %candidate, amount_in, balance_to_swap,
+                    "rebalancer: reservation lost race; skipping submission");
+                counter!("rebalancer_outcome_total", "outcome" => "reservation_lost").increment(1);
+                return Ok(None);
+            }
+        };
 
         info!(
             %candidate, value_cents, %target, %provider, amount_in, amount_out,
@@ -369,11 +368,11 @@ impl Rebalancer {
 
         for _ in 0..MAX_PROBE_STABILITY_RETRIES {
             let (y_lo, y_hi) = (
-                self.chain
-                    .quote_amount_out(provider, probe_lo, path[0], path[1])
+                self.ledger_reader
+                    .get_amount_out(probe_lo, path[0], path[1], provider)
                     .await,
-                self.chain
-                    .quote_amount_out(provider, probe_hi, path[0], path[1])
+                self.ledger_reader
+                    .get_amount_out(probe_hi, path[0], path[1], provider)
                     .await,
             );
 

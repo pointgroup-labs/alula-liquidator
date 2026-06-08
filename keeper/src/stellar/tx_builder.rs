@@ -1,4 +1,4 @@
-//! `OpBuilder` impl for `Gateway` plus the request-/operation-builder helpers.
+//! `OperationBuilder` impl for `Gateway` plus the request-/operation-builder helpers.
 
 use {
     super::{
@@ -9,7 +9,7 @@ use {
         },
     },
     anyhow::anyhow,
-    engine::{lending::ObligationKey, ports::OpBuilder},
+    engine::{lending_model::ObligationKey, ports::OperationBuilder},
     stellar_xdr::curr::{
         ContractId, Hash, HostFunction, InvokeContractArgs, Operation, OperationBody, ScAddress,
         ScMap, ScMapEntry, ScSymbol, ScVal, ScVec, VecM,
@@ -343,7 +343,19 @@ fn build_batch_op(
     })
 }
 
-impl OpBuilder for Gateway {
+impl Gateway {
+    /// Build a `issue_cover_bad_debt` operation. Not part of the
+    /// `OperationBuilder` trait — only the bad-debt initiator strategy needs it.
+    pub fn cover_bad_debt_op(
+        &self,
+        market: &str,
+        obligation: &ObligationKey,
+    ) -> anyhow::Result<Operation> {
+        build_issue_cover_bad_debt_op(market, obligation)
+    }
+}
+
+impl OperationBuilder for Gateway {
     type Op = Operation;
     type Request = ScVal;
 
@@ -411,13 +423,5 @@ impl OpBuilder for Gateway {
         amount: i128,
     ) -> anyhow::Result<Self::Op> {
         build_withdraw_op(market, liquidator, pool, amount)
-    }
-
-    fn cover_bad_debt_op(
-        &self,
-        market: &str,
-        obligation: &ObligationKey,
-    ) -> anyhow::Result<Self::Op> {
-        build_issue_cover_bad_debt_op(market, obligation)
     }
 }

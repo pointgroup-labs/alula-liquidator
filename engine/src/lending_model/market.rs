@@ -1,6 +1,6 @@
-//! Market-wide configuration: collection of pools plus global parameters.
+//! Market-wide configuration: collection of pools + global parameters.
 
-use crate::lending::pool::PoolData;
+use crate::lending_model::pool::PoolData;
 
 #[derive(Debug, Clone)]
 pub struct MarketData {

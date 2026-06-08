@@ -1,15 +1,15 @@
 //! Trait surface that adapter crates implement and strategies depend on.
 //!
-//! Strategies receive `Arc<dyn Trait>` from these modules and never import
-//! adapter types directly — that is how chain plumbing stays out of strategy
-//! code.
+//! Strategies depend on `Arc<dyn Trait>` from these modules and never import
+//! adapter types directly.
 
-pub mod chain_reader;
-pub mod event_codec;
-pub mod op_builder;
+pub mod operation_builder;
 pub mod operation_event;
 
-pub use chain_reader::ChainReader;
+pub mod event_codec;
+pub mod ledger_reader;
+
 pub use event_codec::EventCodec;
-pub use op_builder::{BatchSimulator, OpBuilder};
+pub use ledger_reader::LedgerReader;
+pub use operation_builder::{BatchSimulator, OperationBuilder};
 pub use operation_event::{OperationEvent, OperationEventError};

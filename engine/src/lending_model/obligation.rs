@@ -1,5 +1,6 @@
 //! Obligation, deposit, and borrow position model.
 
+use crate::lending_model::{DTokens, JTokens, Underlying};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -27,14 +28,14 @@ impl ObligationKey {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepositPosition {
-    pub j_tokens: i128,
-    pub collateral: i128,
+    pub j_tokens: JTokens,
+    pub collateral: Underlying,
     pub pool_address: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BorrowPosition {
-    pub d_tokens: i128,
+    pub d_tokens: DTokens,
     pub pool_address: String,
 }
 

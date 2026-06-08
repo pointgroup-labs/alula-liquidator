@@ -1,22 +1,18 @@
-//! `OpBuilder` and `BatchSimulator` — sync ops construction and async batch
-//! dry-run, both keyed on opaque chain types via associated types.
-//!
-//! The associated `Op` and `Request` types let `engine` stay free of any
-//! Stellar-specific dependency: the adapter chooses the concrete types
-//! (`stellar_xdr::curr::Operation` and `ScVal`, in our case) and strategies
-//! pass them around as opaque tokens.
+//! `OpBuilder` and `BatchSimulator` — sync operation construction and async batch
+//! dry-run.
 
 use {
-    crate::{lending::ObligationKey, reactor::BoxFuture},
+    crate::{lending_model::ObligationKey, reactor::BoxFuture},
     anyhow::Result,
 };
 
 /// Construct the raw chain operations and request payloads strategies need to
 /// submit. Sync because building an op is a pure computation; nothing in
 /// here touches the network.
-pub trait OpBuilder: Send + Sync {
+pub trait OperationBuilder: Send + Sync {
     /// Opaque operation type (e.g. `stellar_xdr::curr::Operation`).
     type Op: Send + Clone + std::fmt::Debug + 'static;
+
     /// Opaque per-request payload (e.g. `ScVal` for a `Request` map).
     type Request: Send + Clone + std::fmt::Debug + 'static;
 
@@ -65,9 +61,6 @@ pub trait OpBuilder: Send + Sync {
         pool: &str,
         amount: i128,
     ) -> Result<Self::Op>;
-
-    /// One-shot operation to socialize bad debt for a given obligation.
-    fn cover_bad_debt_op(&self, market: &str, obligation: &ObligationKey) -> Result<Self::Op>;
 }
 
 /// Dry-run a batch of requests against the contract before paying gas to

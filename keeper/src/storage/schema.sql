@@ -1,5 +1,4 @@
 -- SQLite schema for the keeper's local persistence.
--- WAL mode is enabled separately via PRAGMA in `SqliteStore::open`.
 
 CREATE TABLE IF NOT EXISTS obligations (
     market       TEXT NOT NULL,

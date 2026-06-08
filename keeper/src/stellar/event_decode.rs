@@ -9,7 +9,7 @@ use {
     },
     anyhow::{Context, anyhow},
     engine::{
-        lending::{Obligation, ObligationKey},
+        lending_model::{Obligation, ObligationKey},
         ports::{EventCodec, OperationEvent},
     },
     stellar_xdr::curr::{Limits, ReadXdr as _, ScMap, ScVal},

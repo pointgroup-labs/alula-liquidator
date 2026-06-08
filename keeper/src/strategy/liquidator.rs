@@ -4,22 +4,22 @@
 
 use {
     crate::{
-        collect::{Event, block::NewBlock},
+        collect::{Event, stellar_ledger::NewLedger},
         execute::{
             Action,
             stellar_tx::{LiquidationOutcomeMetric, SettleHook, SubmitStellarTx},
         },
         stellar::Gateway,
-        storage::{CursorRepo, ObligationsRepo},
-        strategy::capital::{CapitalLedger, random_op_id},
+        storage::{cursor::CursorRepo, obligations::ObligationsRepo},
+        strategy::{LiquidatorCapital, capital::random_op_id},
     },
     ed25519_dalek::SigningKey,
     engine::{
-        lending::{
-            DepositPosition, JToken, MarketData, Obligation, ObligationKey, PoolData, liquidation,
-            profitability,
+        lending_model::{
+            DepositPosition, MarketData, Obligation, ObligationKey, PoolData, Underlying,
+            liquidation, profitability,
         },
-        ports::{BatchSimulator, ChainReader, EventCodec, OpBuilder, OperationEvent},
+        ports::{BatchSimulator, EventCodec, LedgerReader, OperationBuilder, OperationEvent},
         reactor::{BoxFuture, Strategy},
     },
     metrics::{counter, gauge, histogram},
@@ -29,6 +29,7 @@ use {
 };
 
 const REFRESH_INTERVAL_BLOCKS: u32 = 12;
+const MAX_RETRIES: u32 = 3;
 
 pub struct LiquidatorConfig {
     pub markets: Vec<String>,
@@ -41,6 +42,12 @@ pub struct LiquidatorConfig {
     pub gain_haircut_bps: i128,
     /// Absolute oracle-units allowance for the Stellar tx fee.
     pub inclusion_fee_oracle_units: i128,
+    /// Enable flash-borrow based liquidations (off by default).
+    pub flash_enabled: bool,
+    /// Additional haircut (bps) on top of `gain_haircut_bps` for flash
+    /// candidates only. Guards against the extra cost of the
+    /// collateral → borrow swap that the repayment depends on.
+    pub flash_safety_haircut_bps: i128,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +60,22 @@ enum LiquidationType {
         source_asset: String,
         source_amount_in: i128,
         min_source_out: i128,
+        swap_provider: String,
+    },
+    /// Flash-borrow `repay_amount` of the borrow asset, seize collateral,
+    /// swap seized collateral back to the borrow asset, auto-repay.
+    /// The wallet never needs to hold the borrow asset.
+    Flash {
+        repay_amount: i128,
+        /// Flash fee = ceil(repay_amount * flash_fee_bps / 10_000).
+        flash_fee: i128,
+        /// Underlying collateral token address (swap input).
+        collateral_token: String,
+        /// Amount of collateral underlying seized by the Liquidate request.
+        seized_amount: i128,
+        /// `min_amount_out` passed to SwapExactTokens.
+        /// Must be ≥ repay_amount + flash_fee.
+        min_swap_out: i128,
         swap_provider: String,
     },
 }
@@ -70,7 +93,7 @@ struct LiquidationPlan {
 }
 
 pub struct Liquidator {
-    chain: Arc<dyn ChainReader>,
+    chain: Arc<dyn LedgerReader>,
     gateway: Arc<Gateway>,
     skey: SigningKey,
     pkey: String,
@@ -80,7 +103,7 @@ pub struct Liquidator {
     last_refresh_ledger: u32,
     market_data: HashMap<String, MarketData>,
     obligations: HashMap<String, HashMap<ObligationKey, Obligation>>,
-    ledger: Arc<CapitalLedger>,
+    ledger: Arc<LiquidatorCapital>,
 }
 
 impl Liquidator {
@@ -91,14 +114,14 @@ impl Liquidator {
     // forcing here just to silence the lint.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        chain: Arc<dyn ChainReader>,
+        chain: Arc<dyn LedgerReader>,
         gateway: Arc<Gateway>,
         skey: SigningKey,
         pkey: String,
         config: LiquidatorConfig,
         obligations_repo: ObligationsRepo,
         cursor_repo: CursorRepo,
-        ledger: Arc<CapitalLedger>,
+        ledger: Arc<LiquidatorCapital>,
     ) -> Self {
         Self {
             chain,
@@ -121,7 +144,7 @@ impl Strategy<Event, Action> for Liquidator {
         Box::pin(async move {
             match event {
                 Event::SorobanEvents(e) => self.handle_soroban_event(e).await,
-                Event::NewBlock(b) => self.handle_new_block(b).await,
+                Event::NewLedger(b) => self.handle_new_block(b).await,
             }
         })
     }
@@ -163,7 +186,7 @@ impl Liquidator {
         &self,
         market: &str,
     ) -> anyhow::Result<HashMap<ObligationKey, Obligation>> {
-        let keys = self.chain.read_all_obligation_keys(market).await?;
+        let keys = self.chain.read_all_obligations_keys(market).await?;
         let total = keys.len();
         info!(total, "fetching obligations...");
 
@@ -196,7 +219,15 @@ impl Liquidator {
             return vec![];
         };
 
-        let name = format!("{op_event:?}").to_lowercase();
+        let name = match &op_event {
+            OperationEvent::Repay => "repay",
+            OperationEvent::Borrow => "borrow",
+            OperationEvent::Deposit => "deposit",
+            OperationEvent::Withdraw => "withdraw",
+            OperationEvent::Liquidate => "liquidate",
+            OperationEvent::AddCollateral => "addcollateral",
+            OperationEvent::RemoveCollateral => "removecollateral",
+        };
         match op_event {
             OperationEvent::Deposit
             | OperationEvent::Borrow
@@ -211,7 +242,7 @@ impl Liquidator {
                     warn!(%name, "cannot parse obligation key");
                     return vec![];
                 };
-                self.apply_obligation_snapshot(&name, &market, &event.value, "obligation", &key);
+                self.apply_obligation_snapshot(name, &market, &event.value, "obligation", &key);
             }
             OperationEvent::Liquidate => {
                 let liquidator = self.gateway.decode_topic(&event, 1);
@@ -226,7 +257,7 @@ impl Liquidator {
                     return vec![];
                 };
                 self.apply_obligation_snapshot(
-                    &name,
+                    name,
                     &market,
                     &event.value,
                     "borrower_obligation",
@@ -238,7 +269,7 @@ impl Liquidator {
                     seed: None,
                 };
                 self.apply_obligation_snapshot(
-                    &name,
+                    name,
                     &market,
                     &event.value,
                     "liquidator_obligation",
@@ -300,8 +331,8 @@ impl Liquidator {
         }
     }
 
-    async fn handle_new_block(&mut self, block: NewBlock) -> Vec<Action> {
-        let ledger = block.number;
+    async fn handle_new_block(&mut self, block: NewLedger) -> Vec<Action> {
+        let ledger = block.seq_num;
         if ledger.saturating_sub(self.last_refresh_ledger) < REFRESH_INTERVAL_BLOCKS {
             return vec![];
         }
@@ -460,7 +491,7 @@ impl Liquidator {
                     error!(?borrow_pos, ?deposit_pos, "same pool borrow/deposit");
                     continue;
                 }
-                if deposit_pos.j_tokens <= 0 && deposit_pos.collateral <= 0 {
+                if deposit_pos.j_tokens.0 <= 0 && deposit_pos.collateral.0 <= 0 {
                     error!(?deposit_pos, "empty deposit, skipping");
                     continue;
                 }
@@ -479,7 +510,7 @@ impl Liquidator {
                         market_data,
                         obligation,
                         borrower_obl_key,
-                        borrow_pos.d_tokens,
+                        borrow_pos.d_tokens.0,
                         borrow_pool,
                         collateral_pool,
                         deposit_pos,
@@ -541,7 +572,10 @@ impl Liquidator {
     ) -> Option<LiquidationPlan> {
         let borrow_token = borrow_pool.token_address.as_str();
 
-        let position_debt_tokens = borrow_pool.d_tokens_to_tokens_ceil(borrow_d_tokens);
+        let position_debt_tokens = borrow_pool
+            .d_tokens_to_tokens_ceil(borrow_d_tokens.into())
+            .ok()?
+            .0;
         if position_debt_tokens <= 0 {
             error!(?borrower_key, "empty borrow position");
             return None;
@@ -554,9 +588,10 @@ impl Liquidator {
         );
 
         let position_collateral_sum = collateral_pool
-            .j_to_underlying_floor(JToken(deposit_pos.j_tokens))
-            .raw()
-            + deposit_pos.collateral;
+            .j_tokens_to_tokens_floor(deposit_pos.j_tokens)
+            .ok()?
+            .0
+            + deposit_pos.collateral.0;
 
         let position_collateral_value = position_collateral_sum
             .saturating_mul(collateral_pool.oracle_asset_price)
@@ -581,7 +616,9 @@ impl Liquidator {
             self.config.min_profit_margin_cents,
             market_data.oracle_price_decimals,
             borrow_pool,
-        );
+        )
+        .map(|u| u.0)
+        .unwrap_or(0);
 
         let max_feasible_repay = position_debt_tokens.min(close_factor_cap);
         if max_feasible_repay <= 0 {
@@ -589,9 +626,8 @@ impl Liquidator {
             return None;
         }
 
-        // Bug fix #2: i128-only arithmetic, replacing the f64 math that used to
-        // live inline. Uses engine::lending::profitability so the engine-level
-        // tests cover it.
+        // i128-only arithmetic via engine::lending_model::profitability so the
+        // engine-level tests cover it.
         let profitable_repay = profitability::compute_repay_cap_from_collateral(
             max_feasible_repay,
             position_collateral_sum,
@@ -602,7 +638,7 @@ impl Liquidator {
 
         let raw_borrow_balance = match self
             .ledger
-            .cached_balance(&*self.chain, borrow_token, &self.pkey)
+            .cached_balance(borrow_token, &self.pkey, &*self.chain)
             .await
         {
             Ok(b) => b,
@@ -617,11 +653,8 @@ impl Liquidator {
         } else {
             raw_borrow_balance
         };
-        let usable_after_reservations =
-            self.ledger
-                .available_after_reservations(borrow_token, &self.pkey, usable_borrow);
 
-        if usable_after_reservations >= profitable_repay {
+        if usable_borrow >= profitable_repay {
             let expected_seized = self.compute_seized(
                 profitable_repay,
                 borrow_pool,
@@ -645,16 +678,17 @@ impl Liquidator {
                 .min_profit_margin_cents
                 .saturating_mul(10_i128.pow(market_data.oracle_price_decimals))
                 .saturating_div(100);
-            let check = profitability::is_liquidation_profitable(
+            let check = profitability::compute_liquidation_profitability(
                 gain_oracle,
                 cost_oracle,
                 profit_margin_oracle,
                 self.config.gain_haircut_bps,
                 self.config.inclusion_fee_oracle_units,
-            );
-            if !check.profitable {
+            )
+            .ok()?;
+            if !check.is_profitable {
                 debug!(
-                    net = check.net_oracle,
+                    net = check.net_value,
                     "direct branch fails profitability gate",
                 );
                 return None;
@@ -664,7 +698,7 @@ impl Liquidator {
                 ?borrower_key,
                 borrow_pool = %borrow_pool.pool_address,
                 collateral_pool = %collateral_pool.pool_address,
-                profitable_repay, expected_seized, net = check.net_oracle,
+                profitable_repay, expected_seized, net = check.net_value,
                 "DIRECT liquidation plan"
             );
 
@@ -676,11 +710,11 @@ impl Liquidator {
                 borrow_pool_address: borrow_pool.pool_address.clone(),
                 collateral_pool_address: collateral_pool.pool_address.clone(),
                 expected_seized_collateral: expected_seized,
-                net_profit_oracle: check.net_oracle,
+                net_profit_oracle: check.net_value,
             });
         }
 
-        self.try_preswap_plan(
+        self.try_flash_plan(
             market_data,
             obligation,
             borrower_key,
@@ -691,6 +725,194 @@ impl Liquidator {
             is_insolvent,
         )
         .await
+        .or(
+            // Flash disabled or no viable flash path — fall back to pre-swap.
+            self.try_preswap_plan(
+                market_data,
+                obligation,
+                borrower_key,
+                borrow_pool,
+                collateral_pool,
+                deposit_pos,
+                profitable_repay,
+                is_insolvent,
+            )
+            .await,
+        )
+    }
+
+    /// Attempt to build a flash-borrow liquidation plan.
+    ///
+    /// Batch shape:
+    ///   `[FlashBorrow(borrow_pool, R),
+    ///     Liquidate(borrower, borrow_pool, collateral_pool, R, S_min),
+    ///     SwapExactTokens(C → B, seized_amount, min_swap_out)]`
+    ///
+    /// The protocol's end-of-batch `execute_transfers` automatically pulls
+    /// `R + fee` from the keeper's wallet to repay the flash borrow — so the
+    /// swap output *must* land in the wallet before that happens. Since
+    /// `SwapExactTokens` flushes+settles immediately and the flash repayment
+    /// is last, this ordering is safe.
+    ///
+    /// Returns `None` when:
+    /// - flash is disabled in config,
+    /// - the borrow pool has no flash liquidity,
+    /// - no swap venue can deliver ≥ `R + fee + safety` for the seized C,
+    /// - the plan fails the profitability gate.
+    #[allow(clippy::too_many_arguments)]
+    async fn try_flash_plan(
+        &self,
+        market_data: &MarketData,
+        obligation: &Obligation,
+        borrower_key: &ObligationKey,
+        borrow_pool: &PoolData,
+        collateral_pool: &PoolData,
+        deposit_pos: &DepositPosition,
+        profitable_repay: i128,
+        is_insolvent: bool,
+    ) -> Option<LiquidationPlan> {
+        if !self.config.flash_enabled {
+            return None;
+        }
+
+        // Preflight: the borrow pool must have enough liquidity to fund the
+        // flash borrow. `total_available` is already cached in PoolData.
+        if borrow_pool.total_available.0 < profitable_repay {
+            counter!(
+                "liquidator_skip_total",
+                "reason" => "flash_pool_insufficient_liquidity"
+            )
+            .increment(1);
+            return None;
+        }
+
+        // Compute the flash fee (ceiling arithmetic, mirrors the on-chain
+        // `compute_flash_fee` in `request.rs::execute_transfers`).
+        let flash_fee = profitability::compute_flash_fee(
+            Underlying(profitable_repay),
+            borrow_pool.flash_loan_fee_bps,
+        )
+        .ok()?
+        .0;
+
+        // Seized collateral: same helper used by Direct / PreSwap branches.
+        let seized_amount = self.compute_seized(
+            profitable_repay,
+            borrow_pool,
+            collateral_pool,
+            deposit_pos,
+            obligation,
+            market_data,
+            is_insolvent,
+        )?;
+
+        // The swap leg is: collateral_underlying → borrow_token.
+        // `min_swap_out` must cover the full repayment (principal + fee).
+        // We add the `flash_safety_haircut` to require a comfortable margin
+        // above the bare minimum so we don't dispatch batches that will
+        // revert on sub-1-bps slippage.
+        let repay_total = profitable_repay.saturating_add(flash_fee);
+        let safety_cushion = repay_total
+            .saturating_mul(self.config.flash_safety_haircut_bps)
+            .saturating_add(9_999) // ceiling
+            .saturating_div(10_000);
+        let min_swap_out = repay_total.saturating_add(safety_cushion);
+
+        let collateral_token = collateral_pool.token_address.clone();
+        let borrow_token = borrow_pool.token_address.as_str();
+        let swap_path = [collateral_token.as_str(), borrow_token];
+
+        // Ask each swap provider for a quote on seized_amount of collateral.
+        let (best_provider, quoted_out) =
+            match self.best_swap_quote(seized_amount, &swap_path).await {
+                Some(q) => q,
+                None => {
+                    counter!(
+                        "liquidator_skip_total",
+                        "reason" => "flash_swap_shortfall"
+                    )
+                    .increment(1);
+                    return None;
+                }
+            };
+
+        if quoted_out < min_swap_out {
+            debug!(
+                quoted_out,
+                min_swap_out, seized_amount, "flash swap quote below min_swap_out threshold"
+            );
+            counter!(
+                "liquidator_skip_total",
+                "reason" => "flash_swap_shortfall"
+            )
+            .increment(1);
+            return None;
+        }
+
+        // Profitability gate. Cost = repay_total (principal + flash fee) in
+        // oracle units. Gain = seized collateral in oracle units.
+        // The combined haircut is the base haircut + flash safety haircut.
+        let combined_haircut_bps = self
+            .config
+            .gain_haircut_bps
+            .saturating_add(self.config.flash_safety_haircut_bps);
+
+        let cost_oracle = repay_total
+            .saturating_mul(borrow_pool.oracle_asset_price)
+            .saturating_div(10_i128.pow(borrow_pool.token_decimals));
+        let gain_oracle = seized_amount
+            .saturating_mul(collateral_pool.oracle_asset_price)
+            .saturating_div(10_i128.pow(collateral_pool.token_decimals));
+        let profit_margin_oracle = self
+            .config
+            .min_profit_margin_cents
+            .saturating_mul(10_i128.pow(market_data.oracle_price_decimals))
+            .saturating_div(100);
+
+        let check = profitability::compute_liquidation_profitability(
+            gain_oracle,
+            cost_oracle,
+            profit_margin_oracle,
+            combined_haircut_bps,
+            self.config.inclusion_fee_oracle_units,
+        )
+        .ok()?;
+
+        if !check.is_profitable {
+            debug!(
+                net = check.net_value,
+                flash_fee, "flash branch fails profitability gate"
+            );
+            return None;
+        }
+
+        info!(
+            ?borrower_key,
+            borrow_pool = %borrow_pool.pool_address,
+            collateral_pool = %collateral_pool.pool_address,
+            profitable_repay,
+            flash_fee,
+            seized_amount,
+            min_swap_out,
+            net = check.net_value,
+            "FLASH liquidation plan"
+        );
+
+        Some(LiquidationPlan {
+            liquidation_type: LiquidationType::Flash {
+                repay_amount: profitable_repay,
+                flash_fee,
+                collateral_token,
+                seized_amount,
+                min_swap_out,
+                swap_provider: best_provider,
+            },
+            borrower_key: borrower_key.clone(),
+            borrow_pool_address: borrow_pool.pool_address.clone(),
+            collateral_pool_address: collateral_pool.pool_address.clone(),
+            expected_seized_collateral: seized_amount,
+            net_profit_oracle: check.net_value,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -714,7 +936,7 @@ impl Liquidator {
 
             let raw_balance = match self
                 .ledger
-                .cached_balance(&*self.chain, source_asset, &self.pkey)
+                .cached_balance(source_asset, &self.pkey, &*self.chain)
                 .await
             {
                 Ok(b) => b,
@@ -728,9 +950,6 @@ impl Liquidator {
             } else {
                 raw_balance
             };
-            let usable_balance =
-                self.ledger
-                    .available_after_reservations(source_asset, &self.pkey, usable_balance);
             if usable_balance <= 0 {
                 continue;
             }
@@ -760,7 +979,7 @@ impl Liquidator {
 
             let quoted_out_for_needed = match self
                 .chain
-                .quote_amount_out(&best_provider, needed_source, path[0], path[1])
+                .get_amount_out(needed_source, path[0], path[1], &best_provider)
                 .await
             {
                 Ok(q) => q,
@@ -808,19 +1027,22 @@ impl Liquidator {
                 .saturating_mul(10_i128.pow(market_data.oracle_price_decimals))
                 .saturating_div(100);
 
-            let check = profitability::is_liquidation_profitable(
+            let check = match profitability::compute_liquidation_profitability(
                 gain_oracle,
                 cost_oracle,
                 profit_margin_oracle,
                 self.config.gain_haircut_bps,
                 self.config.inclusion_fee_oracle_units,
-            );
+            ) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
 
-            if !check.profitable {
+            if !check.is_profitable {
                 debug!(
                     %source_asset,
-                    effective_gain = check.effective_gain_oracle,
-                    required = check.required_oracle,
+                    effective_gain = check.effective_gain_value,
+                    required = check.required_value,
                     gain_haircut_bps = self.config.gain_haircut_bps,
                     inclusion_fee_oracle_units = self.config.inclusion_fee_oracle_units,
                     "pre-swap not profitable"
@@ -848,7 +1070,7 @@ impl Liquidator {
                 borrow_pool_address: borrow_pool.pool_address.clone(),
                 collateral_pool_address: collateral_pool.pool_address.clone(),
                 expected_seized_collateral: expected_seized,
-                net_profit_oracle: check.net_oracle,
+                net_profit_oracle: check.net_value,
             });
         }
 
@@ -896,7 +1118,7 @@ impl Liquidator {
         for provider in &self.config.swap_providers {
             match self
                 .chain
-                .quote_amount_out(provider, amount_in, path[0], path[1])
+                .get_amount_out(amount_in, path[0], path[1], provider)
                 .await
             {
                 Ok(out) if out > 0 => {
@@ -917,54 +1139,131 @@ impl Liquidator {
     fn build_batch_requests(
         &self,
         plan: &LiquidationPlan,
-    ) -> Option<Vec<<Gateway as OpBuilder>::Request>> {
+    ) -> Option<Vec<<Gateway as OperationBuilder>::Request>> {
         let mut requests = Vec::new();
 
-        if let LiquidationType::PreSwap {
-            source_asset,
-            source_amount_in,
-            min_source_out,
-            swap_provider,
-            ..
-        } = &plan.liquidation_type
-        {
-            let borrow_token_address = self.find_token_for_pool(&plan.borrow_pool_address)?;
-            let preswap_path = [source_asset.as_str(), borrow_token_address.as_str()];
-
-            let preswap_req = match self.gateway.swap_exact_tokens_request(
+        match &plan.liquidation_type {
+            LiquidationType::Flash {
+                repay_amount,
+                collateral_token,
+                seized_amount,
+                min_swap_out,
                 swap_provider,
-                *source_amount_in,
-                *min_source_out,
-                &preswap_path,
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    error!(?e, "failed to build pre-swap request");
-                    return None;
-                }
-            };
-            requests.push(preswap_req);
-        }
+                ..
+            } => {
+                // 1. Flash-borrow the borrow asset.
+                let flash_req = match self
+                    .gateway
+                    .flash_borrow_request(&plan.borrow_pool_address, *repay_amount)
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(?e, "failed to build flash_borrow request");
+                        return None;
+                    }
+                };
+                requests.push(flash_req);
 
-        let repay_amount = match &plan.liquidation_type {
-            LiquidationType::Direct { repay_amount } => *repay_amount,
-            LiquidationType::PreSwap { repay_amount, .. } => *repay_amount,
-        };
+                // 2. Liquidate — pays repay_amount of borrow asset, receives
+                //    seized_amount of collateral underlying.
+                let liquidate_req = match self.gateway.liquidate_request(
+                    &plan.borrower_key,
+                    &plan.borrow_pool_address,
+                    &plan.collateral_pool_address,
+                    *repay_amount,
+                    plan.expected_seized_collateral,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(?e, "failed to build liquidate request (flash path)");
+                        return None;
+                    }
+                };
+                requests.push(liquidate_req);
 
-        let liquidate_req = match self.gateway.liquidate_request(
-            &plan.borrower_key,
-            &plan.borrow_pool_address,
-            &plan.collateral_pool_address,
-            repay_amount,
-            plan.expected_seized_collateral,
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                error!(?e, "failed to build liquidate request");
-                return None;
+                // 3. Swap seized collateral → borrow asset. The swap output
+                //    must be ≥ min_swap_out so the end-of-batch flash repayment
+                //    can be satisfied. If the swap delivers less, the whole
+                //    batch reverts atomically.
+                let borrow_token = self.find_token_for_pool(&plan.borrow_pool_address)?;
+                let swap_path = [collateral_token.as_str(), borrow_token.as_str()];
+                let swap_req = match self.gateway.swap_exact_tokens_request(
+                    swap_provider,
+                    *seized_amount,
+                    *min_swap_out,
+                    &swap_path,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(?e, "failed to build swap_exact_tokens request (flash path)");
+                        return None;
+                    }
+                };
+                requests.push(swap_req);
+
+                // The flash repayment (repay_amount + fee) is automatic —
+                // RequestTransfers::execute_transfers handles it at end-of-batch.
+                // No explicit Repay request is needed.
             }
-        };
-        requests.push(liquidate_req);
+
+            LiquidationType::PreSwap {
+                source_asset,
+                source_amount_in,
+                min_source_out,
+                swap_provider,
+                repay_amount,
+                ..
+            } => {
+                let borrow_token_address = self.find_token_for_pool(&plan.borrow_pool_address)?;
+                let preswap_path = [source_asset.as_str(), borrow_token_address.as_str()];
+
+                let preswap_req = match self.gateway.swap_exact_tokens_request(
+                    swap_provider,
+                    *source_amount_in,
+                    *min_source_out,
+                    &preswap_path,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(?e, "failed to build pre-swap request");
+                        return None;
+                    }
+                };
+                requests.push(preswap_req);
+
+                let liquidate_req = match self.gateway.liquidate_request(
+                    &plan.borrower_key,
+                    &plan.borrow_pool_address,
+                    &plan.collateral_pool_address,
+                    *repay_amount,
+                    plan.expected_seized_collateral,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(?e, "failed to build liquidate request");
+                        return None;
+                    }
+                };
+                requests.push(liquidate_req);
+            }
+
+            LiquidationType::Direct { repay_amount } => {
+                let liquidate_req = match self.gateway.liquidate_request(
+                    &plan.borrower_key,
+                    &plan.borrow_pool_address,
+                    &plan.collateral_pool_address,
+                    *repay_amount,
+                    plan.expected_seized_collateral,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(?e, "failed to build liquidate request");
+                        return None;
+                    }
+                };
+                requests.push(liquidate_req);
+            }
+        }
 
         Some(requests)
     }
@@ -995,7 +1294,19 @@ impl Liquidator {
             .simulate_batch(market, liquidator_obl_key, &requests)
             .await
         {
-            Ok(true) => info!(?plan.borrower_key, "batch simulation OK"),
+            Ok(true) => {
+                let flash_fee_log =
+                    if let LiquidationType::Flash { flash_fee, .. } = &plan.liquidation_type {
+                        *flash_fee
+                    } else {
+                        0
+                    };
+                info!(
+                    ?plan.borrower_key,
+                    flash_fee = flash_fee_log,
+                    "batch simulation OK"
+                );
+            }
             Ok(false) => {
                 warn!(?plan.borrower_key, "batch simulation failed, dropping plan");
                 counter!("liquidator_skip_total", "reason" => "batch_sim_failed").increment(1);
@@ -1008,12 +1319,11 @@ impl Liquidator {
             }
         }
 
-        // Reserve in-flight capital so other opportunities (and the rebalancer)
+        // Reserve in-flight capital so other opportunities (and the balancer)
         // don't double-spend the wallet balance. The reservation is released by
         // the executor's SettleHook on every terminal tx outcome; the 5-minute
         // ledger TTL is now only a safety ceiling for hooks lost to executor
         // task panics.
-        let op_id = random_op_id();
         let (reserve_token, reserve_amount) = match &plan.liquidation_type {
             LiquidationType::Direct { repay_amount } => {
                 let borrow_token = self.find_token_for_pool(&plan.borrow_pool_address)?;
@@ -1024,40 +1334,60 @@ impl Liquidator {
                 source_amount_in,
                 ..
             } => (source_asset.clone(), *source_amount_in),
-        };
-        let raw_balance = match self
-            .ledger
-            .cached_balance(&*self.chain, &reserve_token, &self.pkey)
-            .await
-        {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(?e, %reserve_token, "balance query failed at reservation time");
-                counter!("liquidator_skip_total", "reason" => "balance_query_failed").increment(1);
-                return None;
+            // Flash liquidations source their capital from the protocol — the
+            // keeper's wallet is not at risk for the repay amount, so there is
+            // nothing to reserve.
+            LiquidationType::Flash { .. } => {
+                let borrow_token = self.find_token_for_pool(&plan.borrow_pool_address)?;
+                (borrow_token, 0)
             }
         };
-        let available = if reserve_token == self.config.xlm_address {
-            raw_balance.saturating_sub(self.config.xlm_safety_margin)
+
+        // Direct / PreSwap spend wallet capital and must pass the reservation
+        // gate. Flash spends protocol capital, so it mints a standalone op_id
+        // for the SettleHook (releasing an unreserved id is a no-op).
+        let op_id = if reserve_amount > 0 {
+            let raw_balance = match self
+                .ledger
+                .cached_balance(&reserve_token, &self.pkey, &*self.chain)
+                .await
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!(?e, %reserve_token, "balance query failed at reservation time");
+                    counter!("liquidator_skip_total", "reason" => "balance_query_failed")
+                        .increment(1);
+                    return None;
+                }
+            };
+            let available = if reserve_token == self.config.xlm_address {
+                raw_balance.saturating_sub(self.config.xlm_safety_margin)
+            } else {
+                raw_balance
+            };
+            match self
+                .ledger
+                .reserve(&reserve_token, &self.pkey, reserve_amount, available)
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        repay_amount = reserve_amount,
+                        %reserve_token,
+                        "skipping liquidation: insufficient available balance after pending reservations"
+                    );
+                    counter!(
+                        "liquidator_skip_total",
+                        "reason" => "insufficient_balance_after_reservations",
+                    )
+                    .increment(1);
+                    return None;
+                }
+            }
         } else {
-            raw_balance
+            random_op_id()
         };
-        if !self
-            .ledger
-            .reserve(op_id, &reserve_token, &self.pkey, reserve_amount, available)
-        {
-            warn!(
-                repay_amount = reserve_amount,
-                %reserve_token,
-                "skipping liquidation: insufficient available balance after pending reservations"
-            );
-            counter!(
-                "liquidator_skip_total",
-                "reason" => "insufficient_balance_after_reservations",
-            )
-            .increment(1);
-            return None;
-        }
 
         match self.gateway.batch_op(market, liquidator_obl_key, &requests) {
             Ok(op) => {
@@ -1065,15 +1395,21 @@ impl Liquidator {
                 // The tx may still fail at simulate, bad_seq retry, or confirmation
                 // poll; those outcomes are tracked separately by the executor's
                 // own counters.
+                let liq_type_label = match &plan.liquidation_type {
+                    LiquidationType::Direct { .. } => "direct",
+                    LiquidationType::PreSwap { .. } => "preswap",
+                    LiquidationType::Flash { .. } => "flash",
+                };
                 counter!(
                     "liquidator_liquidation_plans_dispatched_total",
-                    "market" => market.to_string()
+                    "market" => market.to_string(),
+                    "type" => liq_type_label,
                 )
                 .increment(1);
                 Some(Action::SubmitTx(SubmitStellarTx {
                     op,
                     signing_key: self.skey.clone(),
-                    max_retries: 3,
+                    max_retries: MAX_RETRIES,
                     on_settle: Some(SettleHook {
                         ledger: self.ledger.clone(),
                         op_id,
@@ -1109,10 +1445,13 @@ fn emit_self_position_metrics(market: &str, obligation: &Obligation, market_data
             ("pool_address", pool.pool_address.clone()),
             ("token_symbol", pool.token_symbol.clone()),
         ];
-        gauge!("liquidator_self_j_tokens", &labels).set(deposit.j_tokens as f64);
-        gauge!("liquidator_self_plain_collateral", &labels).set(deposit.collateral as f64);
-        gauge!("liquidator_self_j_tokens_underlying", &labels)
-            .set(pool.j_to_underlying_floor(JToken(deposit.j_tokens)).raw() as f64);
+        gauge!("liquidator_self_j_tokens", &labels).set(deposit.j_tokens.0 as f64);
+        gauge!("liquidator_self_plain_collateral", &labels).set(deposit.collateral.0 as f64);
+        gauge!("liquidator_self_j_tokens_underlying", &labels).set(
+            pool.j_tokens_to_tokens_floor(deposit.j_tokens)
+                .map(|u| u.0)
+                .unwrap_or(0) as f64,
+        );
     }
     for borrow in &obligation.borrows {
         let Some(pool) = market_data
@@ -1128,8 +1467,11 @@ fn emit_self_position_metrics(market: &str, obligation: &Obligation, market_data
             ("pool_address", pool.pool_address.clone()),
             ("token_symbol", pool.token_symbol.clone()),
         ];
-        gauge!("liquidator_self_d_tokens", &labels).set(borrow.d_tokens as f64);
-        gauge!("liquidator_self_d_tokens_underlying", &labels)
-            .set(pool.d_tokens_to_tokens_ceil(borrow.d_tokens) as f64);
+        gauge!("liquidator_self_d_tokens", &labels).set(borrow.d_tokens.0 as f64);
+        gauge!("liquidator_self_d_tokens_underlying", &labels).set(
+            pool.d_tokens_to_tokens_ceil(borrow.d_tokens)
+                .map(|u| u.0)
+                .unwrap_or(0) as f64,
+        );
     }
 }

@@ -43,6 +43,7 @@ impl CursorRepo {
                 },
             )
             .optional()?;
+
         Ok(row)
     }
 
@@ -53,6 +54,7 @@ impl CursorRepo {
             "INSERT OR REPLACE INTO event_cursor (id, cursor_id, ledger) VALUES (1, ?1, ?2)",
             params![cursor_id, last_event_timestamp],
         )?;
+
         Ok(())
     }
 }
