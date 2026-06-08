@@ -113,16 +113,18 @@ async fn main() -> anyhow::Result<()> {
         },
     );
 
-    let _withdrawer = Withdrawer::new(
-        ledger_reader.clone(),
-        gateway.clone(),
-        skey.clone(),
+    let withdrawer = Withdrawer::new(
         pkey.clone(),
+        skey.clone(),
+        gateway.clone(),
         WithdrawerConfig {
+            max_retries: 5, // TODO: From config,
             markets: markets.clone(),
             min_withdraw_value_cents,
+            refresh_interval_blocks: 5, // TODO: From config
             utilization_safety_margin_bps: withdrawer_utilization_safety_margin_bps,
         },
+        ledger_reader.clone(),
     );
 
     // Balancer is single-market by design; fan out per-market if needed later.
@@ -130,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
         .first()
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("config.markets must not be empty"))?;
-    let _balancer = Balancer::new(
+    let balancer = Balancer::new(
         pkey.clone(),
         skey.clone(),
         gateway.clone(),
@@ -150,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
         ledger_reader.clone(),
     );
 
-    let _liquidator = Liquidator::new(
+    let liquidator = Liquidator::new(
         ledger_reader.clone(),
         gateway.clone(),
         skey.clone(),
@@ -173,9 +175,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     engine.add_strategy(Box::new(bad_debt));
-    // engine.add_strategy(Box::new(withdrawer));
-    // engine.add_strategy(Box::new(balancer));
-    // engine.add_strategy(Box::new(liquidator));
+    engine.add_strategy(Box::new(withdrawer));
+    engine.add_strategy(Box::new(balancer));
+    engine.add_strategy(Box::new(liquidator));
 
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::new(

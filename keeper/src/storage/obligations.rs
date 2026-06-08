@@ -20,7 +20,7 @@ struct ObligationRow {
 }
 
 pub struct ObligationsRepo {
-    conn: Arc<Mutex<Connection>>,
+    conn: Arc<Mutex<Connection>>, // TODO: Unify Arc visibility across the repo
 }
 
 impl ObligationsRepo {

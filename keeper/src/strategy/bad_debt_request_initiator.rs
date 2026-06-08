@@ -1,9 +1,4 @@
-//! Bad-debt request initiator strategy.
-//!
-//! On a `Liquidate` event, inspects the borrower's residual obligation. When
-//! the obligation is uncollateralized (or all deposits are below the dust
-//! threshold) but still has debt, submits an `issue_cover_bad_debt` op so the
-//! market socializes the loss promptly.
+//! Bad-debt request initiator strategy. Initiates the bad debt request if needed
 
 use {
     crate::{
@@ -84,9 +79,7 @@ impl BadDebtRequestInitiator {
 
         let mut actions = vec![];
 
-        // Clone once so the loop can take ownership, satisfying the borrow checker cleanly
         let markets = self.config.markets.clone();
-
         for market in markets {
             let Ok(loaded_obligations) = self
                 .obligations_repo
@@ -148,12 +141,14 @@ impl BadDebtRequestInitiator {
     }
 
     async fn handle_soroban_event(&self, event: SorobanEvent) -> Vec<Action> {
-        if !self.config.markets.contains(&event.contract_id) {
-            warn!(market = %event.contract_id, "event from non-configured market");
+        let market = event.contract_id.clone();
+        if !self.config.markets.contains(&market) {
+            warn!(%market, "event from non-configured market");
+
             return vec![];
         }
-        let market = event.contract_id.clone();
 
+        // TODO: Add 'claim_cover_bad_debt_result' and remove the obligation from the storage repo
         let Ok(OperationEvent::Liquidate) =
             self.gateway.decode_operation(&event).inspect_err(|e| {
                 debug!(?e, "decode_operation failed");
