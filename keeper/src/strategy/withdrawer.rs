@@ -66,7 +66,7 @@ impl Strategy<Event, Action> for Withdrawer {
         Box::pin(async move {
             match event {
                 Event::SorobanEvents(e) => self.handle_soroban_event(e).await,
-                Event::NewBlock(b) => self.handle_new_block(b).await,
+                Event::NewLedger(b) => self.handle_new_block(b).await,
             }
         })
     }

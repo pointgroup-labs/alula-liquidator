@@ -54,7 +54,7 @@ impl Collector<Event> for LedgerCollector {
                         Ok(ledger) if ledger.sequence > last_seq_num => {
                             last_seq_num = ledger.sequence;
                             debug!(seq = ledger.sequence, "new ledger");
-                            if let Err(err) = sender.send(Event::NewBlock(NewLedger {
+                            if let Err(err) = sender.send(Event::NewLedger(NewLedger {
                                 seq_num: ledger.sequence,
                             })) {
                                 warn!(?err, "LedgerCollector: no receivers left, stopping");

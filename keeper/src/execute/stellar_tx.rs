@@ -12,7 +12,7 @@ use {
             Gateway,
             errors::{SorobanRpcError, is_bad_seq_error, is_no_simulation_results_error},
         },
-        strategy::CapitalLedger,
+        strategy::LiquidatorCapital,
     },
     anyhow::Result,
     ed25519_dalek::{Signer, SigningKey},
@@ -50,10 +50,10 @@ pub struct LiquidationOutcomeMetric {
 /// Released by the executor on every terminal path: confirm-success,
 /// confirm-failure, simulation-no-results skip, or retry-exhaustion. The
 /// `op_id` was minted by the issuing strategy when it called
-/// `CapitalLedger::reserve`.
+/// `LiquidatorCapital::reserve`.
 #[derive(Debug, Clone)]
 pub struct SettleHook {
-    pub ledger: Arc<CapitalLedger>,
+    pub ledger: Arc<LiquidatorCapital>,
     pub op_id: u64,
     /// `Some` only for liquidation plans; `None` for capital-neutral or
     /// non-profit operations (rebalancer swaps, withdrawals).
@@ -126,7 +126,7 @@ impl Executor<Action> for SorobanExecutor {
         Box::pin(async move {
             match action {
                 Action::SubmitTx(tx) => {
-                    let rpc: Arc<Client> = Arc::clone(self.gateway.rpc());
+                    let gateway: Arc<Gateway> = Arc::clone(&self.gateway);
                     let max = tx.max_retries.max(1);
                     let on_settle = tx.on_settle.clone();
 
@@ -136,7 +136,8 @@ impl Executor<Action> for SorobanExecutor {
                     let source_address = source_strkey.to_string();
 
                     for attempt in 1..=max {
-                        let seq_to_use = match self.acquire_seq(&rpc, &source_address).await {
+                        let seq_to_use = match self.acquire_seq(&gateway.rpc, &source_address).await
+                        {
                             Ok(n) => n,
                             Err(e) => {
                                 warn!(%e, attempt, "failed to acquire sequence number");
@@ -158,7 +159,7 @@ impl Executor<Action> for SorobanExecutor {
                         };
 
                         match build_and_send(
-                            &rpc,
+                            &gateway.rpc,
                             &self.network_passphrase,
                             &tx,
                             &source_strkey,
@@ -173,7 +174,7 @@ impl Executor<Action> for SorobanExecutor {
                                     "outcome" => "ok",
                                 )
                                 .increment(1);
-                                spawn_confirmation_poll(rpc.clone(), hash_hex, on_settle);
+                                spawn_confirmation_poll(gateway, hash_hex, on_settle);
                                 return Ok(());
                             }
                             Err(e) => {
@@ -234,7 +235,7 @@ impl Executor<Action> for SorobanExecutor {
 
 /// Spawn a detached task that polls for the tx receipt. Logs the outcome and
 /// releases the capital reservation regardless of success/failure.
-fn spawn_confirmation_poll(rpc: Arc<Client>, hash_hex: String, on_settle: Option<SettleHook>) {
+fn spawn_confirmation_poll(gateway: Arc<Gateway>, hash_hex: String, on_settle: Option<SettleHook>) {
     tokio::spawn(async move {
         let hash_bytes = match hex::decode(&hash_hex) {
             Ok(b) if b.len() == 32 => {
@@ -255,7 +256,7 @@ fn spawn_confirmation_poll(rpc: Arc<Client>, hash_hex: String, on_settle: Option
                 return;
             }
         };
-        match rpc.get_transaction_polling(&hash_bytes, None).await {
+        match gateway.rpc.get_transaction_polling(&hash_bytes, None).await {
             Ok(_) => {
                 info!(hash = %hash_hex, "tx confirmed");
                 counter!(

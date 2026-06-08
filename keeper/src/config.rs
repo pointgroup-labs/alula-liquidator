@@ -25,7 +25,7 @@ pub struct CliConfig {
     pub db_path: PathBuf,
     pub xlm_address: String,
     pub markets: Vec<String>,
-    pub xlm_safety_margin: i128, // Underlying, no?
+    pub xlm_safety_margin: i128,
     pub network_passphrase: String,
     pub assets_to_hold: Vec<String>,
     pub swap_providers: Vec<String>,

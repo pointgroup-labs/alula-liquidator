@@ -11,7 +11,7 @@ use {
         },
         stellar::Gateway,
         storage::{cursor::CursorRepo, obligations::ObligationsRepo},
-        strategy::{CapitalLedger, capital::random_op_id},
+        strategy::{LiquidatorCapital, capital::random_op_id},
     },
     ed25519_dalek::SigningKey,
     engine::{
@@ -103,7 +103,7 @@ pub struct Liquidator {
     last_refresh_ledger: u32,
     market_data: HashMap<String, MarketData>,
     obligations: HashMap<String, HashMap<ObligationKey, Obligation>>,
-    ledger: Arc<CapitalLedger>,
+    ledger: Arc<LiquidatorCapital>,
 }
 
 impl Liquidator {
@@ -121,7 +121,7 @@ impl Liquidator {
         config: LiquidatorConfig,
         obligations_repo: ObligationsRepo,
         cursor_repo: CursorRepo,
-        ledger: Arc<CapitalLedger>,
+        ledger: Arc<LiquidatorCapital>,
     ) -> Self {
         Self {
             chain,
@@ -144,7 +144,7 @@ impl Strategy<Event, Action> for Liquidator {
         Box::pin(async move {
             match event {
                 Event::SorobanEvents(e) => self.handle_soroban_event(e).await,
-                Event::NewBlock(b) => self.handle_new_block(b).await,
+                Event::NewLedger(b) => self.handle_new_block(b).await,
             }
         })
     }
@@ -242,7 +242,7 @@ impl Liquidator {
                     warn!(%name, "cannot parse obligation key");
                     return vec![];
                 };
-                self.apply_obligation_snapshot(&name, &market, &event.value, "obligation", &key);
+                self.apply_obligation_snapshot(name, &market, &event.value, "obligation", &key);
             }
             OperationEvent::Liquidate => {
                 let liquidator = self.gateway.decode_topic(&event, 1);
@@ -257,7 +257,7 @@ impl Liquidator {
                     return vec![];
                 };
                 self.apply_obligation_snapshot(
-                    &name,
+                    name,
                     &market,
                     &event.value,
                     "borrower_obligation",
@@ -269,7 +269,7 @@ impl Liquidator {
                     seed: None,
                 };
                 self.apply_obligation_snapshot(
-                    &name,
+                    name,
                     &market,
                     &event.value,
                     "liquidator_obligation",
@@ -839,9 +839,7 @@ impl Liquidator {
         if quoted_out < min_swap_out {
             debug!(
                 quoted_out,
-                min_swap_out,
-                seized_amount,
-                "flash swap quote below min_swap_out threshold"
+                min_swap_out, seized_amount, "flash swap quote below min_swap_out threshold"
             );
             counter!(
                 "liquidator_skip_total",
@@ -883,8 +881,7 @@ impl Liquidator {
         if !check.is_profitable {
             debug!(
                 net = check.net_value,
-                flash_fee,
-                "flash branch fails profitability gate"
+                flash_fee, "flash branch fails profitability gate"
             );
             return None;
         }
@@ -1298,13 +1295,12 @@ impl Liquidator {
             .await
         {
             Ok(true) => {
-                let flash_fee_log = if let LiquidationType::Flash { flash_fee, .. } =
-                    &plan.liquidation_type
-                {
-                    *flash_fee
-                } else {
-                    0
-                };
+                let flash_fee_log =
+                    if let LiquidationType::Flash { flash_fee, .. } = &plan.liquidation_type {
+                        *flash_fee
+                    } else {
+                        0
+                    };
                 info!(
                     ?plan.borrower_key,
                     flash_fee = flash_fee_log,

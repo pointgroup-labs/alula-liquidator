@@ -25,6 +25,12 @@ pub struct Engine<E, A> {
     event_channel_capacity: usize,
 }
 
+impl<E, A> Default for Engine<E, A> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<E, A> Engine<E, A> {
     pub fn new() -> Self {
         Self {

@@ -34,23 +34,23 @@ struct CachedBalance {
 }
 
 #[derive(Debug)]
-struct LedgerInner {
+struct LiquidatorCapitalInner {
     reservations: HashMap<u64, Reservation>,
     balances: HashMap<(String, String), CachedBalance>, // TODO: Remove account
 }
 
 #[derive(Debug)]
-pub struct CapitalLedger {
+pub struct LiquidatorCapital {
     xlm_address: String,
     balance_ttl: Duration,
-    inner: Mutex<LedgerInner>,
+    inner: Mutex<LiquidatorCapitalInner>,
     reservation_ttl: Duration,
 }
 
-impl CapitalLedger {
+impl LiquidatorCapital {
     pub fn new(xlm_address: String, reservation_ttl: Duration, balance_ttl: Duration) -> Self {
         Self {
-            inner: Mutex::new(LedgerInner {
+            inner: Mutex::new(LiquidatorCapitalInner {
                 reservations: HashMap::new(),
                 balances: HashMap::new(),
             }),
@@ -144,7 +144,7 @@ impl CapitalLedger {
             .map(|c| c.amount)
     }
 
-    fn unlock_expired(&self, g: &mut LedgerInner) {
+    fn unlock_expired(&self, g: &mut LiquidatorCapitalInner) {
         let ttl = self.reservation_ttl;
         g.reservations.retain(|_, r| r.created_at.elapsed() < ttl);
     }

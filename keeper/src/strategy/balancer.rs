@@ -9,7 +9,7 @@ use {
             stellar_tx::{SettleHook, SubmitStellarTx},
         },
         stellar::Gateway,
-        strategy::CapitalLedger,
+        strategy::LiquidatorCapital,
     },
     ed25519_dalek::SigningKey,
     engine::{
@@ -59,7 +59,7 @@ pub struct Balancer {
     skey: SigningKey,
     gateway: Arc<Gateway>,
     config: BalancerConfig,
-    ledger: Arc<CapitalLedger>,
+    ledger: Arc<LiquidatorCapital>,
     liquidator_key: ObligationKey,
     market_data: Option<MarketData>,
     ledger_reader: Arc<dyn LedgerReader>,
@@ -72,7 +72,7 @@ impl Balancer {
         skey: SigningKey,
         gateway: Arc<Gateway>,
         config: BalancerConfig,
-        ledger: Arc<CapitalLedger>,
+        ledger: Arc<LiquidatorCapital>,
         ledger_reader: Arc<dyn LedgerReader>,
     ) -> Self {
         let liquidator_key = ObligationKey::new(pkey.clone());
@@ -99,7 +99,7 @@ impl Strategy<Event, Action> for Balancer {
     fn process_event(&mut self, event: Event) -> BoxFuture<'_, Vec<Action>> {
         Box::pin(async move {
             match event {
-                Event::NewBlock(b) => self.handle_new_ledger(b).await,
+                Event::NewLedger(b) => self.handle_new_ledger(b).await,
                 Event::SorobanEvents(e) => self.handle_soroban_event(e).await,
             }
         })
@@ -191,7 +191,11 @@ impl Balancer {
     }
 
     async fn refresh_market(&mut self) {
-        match self.ledger_reader.read_market_data(&self.config.market).await {
+        match self
+            .ledger_reader
+            .read_market_data(&self.config.market)
+            .await
+        {
             Ok(md) => {
                 info!(market = %self.config.market, "Rebalancer: refreshed market data");
                 self.market_data = Some(md);

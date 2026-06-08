@@ -12,8 +12,8 @@ use {
         stellar::{Gateway, pubkey_to_strkey},
         storage::SqliteStore,
         strategy::{
-            Balancer, BalancerConfig, BadDebtRequestInitiator, BadDebtRequestInitiatorConfig,
-            CapitalLedger, Liquidator, LiquidatorConfig, Withdrawer, WithdrawerConfig,
+            BadDebtRequestInitiator, BadDebtRequestInitiatorConfig, Balancer, BalancerConfig,
+            Liquidator, LiquidatorCapital, LiquidatorConfig, Withdrawer, WithdrawerConfig,
         },
     },
     ::metrics::gauge,
@@ -37,6 +37,8 @@ mod stellar;
 mod storage;
 mod strategy;
 
+// TODO: Move all these into config
+
 // Reservation TTL is a safety ceiling for hooks lost to task panics; the
 // balance cache TTL amortizes the per-opportunity balance RPC roundtrip.
 const RESERVATION_TTL: Duration = Duration::from_secs(300);
@@ -55,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
     setup_tracing();
 
     let Args { config, skey } = Args::parse();
+
     let CliConfig {
         rpc_url,
         db_path,
@@ -81,15 +84,9 @@ async fn main() -> anyhow::Result<()> {
 
     let store = SqliteStore::open(&db_path)?;
     let gateway = Arc::new(Gateway::new(&rpc_url, pkey.clone())?);
-    // Same Arc<Gateway> satisfies Arc<dyn LedgerReader> for the read surface;
-    // the firewall stays intact at the trait level.
     let ledger_reader: Arc<dyn LedgerReader> = gateway.clone();
-
     let metrics_handle = metrics::install_prometheus_recorder();
 
-    // Surface the configured safety margin as a gauge so the dashboard can
-    // overlay it against the live XLM balance. Emitted once at startup —
-    // the value is immutable for the process lifetime.
     gauge!("liquidator_xlm_safety_margin_stroops").set(xlm_safety_margin as f64);
 
     let mut engine: Engine<Event, Action> = Engine::new();
@@ -98,24 +95,25 @@ async fn main() -> anyhow::Result<()> {
     // Liquidator and Balancer cannot double-commit the same wallet capacity.
     // The executor releases reservations on every terminal tx outcome; the
     // ledger TTL is only a safety ceiling for hooks lost to task panics.
-    let capital = Arc::new(CapitalLedger::new(
+    let liquidator_capital = Arc::new(LiquidatorCapital::new(
         xlm_address.clone(),
         RESERVATION_TTL,
         BALANCE_CACHE_TTL,
     ));
 
     let bad_debt = BadDebtRequestInitiator::new(
-        ledger_reader.clone(),
-        gateway.clone(),
         skey.clone(),
-        pkey.clone(),
+        gateway.clone(),
+        store.obligations(),
+        Arc::clone(&ledger_reader),
         BadDebtRequestInitiatorConfig {
             markets: markets.clone(),
             max_retries: BAD_DEBT_MAX_RETRIES,
+            refresh_interval_blocks: 5, // TODO: Take from config
         },
     );
 
-    let withdrawer = Withdrawer::new(
+    let _withdrawer = Withdrawer::new(
         ledger_reader.clone(),
         gateway.clone(),
         skey.clone(),
@@ -132,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
         .first()
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("config.markets must not be empty"))?;
-    let balancer = Balancer::new(
+    let _balancer = Balancer::new(
         pkey.clone(),
         skey.clone(),
         gateway.clone(),
@@ -148,11 +146,11 @@ async fn main() -> anyhow::Result<()> {
             refresh_interval_blocks: rebalancer_interval_blocks,
             min_swap_amount_value_cents: rebalancer_min_swap_amount_value_cents,
         },
-        capital.clone(),
+        liquidator_capital.clone(),
         ledger_reader.clone(),
     );
 
-    let liquidator = Liquidator::new(
+    let _liquidator = Liquidator::new(
         ledger_reader.clone(),
         gateway.clone(),
         skey.clone(),
@@ -171,13 +169,13 @@ async fn main() -> anyhow::Result<()> {
         },
         store.obligations(),
         store.cursor(),
-        capital,
+        liquidator_capital,
     );
 
     engine.add_strategy(Box::new(bad_debt));
-    engine.add_strategy(Box::new(withdrawer));
-    engine.add_strategy(Box::new(balancer));
-    engine.add_strategy(Box::new(liquidator));
+    // engine.add_strategy(Box::new(withdrawer));
+    // engine.add_strategy(Box::new(balancer));
+    // engine.add_strategy(Box::new(liquidator));
 
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::new(

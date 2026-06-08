@@ -16,7 +16,7 @@ use {
 #[derive(Debug, Clone)]
 pub enum Event {
     SorobanEvents(SorobanEvent),
-    NewBlock(NewLedger),
+    NewLedger(NewLedger),
 }
 
 /// Wrap a `broadcast::Receiver` as a `Stream<Item = T>`, dropping `Lagged`
