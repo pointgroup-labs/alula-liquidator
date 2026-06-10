@@ -1,7 +1,6 @@
 //! Pool data with j-token / d-token / underlying conversion math.
 
 use crate::lending_model::{
-    BPS_FACTOR,
     amount::{DTokens, JTokens, Underlying},
     error::{LMError, MapArithmeticError},
 };
@@ -166,11 +165,17 @@ impl PoolData {
     /// keeping pool utilization at-or-below
     /// `utilization_ratio_limit_bps - safety_margin_bps`.
     ///
+    /// `min_allowed_total_supply` is the **ceiling** of
+    /// `total_borrowed × BPS / safe_utilization`: the contract recomputes
+    /// post-withdrawal utilization with `fixed_div_ceil`, so flooring here
+    /// could leave utilization a rounding hair above the safe band and burn
+    /// the scarcity fee.
+    ///
     /// Returns [`Underlying::ZERO`] when the pool is already past the safe
     /// utilization band, when the safe band is degenerate (≤ 0), or when
-    /// the supply is below the implied min-supply floor. The zero-denominator
-    /// guard makes this safe to call on freshly initialized or misconfigured
-    /// pools — the original `pipeline` code panicked on
+    /// the supply is at-or-below the implied min-supply floor. The
+    /// zero-denominator guard makes this safe to call on freshly initialized
+    /// or misconfigured pools — the original `pipeline` code panicked on
     /// `total_borrowed * BPS_FACTOR / 0`.
     pub fn compute_max_safe_withdrawal(
         &self,
@@ -188,10 +193,11 @@ impl PoolData {
             return Ok(Underlying::ZERO);
         }
 
-        let min_allowed_total_supply =
-            self.total_borrowed.checked_mul(BPS_FACTOR)? / utilization_considered_safe;
+        let min_allowed_total_supply = self
+            .total_borrowed
+            .bps_fixed_div_ceil(utilization_considered_safe)?;
 
-        if min_allowed_total_supply <= self.total_supply.0 {
+        if min_allowed_total_supply >= self.total_supply.0 {
             Ok(Underlying::ZERO)
         } else {
             Ok(self.total_supply - Underlying(min_allowed_total_supply))
@@ -370,6 +376,58 @@ mod tests {
         let tokens = pool.d_tokens_to_tokens_floor(d_tokens)?;
         let d_tokens_back = pool.tokens_to_d_tokens_floor(tokens)?;
         assert_eq!(d_tokens, d_tokens_back);
+
+        Ok(())
+    }
+
+    // Regression: the original comparison was inverted (`min_allowed <=
+    // supply` → ZERO), which made every reachable case return ZERO and the
+    // boundary case return a negative amount — the Withdrawer never withdrew.
+    #[test]
+    fn test_max_safe_withdrawal_positive_and_tight() -> Result<(), LMError> {
+        use crate::lending_model::amount::bps_fixed_div_ceil;
+
+        // create_test_pool: borrowed 1M, supply 5M → 2_000 bps utilization,
+        // limit 9_000 bps.
+        let pool = create_test_pool();
+        let margin = 100;
+        let safe = pool.utilization_ratio_limit_bps - margin;
+
+        let w = pool.compute_max_safe_withdrawal(margin)?;
+        assert!(w.0 > 0, "20% utilization must allow a withdrawal, got {w:?}");
+        assert!(w.0 < pool.total_supply.0);
+
+        // Post-withdrawal utilization — recomputed with the contract's ceil
+        // division — stays inside the safe band…
+        let supply_after = pool.total_supply.0 - w.0;
+        let util_after = bps_fixed_div_ceil(pool.total_borrowed.0, supply_after).unwrap();
+        assert!(util_after <= safe, "util_after={util_after} > safe={safe}");
+
+        // …and withdrawing a single extra token would breach it (the cap is
+        // tight, not just safe).
+        let util_breach = bps_fixed_div_ceil(pool.total_borrowed.0, supply_after - 1).unwrap();
+        assert!(util_breach > safe, "cap is not tight: {util_breach} <= {safe}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_max_safe_withdrawal_zero_cases() -> Result<(), LMError> {
+        // Already above the safe band: 4.6M / 5M = 9_200 bps ≥ 9_000.
+        let mut over = create_test_pool();
+        over.total_borrowed = 4_600_000_0000000.into();
+        assert_eq!(over.compute_max_safe_withdrawal(0)?, Underlying::ZERO);
+
+        // Degenerate band: margin consumes the whole limit.
+        let pool = create_test_pool();
+        let margin = pool.utilization_ratio_limit_bps;
+        assert_eq!(pool.compute_max_safe_withdrawal(margin)?, Underlying::ZERO);
+
+        // Nothing borrowed and nothing supplied: min_allowed = 0 = supply.
+        let mut empty = create_test_pool();
+        empty.total_borrowed = 0.into();
+        empty.total_supply = 0.into();
+        assert_eq!(empty.compute_max_safe_withdrawal(0)?, Underlying::ZERO);
 
         Ok(())
     }

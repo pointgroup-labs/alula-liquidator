@@ -214,6 +214,14 @@ impl Liquidator {
 
     async fn handle_soroban_event(&mut self, event: SorobanEvent) -> Vec<Action> {
         let market = event.contract_id.clone();
+        // Defense-in-depth: the collector already filters by contract_ids,
+        // but a snapshot from a non-configured market must never enter the
+        // obligations cache (same guard as Withdrawer / BadDebt).
+        if !self.config.markets.contains(&market) {
+            warn!(%market, "event from non-configured market");
+
+            return vec![];
+        }
 
         let Ok(op_event) = self.gateway.decode_operation(&event) else {
             return vec![];
