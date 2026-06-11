@@ -36,34 +36,14 @@ pub fn compute_profit_margin_in_borrow_token(
     )
 }
 
-// /// Cap on `repay_amount` when bridging the keeper's liquidity gap with a
-// /// flash borrow. Three branches: the wallet covers `required_amount` outright,
-// /// the pool can fund the shortfall (so `required_amount` is achievable), or
-// /// the pool lacks the capacity (return 0).
-// pub fn compute_flash_loan_repay_cap(
-//     required_amount: i128,
-//     liquidator_balance: i128,
-//     pool_total_available: i128,
-//     _flash_fee_bps: i128,
-// ) -> i128 {
-//     if liquidator_balance >= needed_amount {
-//         return needed_amount;
-//     }
-
-//     let flash_amount = needed_amount - liquidator_balance;
-//     if flash_amount <= 0 {
-//         return needed_amount;
-//     }
-
-//     if pool_total_available < flash_amount {
-//         return 0;
-//     }
-
-//     needed_amount
-// }
-
 /// Largest repay (in borrow tokens) such that the bonus-inflated collateral
 /// seizure still fits in `available_collateral`, minus a profit-margin slack.
+///
+/// The incentive is `min(borrow_pool, collateral_pool)` — the same pair-wise
+/// minimum the contract's `liquidate` applies (and that
+/// `compute_expected_seized_collateral` mirrors). Using only the collateral
+/// pool's incentive would over-estimate the bonus whenever the borrow pool's
+/// is smaller, under-sizing the repay cap.
 ///
 /// Returns `min(max_feasible_repay, R_max − profit_margin)`, or `None` if any
 /// factor collapses (zero/negative prices or collateral, arithmetic overflow,
@@ -82,7 +62,9 @@ pub fn compute_repay_cap_from_collateral(
         return None;
     }
 
-    let liquidation_incentive_bps = collateral_pool.max_liquidation_incentive_bps;
+    let liquidation_incentive_bps = borrow_pool
+        .max_liquidation_incentive_bps
+        .min(collateral_pool.max_liquidation_incentive_bps);
     let incentive_bps = BPS_FACTOR.checked_add(liquidation_incentive_bps)?;
     if incentive_bps <= 0 {
         return None;
@@ -190,36 +172,6 @@ pub fn value_to_underlying_asset_amount_floor(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_pool(
-        token_decimals: u32,
-        oracle_asset_price: i128,
-        max_liquidation_incentive_bps: i128,
-    ) -> PoolData {
-        PoolData {
-            pool_address: "p".into(),
-            token_address: "t".into(),
-            token_symbol: "T".into(),
-            token_decimals,
-            total_borrowed: 1_000_000.into(),
-            total_d_tokens: 1_000_000.into(),
-            total_j_tokens: 1_000_000.into(),
-            total_available: 1_000_000.into(),
-            total_available_adjusted: 1_000_000.into(),
-            total_supply: 1_000_000.into(),
-            total_collateral: 1_000_000.into(),
-            j_token_rate_floor_bps: 0,
-            d_token_rate_ceil_bps: 0,
-            oracle_asset_price,
-            open_ltv_bps: 8000,
-            close_ltv_bps: 8500,
-            liability_factor_bps: 10_000,
-            liquidation_close_factor_bps: 5_000,
-            max_liquidation_incentive_bps,
-            flash_loan_fee_bps: 0,
-            utilization_ratio_limit_bps: 9_000,
-        }
-    }
 
     // Non-proptest unit cases that pin specific numbers from the keeper's old
     // inline math, so we know the new helper is a drop-in replacement at the

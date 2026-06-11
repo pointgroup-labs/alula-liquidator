@@ -209,19 +209,17 @@ async fn main() -> anyhow::Result<()> {
 async fn run_engine(engine: Engine<Event, Action>) {
     match engine.run().await {
         Ok(mut set) => {
-            while let Some(res) = set.join_next().await {
+            // Any single engine task exiting (cleanly or by panic) is fatal:
+            // log the first exit and fall through to full shutdown.
+            if let Some(res) = set.join_next().await {
                 match res {
                     Ok(_) => {
                         error!(
                             "core engine task terminated unexpectedly. Initiating full shutdown..."
                         );
-
-                        break;
                     }
                     Err(e) => {
                         error!(?e, "engine task panicked");
-
-                        break;
                     }
                 }
             }

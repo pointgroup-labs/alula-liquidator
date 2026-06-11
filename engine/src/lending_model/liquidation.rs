@@ -2,7 +2,7 @@
 
 use crate::lending_model::{
     DTokens, Underlying,
-    amount::BPS_FACTOR,
+    amount::{BPS_FACTOR, bps_fixed_div_ceil},
     error::{LMError, MapArithmeticError},
     market::MarketData,
     obligation::{DepositPosition, Obligation},
@@ -22,12 +22,10 @@ fn fixed_mul_ceil(amount: i128, bps: i128) -> i128 {
         .saturating_div(BPS_FACTOR)
 }
 
-/// Upper bound on tokens repayable in one `liquidate` call. Multiplies
-/// `d_tokens` by `d_token_rate_ceil_bps` using **floor** rounding (the field
-/// name reflects the rate's role in the protocol, not the rounding direction
-/// used here — see the inline note), inflates by `LIQUIDATION_INTEREST_BUFFER_BPS`
-/// so a "full" liquidation also clears recently accrued interest, then
-/// applies the close factor.(Fix doc comment)
+/// Upper bound on tokens repayable in one `liquidate` call. Converts
+/// `d_tokens` to underlying with **ceil** rounding, inflates by
+/// `liquidation_interest_buffer_bps` (ceil) so a "full" liquidation also
+/// clears recently accrued interest, then applies the close factor (ceil).
 pub fn compute_max_repay_amount(
     d_tokens: DTokens,
     borrow_pool: &PoolData,
@@ -94,6 +92,12 @@ pub fn compute_received_collateral(
 }
 
 /// Determine whether an obligation is liquidatable using only cached local data.
+///
+/// Mirrors the contract's liquidate gate (`obligation.rs::liquidate`):
+/// `debt_value_scaled_w_liability_factors > collateral_value_scaled_w_close_ltvs`,
+/// with ceil rounding on the debt side and floor on the collateral side.
+/// No other terms: the contract's `min_collateral_value_cents` buffer applies
+/// to *max-borrowable* computations, not to the liquidation health check.
 pub fn compute_is_liquidatable(obligation: &Obligation, md: &MarketData) -> bool {
     let pools = &md.pools_data;
 
@@ -118,15 +122,11 @@ pub fn compute_is_liquidatable(obligation: &Obligation, md: &MarketData) -> bool
     }
 
     let mut collateral_value_scaled: i128 = 0;
-    let mut borrow_backing_positions: i128 = 0;
     for dep in &obligation.deposits {
         let pool = match pools.iter().find(|p| p.pool_address == dep.pool_address) {
             Some(p) => p,
             None => continue,
         };
-        if pool.close_ltv_bps > 0 {
-            borrow_backing_positions = borrow_backing_positions.saturating_add(1);
-        }
         let real_supply = fixed_mul_floor(dep.j_tokens.0, pool.j_token_rate_floor_bps);
         let total_tokens = real_supply.saturating_add(dep.collateral.0);
         let decimals_divisor = 10_i128.pow(pool.token_decimals);
@@ -137,13 +137,7 @@ pub fn compute_is_liquidatable(obligation: &Obligation, md: &MarketData) -> bool
         collateral_value_scaled = collateral_value_scaled.saturating_add(scaled);
     }
 
-    let min_collateral_threshold = md
-        .min_collateral_value_cents
-        .saturating_mul(10_i128.pow(md.oracle_price_decimals))
-        .saturating_div(100);
-    let buffer = min_collateral_threshold.saturating_mul(borrow_backing_positions);
-
-    debt_value_scaled > collateral_value_scaled.saturating_sub(buffer)
+    debt_value_scaled > collateral_value_scaled
 }
 
 /// Cheap pre-filter used by [`compute_is_liquidatable`] to short-circuit
@@ -161,6 +155,11 @@ pub fn has_any_collateral(obligation: &Obligation, pools: &[PoolData]) -> bool {
 }
 
 /// Total obligation debt value (unscaled, oracle units).
+///
+/// Per-pool division by `10^token_decimals` rounds **up**, mirroring the
+/// contract's `compute_debt_value` → `compute_asset_value_scaled_ceil`.
+/// This value feeds both the insolvency LTV and the LTV-improving seize cap,
+/// exactly as `obligation_debt_value` does in the contract's `liquidate`.
 pub fn compute_obligation_debt_value(
     obligation: &Obligation,
     market_data: &MarketData,
@@ -173,9 +172,11 @@ pub fn compute_obligation_debt_value(
             .find(|p| p.pool_address == bor.pool_address)
             .ok_or(LMError::InternalError)?;
         let real_debt = fixed_mul_ceil(bor.d_tokens.0, pool.d_token_rate_ceil_bps);
+        let decimals_divisor = 10_i128.pow(pool.token_decimals);
         let value = real_debt
             .checked_mul(pool.oracle_asset_price)
-            .and_then(|v| v.checked_div(10_i128.pow(pool.token_decimals)))
+            .and_then(|v| v.checked_add(decimals_divisor - 1))
+            .and_then(|v| v.checked_div(decimals_divisor))
             .map_over_or_underflow()?;
         total = total.checked_add(value).map_over_or_underflow()?;
     }
@@ -296,50 +297,34 @@ pub fn compute_expected_seized_collateral(
     seized.max(0)
 }
 
-/// Insolvency check: total debt (scaled by per-pool liability factor, ceil)
-/// exceeds total collateral (scaled by the market-wide `insolvency_ltv_bps`,
-/// floor). Distinct from [`compute_is_liquidatable`], which uses per-pool
-/// `close_ltv_bps` and a `min_collateral_value_cents` buffer.
+/// Insolvency check, mirroring the contract's `liquidate`:
+/// `unparameterized_ltv_bps = ceil(debt_value × BPS / collateral_value)`
+/// compared against the market-wide `insolvency_ltv_bps` with
+/// `is_insolvent ⇔ ltv ≥ limit` (the contract computes
+/// `is_solvent = ltv < limit`). Values are **unscaled** — no per-pool
+/// liability factors or close LTVs — exactly like the contract's
+/// `compute_debt_value` / `compute_collateral_value` pair.
+///
+/// Fallbacks: arithmetic failure ⇒ solvent (the close-factor cap still
+/// applies, which under-sizes but never over-sizes the repay); positive debt
+/// against zero-value collateral ⇒ insolvent.
 pub fn compute_is_insolvent(obligation: &Obligation, market_data: &MarketData) -> bool {
-    let mut debt_value_scaled: i128 = 0;
-    for bor in &obligation.borrows {
-        let pool = match market_data
-            .pools_data
-            .iter()
-            .find(|p| p.pool_address == bor.pool_address)
-        {
-            Some(p) => p,
-            None => continue,
-        };
-        let real_debt = fixed_mul_ceil(bor.d_tokens.0, pool.d_token_rate_ceil_bps);
-        let decimals_divisor = 10_i128.pow(pool.token_decimals);
-        let value = real_debt
-            .saturating_mul(pool.oracle_asset_price)
-            .saturating_add(decimals_divisor - 1)
-            .saturating_div(decimals_divisor);
-        let scaled = fixed_mul_ceil(value, pool.liability_factor_bps);
-        debt_value_scaled = debt_value_scaled.saturating_add(scaled);
+    let Ok(debt_value) = compute_obligation_debt_value(obligation, market_data) else {
+        return false;
+    };
+    if debt_value <= 0 {
+        return false;
+    }
+    let Ok(collateral_value) = compute_obligation_collateral_value(obligation, market_data) else {
+        return false;
+    };
+    if collateral_value <= 0 {
+        return true;
     }
 
-    let mut collateral_value_scaled: i128 = 0;
-    for dep in &obligation.deposits {
-        let pool = match market_data
-            .pools_data
-            .iter()
-            .find(|p| p.pool_address == dep.pool_address)
-        {
-            Some(p) => p,
-            None => continue,
-        };
-        let real_supply = fixed_mul_floor(dep.j_tokens.0, pool.j_token_rate_floor_bps);
-        let total_tokens = real_supply.saturating_add(dep.collateral.0);
-        let decimals_divisor = 10_i128.pow(pool.token_decimals);
-        let value = total_tokens
-            .saturating_mul(pool.oracle_asset_price)
-            .saturating_div(decimals_divisor);
-        let scaled = fixed_mul_floor(value, market_data.insolvency_ltv_bps);
-        collateral_value_scaled = collateral_value_scaled.saturating_add(scaled);
+    match bps_fixed_div_ceil(debt_value, collateral_value) {
+        Some(unparameterized_ltv_bps) => unparameterized_ltv_bps >= market_data.insolvency_ltv_bps,
+        // Overflow ⇒ debt astronomically dwarfs collateral.
+        None => true,
     }
-
-    debt_value_scaled > collateral_value_scaled
 }

@@ -92,10 +92,11 @@ impl Withdrawer {
 
         for market in &markets {
             self.refresh_liquidator_obligation(market).await;
-            // TODO: Update framework to allow '?' returns
+            // A failed read for one market must not discard actions already
+            // accumulated for earlier markets — skip just this market.
             let Ok(market_data) = self
                 .ledger_reader
-                .read_market_data(&market)
+                .read_market_data(market)
                 .await
                 .inspect_err(|err| {
                     warn!(?err, ?market, "failed to read market data");
@@ -103,7 +104,7 @@ impl Withdrawer {
                         .increment(1);
                 })
             else {
-                return vec![];
+                continue;
             };
 
             actions.extend(self.find_withdrawal_opportunities(market, market_data));
@@ -272,14 +273,21 @@ impl Withdrawer {
         pool: &PoolData,
         token_amount: i128,
     ) -> i128 {
+        // Saturating math: the workspace builds with `overflow-checks = true`
+        // and `panic = "abort"`, so a raw multiply here could kill the whole
+        // keeper on pathological oracle values. Mirrors the balancer's
+        // `compute_value_cents`.
         let price_with_decimals = pool.oracle_asset_price;
+        if price_with_decimals <= 0 {
+            return 0;
+        }
         let oracle_decimals = market_data.oracle_price_decimals;
         let token_decimals = pool.token_decimals;
         let pow = token_decimals + oracle_decimals;
         if pow < 2 {
             return 0;
         }
-        let value_raw = (token_amount * price_with_decimals) / 10_i128.pow(pow - 2);
+        let value_raw = token_amount.saturating_mul(price_with_decimals) / 10_i128.pow(pow - 2);
         value_raw.max(0)
     }
 
