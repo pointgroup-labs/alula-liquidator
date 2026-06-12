@@ -9,7 +9,10 @@ use {
         },
     },
     anyhow::anyhow,
-    engine::{lending_model::ObligationKey, ports::OperationBuilder},
+    engine::{
+        lending_model::{ObligationKey, amount::Underlying},
+        ports::OperationBuilder,
+    },
     stellar_xdr::curr::{
         ContractId, Hash, HostFunction, InvokeContractArgs, Operation, OperationBody, ScAddress,
         ScMap, ScMapEntry, ScSymbol, ScVal, ScVec, VecM,
@@ -246,8 +249,9 @@ fn build_withdraw_op(
     market_address: &str,
     user_key: &ObligationKey,
     pool_address: &str,
-    amount: i128,
+    amount: Underlying,
 ) -> anyhow::Result<Operation> {
+    let amount = amount.0;
     let contract_hash = contract_strkey_to_hash(market_address)?;
 
     let args: VecM<ScVal> = vec![
@@ -420,7 +424,7 @@ impl OperationBuilder for Gateway {
         market: &str,
         liquidator: &ObligationKey,
         pool: &str,
-        amount: i128,
+        amount: Underlying,
     ) -> anyhow::Result<Self::Op> {
         build_withdraw_op(market, liquidator, pool, amount)
     }

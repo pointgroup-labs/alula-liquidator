@@ -91,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut engine: Engine<Event, Action> = Engine::new();
 
-    // Single shared capital ledger across all balance-spending strategies so
+    // Single shared liquidator's capital across all balance-spending strategies so
     // Liquidator and Balancer cannot double-commit the same wallet capacity.
     // The executor releases reservations on every terminal tx outcome; the
     // ledger TTL is only a safety ceiling for hooks lost to task panics.
@@ -121,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
             max_retries: 5, // TODO: From config,
             markets: markets.clone(),
             min_withdraw_value_cents,
-            refresh_interval_blocks: 5, // TODO: From config
+            refresh_interval_blocks: 2, // TODO: From config
             utilization_safety_margin_bps: withdrawer_utilization_safety_margin_bps,
         },
         ledger_reader.clone(),
@@ -153,10 +153,10 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let liquidator = Liquidator::new(
-        ledger_reader.clone(),
-        gateway.clone(),
-        skey.clone(),
         pkey.clone(),
+        skey.clone(),
+        gateway.clone(),
+        store.cursor(),
         LiquidatorConfig {
             markets: markets.clone(),
             min_profit_margin_cents,
@@ -169,19 +169,20 @@ async fn main() -> anyhow::Result<()> {
             flash_enabled: LIQUIDATOR_FLASH_ENABLED,
             flash_safety_haircut_bps: LIQUIDATOR_FLASH_SAFETY_HAIRCUT_BPS,
         },
-        store.obligations(),
-        store.cursor(),
         liquidator_capital,
+        store.obligations(),
+        ledger_reader.clone(),
     );
 
-    engine.add_strategy(Box::new(bad_debt));
-    engine.add_strategy(Box::new(withdrawer));
-    engine.add_strategy(Box::new(balancer));
+    // engine.add_strategy(Box::new(withdrawer));
+    // engine.add_strategy(Box::new(bad_debt));
+    // engine.add_strategy(Box::new(balancer));
     engine.add_strategy(Box::new(liquidator));
 
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::new(
         &rpc_url,
+        100_000u32, // TODO: Take from config
         EventFilter {
             event_type: EventType::Contract,
             contract_ids: markets,
@@ -209,8 +210,6 @@ async fn main() -> anyhow::Result<()> {
 async fn run_engine(engine: Engine<Event, Action>) {
     match engine.run().await {
         Ok(mut set) => {
-            // Any single engine task exiting (cleanly or by panic) is fatal:
-            // log the first exit and fall through to full shutdown.
             if let Some(res) = set.join_next().await {
                 match res {
                     Ok(_) => {

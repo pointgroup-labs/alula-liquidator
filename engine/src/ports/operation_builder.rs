@@ -2,7 +2,10 @@
 //! dry-run.
 
 use {
-    crate::{lending_model::ObligationKey, reactor::BoxFuture},
+    crate::{
+        lending_model::{ObligationKey, Underlying},
+        reactor::BoxFuture,
+    },
     anyhow::Result,
 };
 
@@ -59,7 +62,7 @@ pub trait OperationBuilder: Send + Sync {
         market: &str,
         liquidator: &ObligationKey,
         pool: &str,
-        amount: i128,
+        amount: Underlying,
     ) -> Result<Self::Op>;
 }
 

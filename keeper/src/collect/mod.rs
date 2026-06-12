@@ -1,4 +1,5 @@
 pub mod stellar_event;
+pub mod stellar_event2;
 pub mod stellar_ledger;
 
 use {

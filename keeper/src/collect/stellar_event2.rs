@@ -139,6 +139,8 @@ impl Collector<Event> for SorobanEventCollector {
                             }
                         }
                         Err(e) => {
+                            // TODO: WTF?
+                            // TODO: Fix it later
                             let terminal = is_terminal_cursor_error(&e);
 
                             if terminal && !is_first_poll {

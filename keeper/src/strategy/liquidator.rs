@@ -28,6 +28,7 @@ use {
     tracing::{debug, error, info, warn},
 };
 
+// TODO: From config
 const REFRESH_INTERVAL_BLOCKS: u32 = 12;
 const MAX_RETRIES: u32 = 3;
 
@@ -48,34 +49,41 @@ pub struct LiquidatorConfig {
     /// candidates only. Guards against the extra cost of the
     /// collateral → borrow swap that the repayment depends on.
     pub flash_safety_haircut_bps: i128,
+    // Some of these fields are BS, by the way + I don't even understand what they mean
 }
 
 #[derive(Debug, Clone)]
 enum LiquidationType {
     Direct {
-        repay_amount: i128,
+        repay_amount: i128, // ми ліквідуємо лише нашою ліквідністю
+                            // треба протестувати цю штуку першою
     },
+    // ми ліквідуємо своєю ліквідністю, але спершу ми робимо своп
+    // бо ми не тримаємо на руках відповідного токена
     PreSwap {
-        repay_amount: i128,
-        source_asset: String,
-        source_amount_in: i128,
-        min_source_out: i128,
+        repay_amount: i128,     // власний amount
+        source_asset: String,   // що свопаємо
+        source_amount_in: i128, // скільки
+        min_source_out: i128,   // скільки чекаємо на виході
         swap_provider: String,
     },
     /// Flash-borrow `repay_amount` of the borrow asset, seize collateral,
     /// swap seized collateral back to the borrow asset, auto-repay.
     /// The wallet never needs to hold the borrow asset.
     Flash {
-        repay_amount: i128,
+        // вопше якась тупня, нє?
+
+        // Ми маємо позичити асет і віддати його повністю
+        repay_amount: i128, // кіко маємо віддати
         /// Flash fee = ceil(repay_amount * flash_fee_bps / 10_000).
         flash_fee: i128,
         /// Underlying collateral token address (swap input).
-        collateral_token: String,
+        collateral_token: String, // що ми свопаємо
         /// Amount of collateral underlying seized by the Liquidate request.
-        seized_amount: i128,
+        seized_amount: i128, // скільки ми свопаємо
         /// `min_amount_out` passed to SwapExactTokens.
         /// Must be ≥ repay_amount + flash_fee.
-        min_swap_out: i128,
+        min_swap_out: i128, // мінімум, який ми очікуємо
         swap_provider: String,
     },
 }
@@ -87,13 +95,12 @@ struct LiquidationPlan {
     borrow_pool_address: String,
     collateral_pool_address: String,
     expected_seized_collateral: i128,
-    /// Ranking key across (borrow, deposit) pairs. Computed in oracle units
-    /// so it's comparable across pools with different decimals/prices.
-    net_profit_oracle: i128,
+    /// Ranking key across (borrow, deposit) pairs. Computed in oracle units.
+    net_profit_value: i128,
 }
 
 pub struct Liquidator {
-    chain: Arc<dyn LedgerReader>,
+    ledger_reader: Arc<dyn LedgerReader>,
     gateway: Arc<Gateway>,
     skey: SigningKey,
     pkey: String,
@@ -107,34 +114,29 @@ pub struct Liquidator {
 }
 
 impl Liquidator {
-    // 8/7 args triggers clippy::too_many_arguments. Each parameter is a
-    // distinct collaborator (chain, gateway, signing key, public key,
-    // config, two repos, ledger) with no natural sub-grouping. A
-    // builder/config-struct refactor is tracked separately; not worth
-    // forcing here just to silence the lint.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        chain: Arc<dyn LedgerReader>,
-        gateway: Arc<Gateway>,
-        skey: SigningKey,
         pkey: String,
-        config: LiquidatorConfig,
-        obligations_repo: ObligationsRepo,
+        skey: SigningKey,
+        gateway: Arc<Gateway>,
         cursor_repo: CursorRepo,
+        config: LiquidatorConfig,
         ledger: Arc<LiquidatorCapital>,
+        obligations_repo: ObligationsRepo,
+        ledger_reader: Arc<dyn LedgerReader>,
     ) -> Self {
         Self {
-            chain,
-            gateway,
             skey,
             pkey,
             config,
-            obligations_repo,
+            ledger,
+            gateway,
             cursor_repo,
+            ledger_reader,
+            obligations_repo,
             last_refresh_ledger: 0,
             obligations: HashMap::new(),
             market_data: HashMap::new(),
-            ledger,
         }
     }
 }
@@ -153,7 +155,7 @@ impl Strategy<Event, Action> for Liquidator {
         Box::pin(async {
             info!(?self.config.markets, "sync_state: loading market(s)");
             for market in &self.config.markets.clone() {
-                match self.chain.read_market_data(market).await {
+                match self.ledger_reader.read_market_data(market).await {
                     Ok(md) => {
                         info!(market, ?md);
                         self.market_data.insert(market.clone(), md);
@@ -166,14 +168,14 @@ impl Strategy<Event, Action> for Liquidator {
                     HashMap::new()
                 });
 
-                if cached.is_empty() {
-                    info!(?market, "no cached obligations, fetching from RPC");
-                    let obl_map = self.fetch_obligations_from_rpc(market).await?;
-                    self.obligations.insert(market.clone(), obl_map);
-                } else {
-                    info!(count = cached.len(), "loaded obligations from DB");
-                    self.obligations.insert(market.clone(), cached);
-                }
+                // if cached.is_empty() {
+                //     info!(?market, "no cached obligations, fetching from RPC");
+                //     let obl_map = self.fetch_obligations_from_rpc(market).await?;
+                //     self.obligations.insert(market.clone(), obl_map);
+                // } else {
+                //     info!(count = cached.len(), "loaded obligations from DB");
+                //     self.obligations.insert(market.clone(), cached);
+                // }
             }
             info!("sync_state: done");
             Ok(())
@@ -182,36 +184,6 @@ impl Strategy<Event, Action> for Liquidator {
 }
 
 impl Liquidator {
-    async fn fetch_obligations_from_rpc(
-        &self,
-        market: &str,
-    ) -> anyhow::Result<HashMap<ObligationKey, Obligation>> {
-        let keys = self.chain.read_all_obligations_keys(market).await?;
-        let total = keys.len();
-        info!(total, "fetching obligations...");
-
-        let mut obl_map = HashMap::new();
-        for (i, key) in keys.into_iter().enumerate() {
-            info!(?key, idx = i + 1, total, "fetching obligation");
-            let obl = self
-                .chain
-                .read_user_obligation(market, &key)
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "market={market}: failed to fetch obligation user={}: {e:#}",
-                        key.user,
-                    )
-                })?;
-            debug!(?obl);
-            if let Err(e) = self.obligations_repo.put(market, &key, &obl) {
-                warn!(?e, "failed to save obligation to DB");
-            }
-            obl_map.insert(key, obl);
-        }
-        Ok(obl_map)
-    }
-
     async fn handle_soroban_event(&mut self, event: SorobanEvent) -> Vec<Action> {
         let market = event.contract_id.clone();
         // Defense-in-depth: the collector already filters by contract_ids,
@@ -361,7 +333,7 @@ impl Liquidator {
 
     async fn refresh_market_data(&mut self) {
         for market in self.config.markets.clone() {
-            match self.chain.read_market_data(&market).await {
+            match self.ledger_reader.read_market_data(&market).await {
                 Ok(md) => {
                     let prices: Vec<String> = md
                         .pools_data
@@ -531,7 +503,7 @@ impl Liquidator {
 
                 if best
                     .as_ref()
-                    .is_none_or(|b| plan.net_profit_oracle > b.net_profit_oracle)
+                    .is_none_or(|b| plan.net_profit_value > b.net_profit_value)
                 {
                     best = Some(plan);
                 }
@@ -544,14 +516,14 @@ impl Liquidator {
         // `.max(0)` is a defensive belt-and-braces against future invariant
         // drift. Oracle units divide by 10^7 for USD at standard SAC
         // 7-decimal scaling (`cents * 10^oracle_decimals / 100`).
-        let net_oracle = plan.net_profit_oracle.max(0);
+        let net_oracle = plan.net_profit_value.max(0);
         histogram!(
-            "liquidator_plan_expected_net_profit_oracle_units",
+            "liquidator_plan_expected_net_profit_value_units",
             "market" => market.to_string(),
         )
         .record(net_oracle as f64);
         counter!(
-            "liquidator_plan_expected_net_profit_oracle_units_total",
+            "liquidator_plan_expected_net_profit_value_units_total",
             "market" => market.to_string(),
         )
         .increment(net_oracle as u64);
@@ -559,7 +531,7 @@ impl Liquidator {
             ?plan.borrower_key,
             borrow_pool = %plan.borrow_pool_address,
             collateral_pool = %plan.collateral_pool_address,
-            net = plan.net_profit_oracle,
+            net = plan.net_profit_value,
             "selected best (borrow, deposit) pair",
         );
         self.execute_liquidation_plan(market, &liquidator_obl_key, plan)
@@ -646,7 +618,7 @@ impl Liquidator {
 
         let raw_borrow_balance = match self
             .ledger
-            .cached_balance(borrow_token, &self.pkey, &*self.chain)
+            .cached_balance(borrow_token, &self.pkey, &*self.ledger_reader)
             .await
         {
             Ok(b) => b,
@@ -718,7 +690,7 @@ impl Liquidator {
                 borrow_pool_address: borrow_pool.pool_address.clone(),
                 collateral_pool_address: collateral_pool.pool_address.clone(),
                 expected_seized_collateral: expected_seized,
-                net_profit_oracle: check.net_value,
+                net_profit_value: check.net_value,
             });
         }
 
@@ -794,7 +766,7 @@ impl Liquidator {
             return None;
         }
 
-        // Compute the flash fee (ceiling arithmetic, mirrors the on-chain
+        // Compute the flash fee (ceiling arithmetic, mirrors the on-ledger_reader
         // `compute_flash_fee` in `request.rs::execute_transfers`).
         let flash_fee = profitability::compute_flash_fee(
             Underlying(profitable_repay),
@@ -919,7 +891,7 @@ impl Liquidator {
             borrow_pool_address: borrow_pool.pool_address.clone(),
             collateral_pool_address: collateral_pool.pool_address.clone(),
             expected_seized_collateral: seized_amount,
-            net_profit_oracle: check.net_value,
+            net_profit_value: check.net_value,
         })
     }
 
@@ -944,7 +916,7 @@ impl Liquidator {
 
             let raw_balance = match self
                 .ledger
-                .cached_balance(source_asset, &self.pkey, &*self.chain)
+                .cached_balance(source_asset, &self.pkey, &*self.ledger_reader)
                 .await
             {
                 Ok(b) => b,
@@ -986,7 +958,7 @@ impl Liquidator {
             }
 
             let quoted_out_for_needed = match self
-                .chain
+                .ledger_reader
                 .get_amount_out(needed_source, path[0], path[1], &best_provider)
                 .await
             {
@@ -1078,7 +1050,7 @@ impl Liquidator {
                 borrow_pool_address: borrow_pool.pool_address.clone(),
                 collateral_pool_address: collateral_pool.pool_address.clone(),
                 expected_seized_collateral: expected_seized,
-                net_profit_oracle: check.net_value,
+                net_profit_value: check.net_value,
             });
         }
 
@@ -1125,7 +1097,7 @@ impl Liquidator {
         let mut best: Option<(String, i128)> = None;
         for provider in &self.config.swap_providers {
             match self
-                .chain
+                .ledger_reader
                 .get_amount_out(amount_in, path[0], path[1], provider)
                 .await
             {
@@ -1357,7 +1329,7 @@ impl Liquidator {
         let op_id = if reserve_amount > 0 {
             let raw_balance = match self
                 .ledger
-                .cached_balance(&reserve_token, &self.pkey, &*self.chain)
+                .cached_balance(&reserve_token, &self.pkey, &*self.ledger_reader)
                 .await
             {
                 Ok(b) => b,
@@ -1423,7 +1395,7 @@ impl Liquidator {
                         op_id,
                         liquidation_outcome: Some(LiquidationOutcomeMetric {
                             market: market.to_string(),
-                            expected_net_oracle: plan.net_profit_oracle,
+                            expected_net_oracle: plan.net_profit_value,
                         }),
                     }),
                 }))
