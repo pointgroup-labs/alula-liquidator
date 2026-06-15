@@ -174,15 +174,15 @@ async fn main() -> anyhow::Result<()> {
         ledger_reader.clone(),
     );
 
+    engine.add_strategy(Box::new(liquidator));
     // engine.add_strategy(Box::new(withdrawer));
     // engine.add_strategy(Box::new(bad_debt));
     // engine.add_strategy(Box::new(balancer));
-    engine.add_strategy(Box::new(liquidator));
 
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::new(
         &rpc_url,
-        100_000u32, // TODO: Take from config
+        2982461, // TODO: Take from config
         EventFilter {
             event_type: EventType::Contract,
             contract_ids: markets,
@@ -196,11 +196,11 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::select! {
         _ = run_engine(engine) => {}
-        res = metrics::serve(metrics_handle, metrics_bind_addr) => {
-            if let Err(e) = res {
-                error!(?e, "metrics server stopped");
-            }
-        }
+        // res = metrics::serve(metrics_handle, metrics_bind_addr) => {
+        //     if let Err(e) = res {
+        //         error!(?e, "metrics server stopped");
+        //     }
+        // }
         _ = shutdown_future() => info!("shutdown signal received"),
     }
 

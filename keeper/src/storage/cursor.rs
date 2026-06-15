@@ -31,7 +31,7 @@ impl CursorRepo {
         let conn = self.conn.lock();
         let row = conn
             .query_row(
-                "SELECT ledger, cursor_id FROM event_cursor WHERE id = 1",
+                "SELECT cursor_id, ledger FROM event_cursor WHERE id = 1",
                 [],
                 |row| {
                     Ok(EventCursor {
