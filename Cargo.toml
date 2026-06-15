@@ -24,7 +24,7 @@ print_stderr = "warn"
 [workspace.dependencies]
 # Stellar / Soroban
 stellar-xdr = "25"
-stellar-rpc-client = "25"
+stellar-rpc-client = "26"
 stellar-strkey = "0.0.16"
 soroban-fixed-point-math = "1.0.0"
 
