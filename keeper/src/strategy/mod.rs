@@ -7,6 +7,7 @@ mod bad_debt_request_initiator;
 mod balancer;
 pub mod capital;
 mod liquidator;
+mod liquidator2;
 mod withdrawer;
 
 pub use bad_debt_request_initiator::{BadDebtRequestInitiator, BadDebtRequestInitiatorConfig};

@@ -2,9 +2,10 @@
 //! lending market. This is the domain-level vocabulary; the raw chain event
 //! shape stays in the adapter.
 
-use thiserror::Error;
+use {strum::AsRefStr, thiserror::Error};
 
 // #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(AsRefStr)]
 pub enum OperationEvent {
     Repay,
     Borrow,

@@ -98,7 +98,8 @@ pub fn compute_received_collateral(
 /// with ceil rounding on the debt side and floor on the collateral side.
 /// No other terms: the contract's `min_collateral_value_cents` buffer applies
 /// to *max-borrowable* computations, not to the liquidation health check.
-pub fn compute_is_liquidatable(obligation: &Obligation, md: &MarketData) -> bool {
+pub fn compute_is_unhealthy(obligation: &Obligation, md: &MarketData) -> bool {
+    // TODO: Rewrite according to amount! types
     let pools = &md.pools_data;
 
     if !has_any_collateral(obligation, pools) {
@@ -241,6 +242,7 @@ pub fn compute_expected_seized_collateral(
     }
 
     let real_supply = fixed_mul_floor(deposit.j_tokens.0, collateral_pool.j_token_rate_floor_bps);
+
     let position_collateral_sum = real_supply.saturating_add(deposit.collateral.0);
     if position_collateral_sum <= 0 {
         return 0;
@@ -253,24 +255,32 @@ pub fn compute_expected_seized_collateral(
     let min_incentive_bps = borrow_pool
         .max_liquidation_incentive_bps
         .min(collateral_pool.max_liquidation_incentive_bps);
+
     let collateral_amount_no_bonus = liquidated_value
         .saturating_mul(10_i128.pow(collateral_pool.token_decimals))
         .saturating_div(collateral_pool.oracle_asset_price);
+
     let with_incentive = collateral_amount_no_bonus
         .saturating_mul(BPS_FACTOR.saturating_add(min_incentive_bps))
         .saturating_div(BPS_FACTOR);
 
     let ltv_cap = if !is_insolvent {
+        // LTV-improvement assertion
+
         if obligation_debt_value <= 0 || obligation_collateral_value <= 0 {
             return 0;
         }
         let max_value_recv = liquidated_value
             .saturating_mul(obligation_collateral_value)
             .saturating_div(obligation_debt_value);
+
         let strict_max_value_recv = max_value_recv.saturating_mul(999).saturating_div(1000);
+
         let ltv_collateral = strict_max_value_recv
             .saturating_mul(10_i128.pow(collateral_pool.token_decimals))
             .saturating_div(collateral_pool.oracle_asset_price);
+
+        // receiving ltv improving amount of collateral for that specific repayment
         Some(ltv_collateral)
     } else {
         None

@@ -94,7 +94,7 @@ pub fn compute_repay_cap_from_collateral(
     }
 
     let max_repay_borrow_units = numerator / denominator; // floor → biases under cap
-    let max_profitable_repay = max_repay_borrow_units.saturating_sub(profit_margin_borrow_tokens);
+    let max_profitable_repay = max_repay_borrow_units.saturating_sub(profit_margin_borrow_tokens); // TODO: Should we do this?
 
     let result = max_feasible_repay.min(max_profitable_repay);
     if result > 0 { Some(result) } else { None }

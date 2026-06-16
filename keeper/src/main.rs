@@ -46,7 +46,7 @@ const BALANCE_CACHE_TTL: Duration = Duration::from_secs(5);
 
 // Liquidator tuning not exposed through the JSON config yet; defaults mirror
 // the historical inline values.
-const LIQUIDATOR_GAIN_HAIRCUT_BPS: i128 = 500;
+const LIQUIDATOR_GAIN_HAIRCUT_BPS: i128 = 0;
 const LIQUIDATOR_INCLUSION_FEE_ORACLE_UNITS: i128 = 0;
 const LIQUIDATOR_FLASH_ENABLED: bool = true;
 const LIQUIDATOR_FLASH_SAFETY_HAIRCUT_BPS: i128 = 0;
