@@ -175,14 +175,14 @@ async fn main() -> anyhow::Result<()> {
     );
 
     engine.add_strategy(Box::new(liquidator));
-    // engine.add_strategy(Box::new(withdrawer));
-    // engine.add_strategy(Box::new(bad_debt));
-    // engine.add_strategy(Box::new(balancer));
+    engine.add_strategy(Box::new(withdrawer));
+    engine.add_strategy(Box::new(bad_debt));
+    engine.add_strategy(Box::new(balancer));
 
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::new(
         &rpc_url,
-        2982461, // TODO: Take from config
+        3119015, // TODO: Take from config
         EventFilter {
             event_type: EventType::Contract,
             contract_ids: markets,
