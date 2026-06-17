@@ -687,7 +687,7 @@ impl Liquidator {
             )
             .ok()?;
 
-            if !profitability.is_profitable {
+            if !profitability.is_profifitable {
                 debug!(
                     net = profitability.net_value,
                     "direct branch fails profitability gate",

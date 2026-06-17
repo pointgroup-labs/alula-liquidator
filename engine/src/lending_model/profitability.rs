@@ -101,45 +101,33 @@ pub fn compute_repay_cap_from_collateral(
 }
 
 pub struct LiquidationProfitability {
-    pub effective_gain_value: i128,
-    pub required_value: i128,
     pub net_value: i128,
+    pub gain_value: i128,
     pub is_profitable: bool,
+    pub required_value: i128,
 }
 
 pub fn compute_liquidation_profitability(
     gain_value: i128,
     cost_value: i128,
     min_profit_margin_value: i128,
-    gain_haircut_bps: i128,
     inclusion_fee_value: i128,
 ) -> Result<LiquidationProfitability, LMError> {
-    if !(0..=BPS_FACTOR).contains(&gain_haircut_bps) {
-        return Err(LMError::InternalError);
-    }
     if !gain_value.is_positive() || !cost_value.is_positive() {
         return Err(LMError::InternalError);
     }
-
-    let multiplier = BPS_FACTOR.saturating_sub(gain_haircut_bps);
-    let effective_gain_value = gain_value
-        .checked_mul(multiplier)
-        .map_over_or_underflow()?
-        .checked_div(BPS_FACTOR)
-        .map_over_or_underflow()?;
 
     let required_value = cost_value
         .checked_add(min_profit_margin_value)
         .map_over_or_underflow()?
         .checked_add(inclusion_fee_value)
         .map_over_or_underflow()?;
-
-    let net_value = effective_gain_value.saturating_sub(required_value);
+    let net_value = gain_value.saturating_sub(required_value);
 
     Ok(LiquidationProfitability {
-        effective_gain_value,
-        required_value,
         net_value,
+        gain_value,
+        required_value,
         is_profitable: net_value > 0,
     })
 }

@@ -554,7 +554,7 @@ impl Liquidator {
         borrow_pool: &PoolData,
         market_data: &MarketData,
         collateral_pool: &PoolData,
-        deposit_pos: &DepositPosition,
+        deposit_position: &DepositPosition,
         borrower_obligation: &Obligation,
         borrower_obligation_key: &ObligationKey,
     ) -> Option<LiquidationPlan> {
@@ -575,15 +575,423 @@ impl Liquidator {
             is_insolvent,
         );
         let position_collateral_sum = collateral_pool
-            .j_tokens_to_tokens_floor(deposit_pos.j_tokens)
+            .j_tokens_to_tokens_floor(deposit_position.j_tokens)
             .ok()?
             .0
-            + deposit_pos.collateral.0;
+            + deposit_position.collateral.0;
         let position_collateral_value = position_collateral_sum
             .saturating_mul(collateral_pool.oracle_asset_price)
             .saturating_div(10_i128.pow(collateral_pool.token_decimals));
 
+        let min_collateral_threshold_value = market_data
+            .min_collateral_value_cents
+            .saturating_mul(10_i128.pow(market_data.oracle_price_decimals))
+            .saturating_div(100);
+
+        if !position_collateral_sum.is_positive()
+            || position_collateral_value < min_collateral_threshold_value
+        {
+            warn!(
+                position_collateral_sum,
+                position_collateral_value,
+                min_collateral_threshold_value,
+                "position below minimum collateral threshold, skipping"
+            );
+            counter!("liquidator_skip_total", "reason" => "below_collateral_threshold")
+                .increment(1);
+
+            return None;
+        }
+
+        let profit_margin_borrow = profitability::compute_profit_margin_in_borrow_token(
+            self.config.min_profit_margin_cents,
+            market_data.oracle_price_decimals,
+            borrow_pool,
+        )
+        .map(|u| u.0)
+        .unwrap_or(0);
+
+        let max_feasible_repay = position_debt_tokens.0.min(close_factor_cap);
+        if max_feasible_repay <= 0 {
+            error!(max_feasible_repay, "max_feasible_repay non-positive");
+
+            return None;
+        }
+
+        let profitable_repay = profitability::compute_repay_cap_from_collateral(
+            max_feasible_repay,
+            position_collateral_sum,
+            borrow_pool,
+            collateral_pool,
+            profit_margin_borrow,
+        )?;
+
+        let raw_borrow_balance = self
+            .liquidator_capital
+            .cached_balance(borrow_token, &self.pkey, &*self.ledger_reader)
+            .await
+            .inspect_err(|e| {
+                warn!(?e, %borrow_token, "balance query failed");
+                counter!("liquidator_skip_total", "reason" => "balance_query_failed").increment(1);
+            })
+            .unwrap_or(0);
+
+        let usable_borrow = if borrow_token == self.config.xlm_address {
+            raw_borrow_balance.saturating_sub(self.config.xlm_safety_margin)
+        } else {
+            raw_borrow_balance
+        };
+
+        let plan = if usable_borrow >= profitable_repay {
+            self.try_direct_plan(
+                is_insolvent,
+                profitable_repay,
+                borrow_pool,
+                borrower_obligation,
+                market_data,
+                collateral_pool,
+                borrower_obligation_key,
+                deposit_position,
+            )
+            .await
+        } else {
+            // self.try_flash_plan();
+            todo!()
+        };
+
         None
+    }
+
+    async fn try_direct_plan(
+        &self,
+        is_insolvent: bool,
+        repay_amount: i128,
+        borrow_pool: &PoolData,
+        obligation: &Obligation,
+        market_data: &MarketData,
+        collateral_pool: &PoolData,
+        borrower_key: &ObligationKey,
+        deposit_position: &DepositPosition,
+    ) -> Option<LiquidationPlan> {
+        let expected_seized_collateral = self.compute_seized(
+            repay_amount,
+            is_insolvent,
+            borrow_pool,
+            obligation,
+            market_data,
+            collateral_pool,
+            deposit_position,
+        )?;
+
+        let (repay_value, expected_received_value) = (
+            repay_amount
+                .saturating_mul(borrow_pool.oracle_asset_price)
+                .saturating_div(10_i128.pow(borrow_pool.token_decimals)),
+            expected_seized_collateral
+                .saturating_mul(collateral_pool.oracle_asset_price)
+                .saturating_div(10_i128.pow(collateral_pool.token_decimals)),
+        );
+        let profit_margin_value = self
+            .config
+            .min_profit_margin_cents
+            .saturating_mul(10_i128.pow(market_data.oracle_price_decimals))
+            .saturating_div(100);
+        let profitability = profitability::compute_liquidation_profitability(
+            expected_received_value,
+            repay_value,
+            profit_margin_value,
+            self.config.inclusion_fee_oracle_units,
+        )
+        .ok()?;
+        if !profitability.is_profitable {
+            debug!(
+                net = profitability.net_value,
+                "direct branch fails profitability gate",
+            );
+
+            return None;
+        }
+
+        info!(
+            ?borrower_key,
+            borrow_pool = %borrow_pool.pool_address,
+            collateral_pool = %collateral_pool.pool_address,
+            repay_amount, expected_received_value, net = profitability.net_value,
+            "DIRECT liquidation plan"
+        );
+
+        return Some(LiquidationPlan {
+            liquidation_type: LiquidationType::Direct { repay_amount },
+            borrower_key: borrower_key.clone(),
+            borrow_pool_address: borrow_pool.pool_address.clone(),
+            collateral_pool_address: collateral_pool.pool_address.clone(),
+            expected_seized_collateral,
+            net_profit_value: profitability.net_value,
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn try_flash_plan(
+        &self,
+        is_insolvent: bool,
+        repay_amount: i128,
+        borrow_pool: &PoolData,
+        obligation: &Obligation,
+        market_data: &MarketData,
+        collateral_pool: &PoolData,
+        borrower_key: &ObligationKey,
+        deposit_position: &DepositPosition,
+    ) -> Option<LiquidationPlan> {
+        if borrow_pool.total_available.0 < repay_amount {
+            counter!(
+                "liquidator_skip_total",
+                "reason" => "flash_pool_insufficient_liquidity"
+            )
+            .increment(1);
+
+            return None;
+        }
+
+        let flash_fee = profitability::compute_flash_fee(
+            Underlying(repay_amount),
+            borrow_pool.flash_loan_fee_bps,
+        )
+        .ok()?
+        .0;
+        let seized_amount = self.compute_seized(
+            repay_amount,
+            is_insolvent,
+            borrow_pool,
+            obligation,
+            market_data,
+            collateral_pool,
+            deposit_position,
+        )?;
+
+        let flash_repay_amount = repay_amount.saturating_add(flash_fee);
+        let min_swap_out = flash_repay_amount;
+
+        let collateral_token = collateral_pool.token_address.clone();
+        let borrow_token = borrow_pool.token_address.as_str();
+        let swap_path = [collateral_token.as_str(), borrow_token];
+
+        let (best_provider, quoted_out) =
+            match self.best_swap_quote(seized_amount, &swap_path).await {
+                Some(q) => q,
+                None => {
+                    counter!(
+                        "liquidator_skip_total",
+                        "reason" => "flash_swap_shortfall"
+                    )
+                    .increment(1);
+
+                    return None;
+                }
+            };
+
+        if quoted_out < min_swap_out {
+            debug!(
+                quoted_out,
+                min_swap_out, seized_amount, "flash swap quote below min_swap_out threshold"
+            );
+            counter!(
+                "liquidator_skip_total",
+                "reason" => "flash_swap_shortfall"
+            )
+            .increment(1);
+
+            return None;
+        }
+
+        if quoted_out < min_swap_out {
+            debug!(
+                quoted_out,
+                min_swap_out, seized_amount, "flash swap quote below min_swap_out threshold"
+            );
+            counter!(
+                "liquidator_skip_total",
+                "reason" => "flash_swap_shortfall"
+            )
+            .increment(1);
+
+            return None;
+        }
+
+        let (flash_repay_value, received_collateral_value) = (
+            flash_repay_amount
+                .saturating_mul(borrow_pool.oracle_asset_price)
+                .saturating_div(10_i128.pow(borrow_pool.token_decimals)),
+            seized_amount
+                .saturating_mul(collateral_pool.oracle_asset_price)
+                .saturating_div(10_i128.pow(collateral_pool.token_decimals)),
+        );
+        let profit_margin_value = self
+            .config
+            .min_profit_margin_cents
+            .saturating_mul(10_i128.pow(market_data.oracle_price_decimals))
+            .saturating_div(100);
+
+        let profitability = profitability::compute_liquidation_profitability(
+            received_collateral_value,
+            flash_repay_value,
+            profit_margin_value,
+            self.config.inclusion_fee_oracle_units,
+        )
+        .ok()?;
+        if !profitability.is_profitable {
+            debug!(
+                net = profitability.net_value,
+                flash_fee, "flash branch fails profitability gate"
+            );
+
+            return None;
+        }
+
+        info!(
+            ?borrower_key,
+            borrow_pool = %borrow_pool.pool_address,
+            collateral_pool = %collateral_pool.pool_address,
+            repay_amount,
+            flash_fee,
+            seized_amount,
+            min_swap_out,
+            net = profitability.net_value,
+            "FLASH liquidation plan"
+        );
+
+        Some(LiquidationPlan {
+            liquidation_type: LiquidationType::Flash {
+                flash_fee,
+                repay_amount,
+                min_swap_out,
+                swap_provider: best_provider,
+            },
+            borrower_key: borrower_key.clone(),
+            net_profit_value: profitability.net_value,
+            expected_seized_collateral: seized_amount,
+            borrow_pool_address: borrow_pool.pool_address.clone(),
+            collateral_pool_address: collateral_pool.pool_address.clone(),
+        })
+    }
+
+    async fn try_preswap_plan(
+        &self,
+        is_insolvent: bool,
+        repay_amount: i128,
+        borrow_pool: &PoolData,
+        obligation: &Obligation,
+        market_data: &MarketData,
+        collateral_pool: &PoolData,
+        borrower_key: &ObligationKey,
+        deposit_pos: &DepositPosition,
+    ) -> Option<LiquidationPlan> {
+        let borrow_token = borrow_pool.token_address.as_str();
+
+        for source_asset in &self.config.assets_to_hold {
+            if source_asset == borrow_token {
+                continue;
+            }
+
+            let Ok(raw_balance) = self
+                .liquidator_capital
+                .cached_balance(source_asset, &self.pkey, &*self.ledger_reader)
+                .await
+                .inspect_err(|e| {
+                    warn!(?e, %source_asset, "balance query failed");
+                })
+            else {
+                continue;
+            };
+            let usable_balance = if source_asset.as_ref() == self.config.xlm_address {
+                raw_balance.saturating_sub(self.config.xlm_safety_margin)
+            } else {
+                raw_balance
+            };
+            if !usable_balance.is_positive() {
+                info!(
+                    raw_balance,
+                    usable_balance, source_asset, "non-positive liqudator usable balance"
+                );
+
+                continue;
+            }
+            let swap_path = &[source_asset.as_str(), borrow_token];
+
+            let Some((best_provider, quoted_out)) =
+                self.best_swap_quote(usable_balance, swap_path).await
+            else {
+                debug!(%source_asset, "no swap quote");
+
+                continue;
+            };
+            if !quoted_out.is_positive() {
+                debug!(quoted_out, ?swap_path, "non-positive quoted out");
+
+                continue;
+            }
+
+            // let required_source = re
+        }
+
+        None
+    }
+
+    async fn best_swap_quote(&self, amount_in: i128, path: &[&str]) -> Option<(String, i128)> {
+        let mut best: Option<(String, i128)> = None;
+        for provider in &self.config.swap_providers {
+            match self
+                .ledger_reader
+                .get_amount_out(amount_in, path[0], path[1], provider)
+                .await
+            {
+                Ok(out) if out > 0 => {
+                    let is_better = best.as_ref().is_none_or(|(_, prev)| out > *prev);
+                    if is_better {
+                        best = Some((provider.clone(), out));
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => warn!(?e, %provider, "swap quote failed"),
+            }
+        }
+
+        best
+    }
+
+    fn compute_seized(
+        &self,
+        repay_amount: i128,
+        is_insolvent: bool,
+        borrow_pool: &PoolData,
+        obligation: &Obligation,
+        market_data: &MarketData,
+        collateral_pool: &PoolData,
+        deposit_pos: &DepositPosition,
+    ) -> Option<i128> {
+        let (obligation_debt_value, obligation_collateral_value) = (
+            liquidation::compute_obligation_debt_value(obligation, market_data).ok()?,
+            liquidation::compute_obligation_collateral_value(obligation, market_data).ok()?,
+        );
+
+        let seized = liquidation::compute_expected_seized_collateral(
+            repay_amount,
+            borrow_pool,
+            collateral_pool,
+            deposit_pos,
+            obligation_debt_value,
+            obligation_collateral_value,
+            is_insolvent,
+            market_data.min_collateral_value_cents,
+            market_data.oracle_price_decimals,
+        );
+        if !seized.is_positive() {
+            warn!(repay_amount, "expected seized collateral is zero");
+            counter!("liquidator_skip_total", "reason" => "unprofitable_seize_zero").increment(1);
+
+            None
+        } else {
+            Some(seized)
+        }
     }
 
     async fn execute_liquidation_plan(
