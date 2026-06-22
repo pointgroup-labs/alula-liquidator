@@ -13,5 +13,5 @@ mod withdrawer;
 pub use bad_debt_request_initiator::{BadDebtRequestInitiator, BadDebtRequestInitiatorConfig};
 pub use balancer::{Balancer, BalancerConfig};
 pub use capital::LiquidatorCapital;
-pub use liquidator::{Liquidator, LiquidatorConfig};
+pub use liquidator2::{Liquidator, LiquidatorConfig};
 pub use withdrawer::{Withdrawer, WithdrawerConfig};

@@ -5,6 +5,7 @@
 
 use {
     anyhow::{Context, anyhow},
+    engine::lending_model::LiquidationResult,
     engine::lending_model::{
         BorrowPosition, DTokens, DepositPosition, JTokens, MarketData, Obligation, ObligationKey,
         PoolData, Underlying,
@@ -393,6 +394,26 @@ pub(super) fn parse_market_data(val: &ScVal) -> anyhow::Result<MarketData> {
         oracle_price_decimals,
         insolvency_ltv_bps,
         min_collateral_value_cents,
+    })
+}
+
+pub(crate) fn parse_liquidation_result(val: &ScVal) -> anyhow::Result<LiquidationResult> {
+    let map = scval_as_map(val)?;
+
+    let debt_repaid = map_get_i128(map, "debt_repaid")?;
+    let j_tokens_seized = map_get_i128(map, "j_tokens_seized")?;
+    let d_tokens_burned = map_get_i128(map, "d_tokens_burned")?;
+    let amount_to_send_back = map_get_i128(map, "amount_to_send_back")?;
+    let plain_collateral_seized = map_get_i128(map, "plain_collateral_seized")?;
+    let tokens_from_j_tokens_seized = map_get_i128(map, "tokens_from_j_tokens_seized")?;
+
+    Ok(LiquidationResult {
+        debt_repaid,
+        j_tokens_seized,
+        d_tokens_burned,
+        amount_to_send_back,
+        plain_collateral_seized,
+        tokens_from_j_tokens_seized,
     })
 }
 

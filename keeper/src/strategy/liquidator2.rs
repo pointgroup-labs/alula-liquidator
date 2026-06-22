@@ -396,8 +396,8 @@ impl Liquidator {
                 .try_liquidate(
                     market,
                     is_insolvent,
-                    obligation,
                     market_data,
+                    obligation,
                     obligation_key,
                 )
                 .await
@@ -522,12 +522,12 @@ impl Liquidator {
                 "liquidator_plan_expected_net_profit_value_units",
                 "market" => market.to_string(),
             )
-            .record(net_oracle as f64);
+            .record(net_value as f64);
             counter!(
                 "liquidator_plan_expected_net_profit_value_units_total",
                 "market" => market.to_string(),
             )
-            .increment(net_oracle as u64);
+            .increment(net_value as u64);
             info!(
                 ?plan.borrower_key,
                 borrow_pool = %plan.borrow_pool_address,
@@ -883,7 +883,7 @@ impl Liquidator {
         market_data: &MarketData,
         collateral_pool: &PoolData,
         borrower_key: &ObligationKey,
-        deposit_pos: &DepositPosition,
+        deposit_position: &DepositPosition,
     ) -> Option<LiquidationPlan> {
         let borrow_token = borrow_pool.token_address.as_str();
 
@@ -917,20 +917,54 @@ impl Liquidator {
             }
             let swap_path = &[source_asset.as_str(), borrow_token];
 
-            let Some((best_provider, quoted_out)) =
-                self.best_swap_quote(usable_balance, swap_path).await
+            // This checks if we can in theory use this token to repay
+            // the repay_amount
+            let Some((best_provider, min_amount_in)) =
+                self.best_swap_quote2(usable_balance, swap_path).await
             else {
                 debug!(%source_asset, "no swap quote");
 
                 continue;
             };
-            if !quoted_out.is_positive() {
-                debug!(quoted_out, ?swap_path, "non-positive quoted out");
+            if !min_amount_in.is_positive() {
+                debug!(min_amount_in, ?swap_path, "non-positive min_amount_in");
 
                 continue;
             }
 
-            // let required_source = re
+            if min_amount_in > repay_amount {
+                // TODO: warn!
+
+                continue;
+            }
+
+            let expected_seized = self.compute_seized(
+                repay_amount,
+                is_insolvent,
+                borrow_pool,
+                obligation,
+                market_data,
+                collateral_pool,
+                deposit_position,
+            )?;
+
+            let Some(source_pool) = market_data
+                .pools_data
+                .iter()
+                .find(|p| p.token_address == *source_asset)
+            else {
+                error!(%source_asset, "source asset pool not in market data");
+                continue;
+            };
+
+            // Як нам тут правильно порахувати прибуток
+            //
+
+            // Наші витрати - скільки
+            // ми source асета
+            // по вартості
+
+            // let cost_value =
         }
 
         None
@@ -952,6 +986,28 @@ impl Liquidator {
                 }
                 Ok(_) => {}
                 Err(e) => warn!(?e, %provider, "swap quote failed"),
+            }
+        }
+
+        best
+    }
+
+    async fn best_swap_quote2(&self, amount_out: i128, path: &[&str]) -> Option<(String, i128)> {
+        let mut best: Option<(String, i128)> = None;
+        for provider in &self.config.swap_providers {
+            match self
+                .ledger_reader
+                .get_amount_in(amount_out, path[0], path[1], provider)
+                .await
+            {
+                Ok(amount_in) if amount_in > 0 => {
+                    let is_better = best.as_ref().is_none_or(|(_, prev)| amount_in < *prev);
+                    if is_better {
+                        best = Some((provider.clone(), amount_in));
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => warn!(?e, %provider, "swap quote2 failed"),
             }
         }
 
@@ -1009,7 +1065,7 @@ impl Liquidator {
         &self,
         plan: &LiquidationPlan,
     ) -> Option<Vec<<Gateway as OperationBuilder>::Request>> {
-        let mut requests = vec![];
+        // let mut requests = vec![];
 
         // TODO: WTF
         None

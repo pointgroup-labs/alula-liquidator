@@ -78,6 +78,9 @@ async fn main() -> anyhow::Result<()> {
         metrics_bind_addr,
     } = CliConfig::load(&config)?;
 
+    assert_eq!(markets.len(), 1, "multiple markets are not yet supported");
+    let market = markets[0].clone();
+
     let skey = SigningKey::from_bytes(&PrivateKey::from_string(&skey)?.0);
     let pkey = pubkey_to_strkey(&skey);
     info!(%pkey, "keeper identity");
@@ -137,19 +140,20 @@ async fn main() -> anyhow::Result<()> {
         skey.clone(),
         gateway.clone(),
         BalancerConfig {
-            market: balancer_market,
-            xlm_address: xlm_address.clone(),
+            market,
             xlm_safety_margin,
+            max_submission_retries: 5,
+            max_swap_provider_probes: 10,
+            xlm_address: xlm_address.clone(),
             assets_to_hold: assets_to_hold.clone(),
             swap_providers: swap_providers.clone(),
             max_price_impact_bps: rebalancer_max_price_impact_bps,
-            max_slippage_bps: rebalancer_slippage_bps,
-            max_fee_bps: rebalancer_max_fee_bps,
+            allowed_slippage_bps: rebalancer_slippage_bps,
             refresh_interval_blocks: rebalancer_interval_blocks,
             min_swap_amount_value_cents: rebalancer_min_swap_amount_value_cents,
         },
-        liquidator_capital.clone(),
         ledger_reader.clone(),
+        liquidator_capital.clone(),
     );
 
     let liquidator = Liquidator::new(
@@ -164,19 +168,21 @@ async fn main() -> anyhow::Result<()> {
             swap_providers,
             xlm_address,
             xlm_safety_margin,
-            gain_haircut_bps: LIQUIDATOR_GAIN_HAIRCUT_BPS,
+            max_retries: 4,
+            refresh_interval_blocks: 5,
+            // gain_haircut_bps: LIQUIDATOR_GAIN_HAIRCUT_BPS,
             inclusion_fee_oracle_units: LIQUIDATOR_INCLUSION_FEE_ORACLE_UNITS,
-            flash_enabled: LIQUIDATOR_FLASH_ENABLED,
-            flash_safety_haircut_bps: LIQUIDATOR_FLASH_SAFETY_HAIRCUT_BPS,
+            // flash_enabled: LIQUIDATOR_FLASH_ENABLED,
+            // flash_safety_haircut_bps: LIQUIDATOR_FLASH_SAFETY_HAIRCUT_BPS,
         },
-        liquidator_capital,
         store.obligations(),
         ledger_reader.clone(),
+        liquidator_capital,
     );
 
-    engine.add_strategy(Box::new(liquidator));
-    engine.add_strategy(Box::new(withdrawer));
-    engine.add_strategy(Box::new(bad_debt));
+    // engine.add_strategy(Box::new(liquidator));
+    // engine.add_strategy(Box::new(withdrawer));
+    // engine.add_strategy(Box::new(bad_debt));
     engine.add_strategy(Box::new(balancer));
 
     let cursor_repo = Arc::new(store.cursor());

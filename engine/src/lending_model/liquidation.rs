@@ -8,6 +8,17 @@ use crate::lending_model::{
     obligation::{DepositPosition, Obligation},
     pool::PoolData,
 };
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiquidationResult {
+    pub debt_repaid: i128,
+    pub j_tokens_seized: i128,
+    pub d_tokens_burned: i128,
+    pub amount_to_send_back: i128,
+    pub plain_collateral_seized: i128,
+    pub tokens_from_j_tokens_seized: i128,
+}
 
 /// `floor(amount * bps / BPS_FACTOR)` with saturating intermediates.
 fn fixed_mul_floor(amount: i128, bps: i128) -> i128 {

@@ -7,16 +7,17 @@ use {
             ParseError, map_get, parse_obligation, scval_as_map, scval_display, scval_type_name,
         },
     },
+    crate::stellar::xdr_codec::parse_liquidation_result,
     anyhow::{Context, anyhow},
     engine::{
-        lending_model::{Obligation, ObligationKey},
+        lending_model::{LiquidationResult, Obligation, ObligationKey},
         ports::{EventCodec, OperationEvent},
     },
     stellar_xdr::curr::{Limits, ReadXdr as _, ScMap, ScVal},
 };
 
 fn parse_obligation_from_event_value_inner(
-    value_xdr_base64: &str,
+    value_xdr_base64: &str, // event value
     obligation_field_name: &str,
     key: &ObligationKey,
 ) -> anyhow::Result<Option<Obligation>> {
@@ -27,10 +28,30 @@ fn parse_obligation_from_event_value_inner(
     match map_get(map, obligation_field_name) {
         None | Some(ScVal::Void) => Ok(None),
         Some(ScVal::Vec(None)) => Ok(None),
+        // he gets this
         Some(inner) => {
             let obl = parse_obligation(inner, key)
                 .with_context(|| format!("parse obligation field '{obligation_field_name}'"))?;
             Ok(Some(obl))
+        }
+    }
+}
+
+fn parse_liquidation_result_from_liquidation_event_value_inner(
+    value_xdr_base64: &str,
+) -> anyhow::Result<Option<LiquidationResult>> {
+    let val = ScVal::from_xdr_base64(value_xdr_base64.as_bytes(), Limits::none())
+        .context("decode event value XDR")?;
+    let map = scval_as_map(&val)?;
+
+    match map_get(map, "liquidation_result") {
+        None | Some(ScVal::Void) => Ok(None),
+        Some(ScVal::Vec(None)) => Ok(None),
+        Some(inner) => {
+            let liquidation_result = parse_liquidation_result(inner)
+                .with_context(|| format!("parse liquidation_result"))?;
+
+            Ok(Some(liquidation_result))
         }
     }
 }
@@ -124,5 +145,12 @@ impl EventCodec for Gateway {
         key: &ObligationKey,
     ) -> anyhow::Result<Option<Obligation>> {
         parse_obligation_from_event_value_inner(value_xdr_base64, field_name, key)
+    }
+
+    fn parse_liquidation_result_from_liquidation_event_value(
+        &self,
+        value_xdr_base64: &str,
+    ) -> anyhow::Result<Option<LiquidationResult>> {
+        parse_liquidation_result_from_liquidation_event_value_inner(value_xdr_base64)
     }
 }

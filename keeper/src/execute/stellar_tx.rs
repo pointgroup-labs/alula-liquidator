@@ -53,7 +53,7 @@ pub struct LiquidationOutcomeMetric {
 /// `LiquidatorCapital::reserve`.
 #[derive(Debug, Clone)]
 pub struct SettleHook {
-    pub ledger: Arc<LiquidatorCapital>,
+    pub liquidator_capital: Arc<LiquidatorCapital>,
     pub op_id: u64,
     /// `Some` only for liquidation plans; `None` for capital-neutral or
     /// non-profit operations (rebalancer swaps, withdrawals).
@@ -62,7 +62,7 @@ pub struct SettleHook {
 
 impl SettleHook {
     fn release(&self) {
-        self.ledger.release(self.op_id);
+        self.liquidator_capital.release(self.op_id);
     }
 }
 

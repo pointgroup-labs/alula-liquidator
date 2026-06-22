@@ -4,7 +4,7 @@
 
 use {
     crate::{
-        lending_model::{Obligation, ObligationKey},
+        lending_model::{LiquidationResult, Obligation, ObligationKey},
         ports::operation_event::OperationEvent,
     },
     anyhow::Result,
@@ -33,4 +33,9 @@ pub trait EventCodec: Send + Sync {
         field_name: &str,
         key: &ObligationKey,
     ) -> Result<Option<Obligation>>;
+
+    fn parse_liquidation_result_from_liquidation_event_value(
+        &self,
+        value_xdr_base64: &str,
+    ) -> Result<Option<LiquidationResult>>;
 }

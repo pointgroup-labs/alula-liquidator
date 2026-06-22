@@ -3,21 +3,23 @@
     "db_path": "./data.db",
     "xlm_address": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
     "markets": [
-        "CASFR64TK47J4Y5FKZMPDOAURE2NDBXVI3VWBZNJOOA2EXWHNEQCL4V5"
+        "CANAZSCCUUUKSC6M2GDHW6XKPJJEPTSBKT32MVOWQZDAZKSMCWFAIB2Z"
     ],
-    "xlm_safety_margin": 200000000,
+    "xlm_safety_margin": 2000000000,
     "network_passphrase": "Test SDF Network ; September 2015",
     "assets_to_hold": [
-        "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
+        "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+        "CAP5AMC2OHNVREO66DFIN6DHJMPOBAJ2KCDDIMFBR7WWJH5RZBFM3UEI",
+        "CDNVQW44C3HALYNVQ4SOBXY5EWYTGVYXX6JPESOLQDABJI5FC5LTRRUE"
     ],
     "swap_providers": [
-        "CAAMNEXA7BOLMJKHDWNWLW6NQONLW3D6EXIKBBDJJEIDOGJYXRD7PJG4",
-        "CCBMBQGNR3NCR2FPN3AYQMJ65UMGQHCOJUB34RQCGIYMX77D5HUUSQDG"
+        "CCQBZY6KF6CGL76D3MFYMPCHCI23BKYAN2KHPGJA2MV3QM3PDEXLO34Y",
+        "CDWL35O3H3NSM5JBUPWN5LEDAITWYNHRLCCWCYJFFXFRR6MGH6IVKIIU"
     ],
     "min_profit_margin_cents": 50,
     "min_withdraw_value_cents": 500,
     "withdrawer_utilization_safety_margin_bps": 500,
-    "rebalancer_max_price_impact_bps": 100,
+    "rebalancer_max_price_impact_bps": 1200,
     "rebalancer_slippage_bps": 30,
     "rebalancer_interval_blocks": 2,
     "rebalancer_min_swap_amount_value_cents": 100,
