@@ -31,7 +31,7 @@ jobs:
     # Hard ceiling so a stuck buildx layer can't burn the runner budget.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # amd64-only: production target is amd64 cloud, and emulating arm64
       # under QEMU is painful for a Rust build (rustc + the rusqlite/bundled
