@@ -2,7 +2,7 @@
 
 use {
     super::{
-        Gateway,
+        client::Gateway,
         xdr_codec::{
             ParseError, map_get, parse_obligation, scval_as_map, scval_display, scval_type_name,
         },

@@ -4,7 +4,7 @@ use {
     crate::{
         collect::{Event, stellar_ledger::NewLedger},
         execute::{Action, stellar_tx::SubmitStellarTx},
-        stellar::Gateway,
+        stellar::client::Gateway,
         storage::obligations::ObligationsRepo,
     },
     ed25519_dalek::SigningKey,

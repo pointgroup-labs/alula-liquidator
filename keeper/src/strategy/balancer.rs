@@ -8,8 +8,8 @@ use {
             Action,
             stellar_tx::{SettleHook, SubmitStellarTx},
         },
-        stellar::Gateway,
-        strategy::LiquidatorCapital,
+        liquidator_capital::LiquidatorCapital,
+        stellar::client::Gateway,
     },
     ed25519_dalek::SigningKey,
     engine::{

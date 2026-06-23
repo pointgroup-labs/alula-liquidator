@@ -36,7 +36,7 @@ pub struct SorobanEventCollector {
 }
 
 impl SorobanEventCollector {
-    pub fn new(
+    pub fn try_new(
         network_url: &Url,
         start_ledger: u32,
         filter: EventFilter,

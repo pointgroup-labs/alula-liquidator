@@ -4,11 +4,11 @@
 use {
     super::Action,
     crate::{
+        liquidator_capital::LiquidatorCapital,
         stellar::{
-            Gateway,
+            client::Gateway,
             errors::{SorobanRpcError, is_bad_seq_error, is_no_simulation_results_error},
         },
-        strategy::LiquidatorCapital,
     },
     anyhow::Result,
     ed25519_dalek::{Signer, SigningKey},

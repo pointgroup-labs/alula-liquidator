@@ -2,7 +2,7 @@
 
 use {
     super::{
-        Gateway,
+        client::Gateway,
         xdr_codec::{
             address_to_scval, build_address_vec_scval, build_requests_vec_scval,
             contract_strkey_to_hash, i128_to_scval, obligation_key_to_scval,

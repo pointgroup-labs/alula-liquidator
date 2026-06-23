@@ -3,13 +3,10 @@
 //! Internal to the `stellar` adapter. Strategies never reach here.
 
 use {
-    super::{
-        Gateway,
-        xdr_codec::{account_strkey_to_muxed, contract_strkey_to_hash},
-    },
+    super::xdr_codec::{account_strkey_to_muxed, contract_strkey_to_hash},
     anyhow::anyhow,
     metrics::{counter, histogram},
-    stellar_rpc_client::AuthMode,
+    stellar_rpc_client::{AuthMode, Client},
     stellar_xdr::curr::{
         ContractId, Hash, HostFunction, InvokeContractArgs, Memo, Operation, OperationBody,
         Preconditions, ScAddress, ScSymbol, ScVal, SequenceNumber, Transaction,
@@ -17,12 +14,24 @@ use {
     },
 };
 
-/// Fee passed in simulation envelopes; ignored by simulate but required by the
-/// XDR. Mirrors `pipeline::constants::DEFAULT_SIMULATION_FEE`.
 const DEFAULT_SIMULATION_FEE: u32 = 100_000;
 
+pub struct Gateway {
+    pub rpc: Client,
+    pub source_account: String,
+}
+
 impl Gateway {
-    pub(super) async fn simulate_contract_call(
+    pub fn new(rpc_url: &url::Url, source_account: String) -> anyhow::Result<Self> {
+        Ok(Self {
+            rpc: Client::new(rpc_url.as_str())?,
+            source_account,
+        })
+    }
+}
+
+impl Gateway {
+    pub async fn simulate_contract_call(
         &self,
         contract_address: &str,
         function_name: &str,

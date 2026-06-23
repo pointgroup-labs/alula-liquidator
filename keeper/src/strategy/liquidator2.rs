@@ -8,9 +8,9 @@ use {
             Action,
             stellar_tx::{SettleHook, SubmitStellarTx},
         },
-        stellar::Gateway,
+        liquidator_capital::{LiquidatorCapital, random_id},
+        stellar::client::Gateway,
         storage::{cursor::CursorRepo, obligations::ObligationsRepo},
-        strategy::{LiquidatorCapital, liquidator_capital::random_id},
     },
     ed25519_dalek::SigningKey,
     engine::{

@@ -2,7 +2,7 @@
 
 use {
     super::{
-        Gateway,
+        client::Gateway,
         errors::is_expected_liquidation_failure,
         xdr_codec::{
             address_to_scval, build_address_vec_scval, build_requests_vec_scval, i128_to_scval,

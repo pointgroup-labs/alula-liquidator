@@ -1,5 +1,7 @@
 {
     "rpc_url": "https://soroban-testnet.stellar.org",
+    "liquidator_capital_reservation_ttl_secs": 5,
+    "liquidator_capital_balance_ttl_secs": 300,
     "db_path": "./data.db",
     "xlm_address": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
     "markets": [
@@ -25,5 +27,8 @@
     "rebalancer_min_swap_amount_value_cents": 100,
     "rebalancer_max_fee_bps": 30,
     "metrics_bind_addr": "0.0.0.0:9000",
-    "ledger_polling_interval_secs": 2
+    "ledger_polling_interval_secs": 2,
+    "bad_debt_request_initiator_max_retries": 3,
+    "bad_debt_request_initiator_refresh_interval_blocks": 5,
+    "event_collector_start_ledger": 3213202
 }

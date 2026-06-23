@@ -9,13 +9,13 @@ use {
 
 #[derive(Parser, Debug)]
 pub struct Args {
-    #[arg(short, long)]
-    pub config: PathBuf,
     // Env-var fallback so deploys (docker compose `env_file:`, k8s
     // secrets) can supply the key without leaking it on the process
     // command line. CLI flag still wins when both are present.
     #[arg(short, long, env = "STELLAR_SKEY", hide_env_values = true)]
     pub skey: String,
+    #[arg(short, long)]
+    pub config: PathBuf,
 }
 
 #[derive(Deserialize, Debug)]
@@ -26,6 +26,10 @@ pub struct CliConfig {
     pub xlm_address: String,
     pub markets: Vec<String>,
     pub xlm_safety_margin: i128,
+
+    pub liquidator_capital_balance_ttl_secs: u64,
+    pub liquidator_capital_reservation_ttl_secs: u64,
+
     pub network_passphrase: String,
     pub assets_to_hold: Vec<String>,
     pub swap_providers: Vec<String>,
@@ -34,7 +38,11 @@ pub struct CliConfig {
 
     pub ledger_polling_interval_secs: u64,
 
-    #[serde(default = "default_withdrawer_utilization_safety_margin_bps")]
+    pub bad_debt_request_initiator_max_retries: u32,
+    pub bad_debt_request_initiator_refresh_interval_blocks: u32,
+
+    pub event_collector_start_ledger: u32,
+
     pub withdrawer_utilization_safety_margin_bps: i128,
     pub rebalancer_max_price_impact_bps: i128,
     pub rebalancer_slippage_bps: i128,
@@ -45,14 +53,8 @@ pub struct CliConfig {
     pub metrics_bind_addr: SocketAddr,
 }
 
-fn default_withdrawer_utilization_safety_margin_bps() -> i128 {
-    500
-}
-
 impl CliConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         Ok(serde_json::from_reader(File::open(path)?)?)
     }
 }
-
-// TODO: tests?
