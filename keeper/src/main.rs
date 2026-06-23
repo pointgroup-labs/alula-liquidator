@@ -63,19 +63,20 @@ async fn main() -> anyhow::Result<()> {
         db_path,
         markets,
         xlm_address,
+        swap_providers,
+        assets_to_hold,
+        metrics_bind_addr,
         xlm_safety_margin,
         network_passphrase,
-        assets_to_hold,
-        swap_providers,
+        rebalancer_max_fee_bps,
+        rebalancer_slippage_bps,
         min_profit_margin_cents,
         min_withdraw_value_cents,
-        withdrawer_utilization_safety_margin_bps,
-        rebalancer_max_price_impact_bps,
-        rebalancer_slippage_bps,
         rebalancer_interval_blocks,
+        ledger_polling_interval_secs,
+        rebalancer_max_price_impact_bps,
+        withdrawer_utilization_safety_margin_bps,
         rebalancer_min_swap_amount_value_cents,
-        rebalancer_max_fee_bps,
-        metrics_bind_addr,
     } = CliConfig::load(&config)?;
 
     assert_eq!(markets.len(), 1, "multiple markets are not yet supported");
@@ -148,7 +149,7 @@ async fn main() -> anyhow::Result<()> {
             assets_to_hold: assets_to_hold.clone(),
             swap_providers: swap_providers.clone(),
             max_price_impact_bps: rebalancer_max_price_impact_bps,
-            allowed_slippage_bps: rebalancer_slippage_bps,
+            allowed_swap_slippage_bps: rebalancer_slippage_bps,
             refresh_interval_blocks: rebalancer_interval_blocks,
             min_swap_amount_value_cents: rebalancer_min_swap_amount_value_cents,
         },
@@ -168,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
             swap_providers,
             xlm_address,
             xlm_safety_margin,
+            allowed_swap_slippage_bps: 100,
             max_retries: 4,
             refresh_interval_blocks: 5,
             // gain_haircut_bps: LIQUIDATOR_GAIN_HAIRCUT_BPS,
@@ -180,10 +182,10 @@ async fn main() -> anyhow::Result<()> {
         liquidator_capital,
     );
 
-    // engine.add_strategy(Box::new(liquidator));
+    engine.add_strategy(Box::new(liquidator));
     // engine.add_strategy(Box::new(withdrawer));
     // engine.add_strategy(Box::new(bad_debt));
-    engine.add_strategy(Box::new(balancer));
+    // engine.add_strategy(Box::new(balancer));
 
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::new(
@@ -196,17 +198,19 @@ async fn main() -> anyhow::Result<()> {
         },
         cursor_repo,
     )?));
-    engine.add_collector(Box::new(LedgerCollector::new(&rpc_url)));
+
+    let secs: u64 = 2;
+    engine.add_collector(Box::new(LedgerCollector::new(&rpc_url, secs)));
 
     engine.add_executor(Box::new(SorobanExecutor::new(gateway, network_passphrase)));
 
     tokio::select! {
         _ = run_engine(engine) => {}
-        // res = metrics::serve(metrics_handle, metrics_bind_addr) => {
-        //     if let Err(e) = res {
-        //         error!(?e, "metrics server stopped");
-        //     }
-        // }
+        res = metrics::serve(metrics_handle, metrics_bind_addr) => {
+            if let Err(e) = res {
+                error!(?e, "metrics server stopped");
+            }
+        }
         _ = shutdown_future() => info!("shutdown signal received"),
     }
 

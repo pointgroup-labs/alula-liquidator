@@ -32,6 +32,8 @@ pub struct CliConfig {
     pub min_profit_margin_cents: i128,
     pub min_withdraw_value_cents: i128,
 
+    pub ledger_polling_interval_secs: u64,
+
     #[serde(default = "default_withdrawer_utilization_safety_margin_bps")]
     pub withdrawer_utilization_safety_margin_bps: i128,
     pub rebalancer_max_price_impact_bps: i128,

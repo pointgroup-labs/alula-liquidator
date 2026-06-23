@@ -31,8 +31,8 @@ pub struct SorobanEventCollector {
     last_ledger: u32,
     start_ledger: u32,
     filter: EventFilter,
-    last_cursor_id: Option<String>,
     cursor_repo: Arc<CursorRepo>,
+    last_cursor_id: Option<String>,
 }
 
 impl SorobanEventCollector {

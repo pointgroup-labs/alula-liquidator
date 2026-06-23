@@ -6,11 +6,11 @@ use {
         collect::{Event, stellar_ledger::NewLedger},
         execute::{
             Action,
-            stellar_tx::{LiquidationOutcomeMetric, SettleHook, SubmitStellarTx},
+            stellar_tx::{SettleHook, SubmitStellarTx},
         },
         stellar::Gateway,
         storage::{cursor::CursorRepo, obligations::ObligationsRepo},
-        strategy::{LiquidatorCapital, capital::random_op_id},
+        strategy::{LiquidatorCapital, liquidator_capital::random_op_id},
     },
     ed25519_dalek::SigningKey,
     engine::{
@@ -27,6 +27,8 @@ use {
     tracing::{debug, error, info, warn},
 };
 
+const BPS_FACTOR: i128 = 10_000;
+
 pub struct LiquidatorConfig {
     pub max_retries: u32,
     pub xlm_address: String,
@@ -36,6 +38,7 @@ pub struct LiquidatorConfig {
     pub swap_providers: Vec<String>,
     pub refresh_interval_blocks: u32,
     pub min_profit_margin_cents: i128,
+    pub allowed_swap_slippage_bps: i128,
     pub inclusion_fee_oracle_units: i128,
 }
 
@@ -642,24 +645,36 @@ impl Liquidator {
             raw_borrow_balance
         };
 
-        let plan = if usable_borrow >= profitable_repay {
-            self.try_direct_plan(
-                is_insolvent,
-                profitable_repay,
-                borrow_pool,
-                borrower_obligation,
-                market_data,
-                collateral_pool,
-                borrower_obligation_key,
-                deposit_position,
-            )
-            .await
-        } else {
-            // self.try_flash_plan();
-            todo!()
-        };
+        // let plan = if usable_borrow >= profitable_repay {
+        //     self.try_direct_plan(
+        //         is_insolvent,
+        //         profitable_repay,
+        //         borrow_pool,
+        //         borrower_obligation,
+        //         market_data,
+        //         collateral_pool,
+        //         borrower_obligation_key,
+        //         deposit_position,
+        //     )
+        //     .await
+        // } else {
+        //     // self.try_flash_plan();
+        //     todo!()
+        // };
 
-        None
+        self.try_preswap_plan(
+            is_insolvent,
+            profitable_repay,
+            borrow_pool,
+            borrower_obligation,
+            market_data,
+            collateral_pool,
+            borrower_obligation_key,
+            deposit_position,
+        )
+        .await
+
+        // None
     }
 
     async fn try_direct_plan(
@@ -887,8 +902,12 @@ impl Liquidator {
     ) -> Option<LiquidationPlan> {
         let borrow_token = borrow_pool.token_address.as_str();
 
+        let mut best_plan: Option<LiquidationPlan> = None;
         for source_asset in &self.config.assets_to_hold {
             if source_asset == borrow_token {
+                // NB: Preswap plan is about swapping assets for
+                // what must be repaid during the liquidation, hence the asset
+                // itself is not a candidate to be swapped.
                 continue;
             }
 
@@ -902,38 +921,37 @@ impl Liquidator {
             else {
                 continue;
             };
-            let usable_balance = if source_asset.as_ref() == self.config.xlm_address {
+            let swappable_balance = if source_asset.as_ref() == self.config.xlm_address {
                 raw_balance.saturating_sub(self.config.xlm_safety_margin)
             } else {
                 raw_balance
             };
-            if !usable_balance.is_positive() {
+            if !swappable_balance.is_positive() {
                 info!(
                     raw_balance,
-                    usable_balance, source_asset, "non-positive liqudator usable balance"
+                    swappable_balance, source_asset, "non-positive liqudator usable balance"
                 );
 
                 continue;
             }
-            let swap_path = &[source_asset.as_str(), borrow_token];
 
-            // This checks if we can in theory use this token to repay
-            // the repay_amount
-            let Some((best_provider, min_amount_in)) =
-                self.best_swap_quote2(usable_balance, swap_path).await
+            let Some((best_provider, max_amount_in)) = self
+                .best_swap_base(swappable_balance, source_asset, borrow_token)
+                .await
             else {
-                debug!(%source_asset, "no swap quote");
+                error!(%source_asset, "no swap base");
 
                 continue;
             };
-            if !min_amount_in.is_positive() {
-                debug!(min_amount_in, ?swap_path, "non-positive min_amount_in");
 
-                continue;
-            }
-
-            if min_amount_in > repay_amount {
-                // TODO: warn!
+            let max_amount_in = max_amount_in
+                .saturating_mul(BPS_FACTOR + self.config.allowed_swap_slippage_bps)
+                / BPS_FACTOR;
+            if max_amount_in > swappable_balance {
+                error!(
+                    max_amount_in,
+                    source_asset, borrow_token, "insufficient swappable balance"
+                );
 
                 continue;
             }
@@ -954,20 +972,65 @@ impl Liquidator {
                 .find(|p| p.token_address == *source_asset)
             else {
                 error!(%source_asset, "source asset pool not in market data");
+
                 continue;
             };
 
-            // Як нам тут правильно порахувати прибуток
-            //
+            let (cost_value, gain_value, profit_margin_value) = (
+                max_amount_in
+                    .saturating_mul(source_pool.oracle_asset_price)
+                    .saturating_div(10_i128.pow(source_pool.token_decimals)),
+                expected_seized
+                    .saturating_mul(collateral_pool.oracle_asset_price)
+                    .saturating_div(10_i128.pow(collateral_pool.token_decimals)),
+                self.config
+                    .min_profit_margin_cents
+                    .saturating_mul(10_i128.pow(market_data.oracle_price_decimals))
+                    .saturating_div(100),
+            );
 
-            // Наші витрати - скільки
-            // ми source асета
-            // по вартості
+            let profitability = profitability::compute_liquidation_profitability(
+                gain_value,
+                cost_value,
+                profit_margin_value,
+                self.config.inclusion_fee_oracle_units,
+            )
+            .ok()?;
+            if !profitability.is_profitable {
+                debug!(net = profitability.net_value, "preswap is not profitable",);
 
-            // let cost_value =
+                continue;
+            }
+
+            info!(
+                ?borrower_key,
+                borrow_pool = %borrow_pool.pool_address,
+                collateral_pool = %collateral_pool.pool_address,
+                repay_amount, expected_seized, net = profitability.net_value,
+                "PRESWAP liquidation plan"
+            );
+
+            if let Some(ref bp) = best_plan {
+                if bp.net_profit_value < profitability.net_value {
+                    best_plan = Some(LiquidationPlan {
+                        liquidation_type: LiquidationType::PreSwap {
+                            repay_amount,
+                            source_asset: source_asset.clone(),
+                            source_amount_in: max_amount_in,
+                            min_amount_out: repay_amount,
+                            swap_provider: best_provider,
+                        },
+                        borrower_key: borrower_key.clone(),
+                        borrow_pool_address: borrow_pool.pool_address.clone(),
+                        collateral_pool_address: collateral_pool.pool_address.clone(),
+                        expected_seized_collateral: expected_seized,
+                        net_profit_value: profitability.net_value,
+                    })
+                }
+            };
         }
 
-        None
+        best_plan
     }
 
     async fn best_swap_quote(&self, amount_in: i128, path: &[&str]) -> Option<(String, i128)> {
@@ -992,12 +1055,17 @@ impl Liquidator {
         best
     }
 
-    async fn best_swap_quote2(&self, amount_out: i128, path: &[&str]) -> Option<(String, i128)> {
+    async fn best_swap_base(
+        &self,
+        amount_out: i128,
+        asset_in: &str,
+        asset_out: &str,
+    ) -> Option<(String, i128)> {
         let mut best: Option<(String, i128)> = None;
         for provider in &self.config.swap_providers {
             match self
                 .ledger_reader
-                .get_amount_in(amount_out, path[0], path[1], provider)
+                .get_amount_in(amount_out, asset_in, asset_out, provider)
                 .await
             {
                 Ok(amount_in) if amount_in > 0 => {
@@ -1007,7 +1075,7 @@ impl Liquidator {
                     }
                 }
                 Ok(_) => {}
-                Err(e) => warn!(?e, %provider, "swap quote2 failed"),
+                Err(e) => warn!(?e, %provider, "get_amount_in failed"),
             }
         }
 

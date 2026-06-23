@@ -1,13 +1,10 @@
-//! Concrete `engine::reactor::Executor` implementations for the keeper.
-//!
-//! The `Action` enum lives here (next to its consumers) rather than in a
-//! top-level `wire`/`messages` module: the consumer side owns its alphabet.
+//! Implementation of `engine::reactor::Executor` for the keeper.
 
 pub mod stellar_tx;
+pub mod stellar_tx2;
 
-use stellar_tx::SubmitStellarTx;
+use stellar_tx2::SubmitStellarTx;
 
-/// Top-level action flowing from strategies → engine → executors.
 #[derive(Debug, Clone)]
 pub enum Action {
     SubmitTx(SubmitStellarTx),

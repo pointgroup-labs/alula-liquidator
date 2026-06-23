@@ -24,5 +24,6 @@
     "rebalancer_interval_blocks": 2,
     "rebalancer_min_swap_amount_value_cents": 100,
     "rebalancer_max_fee_bps": 30,
-    "metrics_bind_addr": "0.0.0.0:9000"
+    "metrics_bind_addr": "0.0.0.0:9000",
+    "ledger_polling_interval_secs": 2
 }

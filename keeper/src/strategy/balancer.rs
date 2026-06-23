@@ -33,7 +33,7 @@ pub struct BalancerConfig {
     pub max_price_impact_bps: i128,
     pub max_submission_retries: u32,
     /// Allowed slippage applied to the swap after `price impact` checks
-    pub allowed_slippage_bps: i128,
+    pub allowed_swap_slippage_bps: i128,
     pub assets_to_hold: Vec<String>,
     pub swap_providers: Vec<String>,
     pub refresh_interval_blocks: u32,
@@ -334,8 +334,9 @@ impl Balancer {
             return Ok(None);
         }
 
-        let min_amount_out =
-            amount_out.saturating_mul(BPS_FACTOR - self.config.allowed_slippage_bps) / BPS_FACTOR;
+        let min_amount_out = amount_out
+            .saturating_mul(BPS_FACTOR - self.config.allowed_swap_slippage_bps)
+            / BPS_FACTOR;
 
         let path = [candidate, target];
         let request =
@@ -372,11 +373,11 @@ impl Balancer {
         Ok(Some(Action::SubmitTx(SubmitStellarTx {
             op,
             signing_key: self.skey.clone(),
-            max_retries: self.config.max_submission_retries,
+            max_submission_retries: self.config.max_submission_retries,
             on_settle: Some(SettleHook {
                 liquidator_capital: self.liquidator_capital.clone(),
                 op_id,
-                liquidation_outcome: None,
+                // liquidation_outcome: None,
             }),
         })))
     }

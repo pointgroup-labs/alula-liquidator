@@ -22,13 +22,15 @@ pub struct NewLedger {
 pub struct LedgerCollector {
     network_url: Url,
     last_seq_num: u32,
+    ledger_polling_interval_secs: u64,
 }
 
 impl LedgerCollector {
-    pub fn new(url: &Url) -> Self {
+    pub fn new(url: &Url, ledger_polling_interval_secs: u64) -> Self {
         Self {
-            network_url: url.clone(),
             last_seq_num: 0,
+            network_url: url.clone(),
+            ledger_polling_interval_secs,
         }
     }
 }
@@ -37,14 +39,17 @@ impl Collector<Event> for LedgerCollector {
     fn get_event_stream(&mut self) -> BoxFuture<'_, Result<CollectorStream<'_, Event>>> {
         Box::pin(async {
             let (sender, receiver) = broadcast::channel(512);
+
             let url = self.network_url.clone();
             let mut last_seq_num = self.last_seq_num;
+            let ledger_polling_interval_secs = self.ledger_polling_interval_secs;
 
             tokio::spawn(async move {
                 let server = match Client::new(url.as_str()) {
                     Ok(s) => s,
                     Err(e) => {
                         error!(?e, "LedgerCollector: failed to create RPC client");
+
                         return;
                     }
                 };
@@ -54,10 +59,12 @@ impl Collector<Event> for LedgerCollector {
                         Ok(ledger) if ledger.sequence > last_seq_num => {
                             last_seq_num = ledger.sequence;
                             debug!(seq = ledger.sequence, "new ledger");
+
                             if let Err(err) = sender.send(Event::NewLedger(NewLedger {
                                 seq_num: ledger.sequence,
                             })) {
                                 warn!(?err, "LedgerCollector: no receivers left, stopping");
+
                                 return;
                             }
                         }
@@ -66,7 +73,8 @@ impl Collector<Event> for LedgerCollector {
                             warn!("LedgerCollector: get_latest_ledger failed: {e:#}");
                         }
                     }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+
+                    tokio::time::sleep(Duration::from_secs(ledger_polling_interval_secs)).await;
                 }
             });
 

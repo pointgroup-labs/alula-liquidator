@@ -1,6 +1,5 @@
-//! Prometheus exposition (`/metrics`) and liveness (`/healthz`). The recorder
-//! installs globally so any crate can emit via `metrics::{counter, gauge,
-//! histogram}`.
+//! Prometheus exposition (`/metrics`) and liveness (`/healthz`). Installed globally so any crate can emit via
+//!  `metrics::{counter, gauge, histogram}`.
 
 use {
     axum::{Router, extract::State, routing::get},
@@ -9,17 +8,23 @@ use {
     tracing::info,
 };
 
+#[derive(Clone)]
+struct AppState {
+    metrics: PrometheusHandle,
+}
+
 /// Bind `addr` and serve the metrics + healthz routes until the server stops.
 pub async fn serve(handle: PrometheusHandle, addr: SocketAddr) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/metrics", get(metrics_handler))
         .route("/healthz", get(healthz_handler))
         .with_state(AppState { metrics: handle });
-
     let listener = tokio::net::TcpListener::bind(addr).await?;
+
     info!(bind = %addr, "metrics_server listening");
 
     axum::serve(listener, app).await?;
+
     Ok(())
 }
 
@@ -28,11 +33,6 @@ pub fn install_prometheus_recorder() -> PrometheusHandle {
     PrometheusBuilder::new()
         .install_recorder()
         .expect("global prometheus recorder already installed")
-}
-
-#[derive(Clone)]
-struct AppState {
-    metrics: PrometheusHandle,
 }
 
 async fn metrics_handler(State(state): State<AppState>) -> String {

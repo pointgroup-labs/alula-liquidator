@@ -1,5 +1,4 @@
 pub mod stellar_event;
-pub mod stellar_event2;
 pub mod stellar_ledger;
 
 use {
@@ -25,7 +24,7 @@ pub enum Event {
 /// loss is observable in Prometheus instead of silent.
 pub(crate) fn lag_counted_stream<T>(
     receiver: Receiver<T>,
-    collector: &'static str, // STR?
+    collector: &'static str,
 ) -> impl Stream<Item = T> + Send + 'static
 where
     T: Clone + Send + 'static,

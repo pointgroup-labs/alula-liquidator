@@ -320,7 +320,7 @@ impl BadDebtRequestInitiator {
             op,
             on_settle: None,
             signing_key: self.skey.clone(),
-            max_retries: self.config.max_retries,
+            max_submission_retries: self.config.max_retries,
         }))
     }
 }
