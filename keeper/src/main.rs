@@ -188,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::new(
         &rpc_url,
-        3119015, // TODO: Take from config
+        3213202, // TODO: Take from config
         EventFilter {
             event_type: EventType::Contract,
             contract_ids: markets,
