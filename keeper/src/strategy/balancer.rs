@@ -268,7 +268,7 @@ impl Balancer {
     ) -> anyhow::Result<Option<Action>> {
         let raw_balance = self
             .liquidator_capital
-            .cached_balance(candidate, &self.pkey, &*self.ledger_reader)
+            .try_get_balance(candidate, &*self.ledger_reader)
             .await?;
         let swappable_balance = if candidate == self.config.xlm_address {
             raw_balance.saturating_sub(self.config.xlm_safety_margin)
@@ -346,12 +346,10 @@ impl Balancer {
         let op = self
             .gateway
             .batch_op(&self.config.market, &self.liquidator_key, &[request])?;
-        let op_id = match self.liquidator_capital.reserve(
-            candidate,
-            &self.pkey,
-            amount_in,
-            swappable_balance,
-        ) {
+        let op_id = match self
+            .liquidator_capital
+            .reserve(amount_in, swappable_balance, candidate)
+        {
             Ok(id) => id,
             Err(e) => {
                 warn!(?e, %candidate, amount_in, swappable_balance,
@@ -375,9 +373,9 @@ impl Balancer {
             signing_key: self.skey.clone(),
             max_submission_retries: self.config.max_submission_retries,
             on_settle: Some(SettleHook {
-                liquidator_capital: self.liquidator_capital.clone(),
                 op_id,
-                // liquidation_outcome: None,
+                liquidation_outcome: None,
+                liquidator_capital: self.liquidator_capital.clone(),
             }),
         })))
     }

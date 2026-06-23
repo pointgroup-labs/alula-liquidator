@@ -10,7 +10,7 @@ use {
         },
         stellar::Gateway,
         storage::{cursor::CursorRepo, obligations::ObligationsRepo},
-        strategy::{LiquidatorCapital, liquidator_capital::random_op_id},
+        strategy::{LiquidatorCapital, liquidator_capital::random_id},
     },
     ed25519_dalek::SigningKey,
     engine::{
@@ -631,7 +631,7 @@ impl Liquidator {
 
         let raw_borrow_balance = self
             .liquidator_capital
-            .cached_balance(borrow_token, &self.pkey, &*self.ledger_reader)
+            .try_get_balance(borrow_token, &*self.ledger_reader)
             .await
             .inspect_err(|e| {
                 warn!(?e, %borrow_token, "balance query failed");
@@ -913,7 +913,7 @@ impl Liquidator {
 
             let Ok(raw_balance) = self
                 .liquidator_capital
-                .cached_balance(source_asset, &self.pkey, &*self.ledger_reader)
+                .try_get_balance(source_asset, &*self.ledger_reader)
                 .await
                 .inspect_err(|e| {
                     warn!(?e, %source_asset, "balance query failed");

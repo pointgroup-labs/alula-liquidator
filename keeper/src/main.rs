@@ -14,6 +14,7 @@ use {
         strategy::{
             BadDebtRequestInitiator, BadDebtRequestInitiatorConfig, Balancer, BalancerConfig,
             Liquidator, LiquidatorCapital, LiquidatorConfig, Withdrawer, WithdrawerConfig,
+            liquidator_capital::LiquidatorCapitalConfig,
         },
     },
     ::metrics::gauge,
@@ -95,15 +96,13 @@ async fn main() -> anyhow::Result<()> {
 
     let mut engine: Engine<Event, Action> = Engine::new();
 
-    // Single shared liquidator's capital across all balance-spending strategies so
-    // Liquidator and Balancer cannot double-commit the same wallet capacity.
-    // The executor releases reservations on every terminal tx outcome; the
-    // ledger TTL is only a safety ceiling for hooks lost to task panics.
-    let liquidator_capital = Arc::new(LiquidatorCapital::new(
-        xlm_address.clone(),
-        RESERVATION_TTL,
-        BALANCE_CACHE_TTL,
-    ));
+    let liquidator_capital_config = LiquidatorCapitalConfig {
+        xlm_address: xlm_address.clone(),
+        reservation_ttl: RESERVATION_TTL,
+        balance_cache_ttl: BALANCE_CACHE_TTL,
+    };
+
+    let liquidator_capital = Arc::new(LiquidatorCapital::new(&pkey, liquidator_capital_config));
 
     let bad_debt = BadDebtRequestInitiator::new(
         skey.clone(),
@@ -202,7 +201,14 @@ async fn main() -> anyhow::Result<()> {
     let secs: u64 = 2;
     engine.add_collector(Box::new(LedgerCollector::new(&rpc_url, secs)));
 
-    engine.add_executor(Box::new(SorobanExecutor::new(gateway, network_passphrase)));
+    const DEFAULT_SIMULATION_FEE: u32 = 100_000;
+
+    engine.add_executor(Box::new(SorobanExecutor::new(
+        &pkey,
+        gateway,
+        DEFAULT_SIMULATION_FEE,
+        network_passphrase,
+    )));
 
     tokio::select! {
         _ = run_engine(engine) => {}

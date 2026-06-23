@@ -1,113 +1,6 @@
-// //! Submits Soroban transactions. Fire-and-forget: `execute` returns once the
-// //! tx is sent; a detached task polls for the receipt.
-// //!
-// //! Sequence numbers are tracked in a local cursor and only refreshed from
-// //! `get_account` on init or `tx_bad_seq` — back-to-back submissions otherwise
-// //! race the RPC's lagging view of `seq_num`.
-// //!
-// use {
-//     super::Action,
-//     crate::{
-//         stellar::{
-//             Gateway,
-//             errors::{SorobanRpcError, is_bad_seq_error, is_no_simulation_results_error},
-//         },
-//         strategy::LiquidatorCapital,
-//     },
-//     anyhow::Result,
-//     ed25519_dalek::{Signer, SigningKey},
-//     engine::reactor::{BoxFuture, Executor},
-//     metrics::{counter, histogram},
-//     sha2::{Digest, Sha256},
-//     std::{sync::Arc, time::Duration},
-//     stellar_rpc_client::{AuthMode, Client},
-//     stellar_xdr::curr::{
-//         DecoratedSignature, Hash, Limits, Memo, MuxedAccount, Operation, OperationBody,
-//         Preconditions, ReadXdr, SequenceNumber, Signature, SignatureHint,
-//         SorobanAuthorizationEntry, Transaction, TransactionEnvelope, TransactionExt,
-//         TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction,
-//         TransactionV1Envelope, Uint256, VecM, WriteXdr as _,
-//     },
-//     tokio::sync::Mutex as AsyncMutex,
-//     tracing::{error, info, warn},
-// };
-
-// // #[derive(Debug, Clone)]
-// // pub struct LiquidationOutcomeMetric {
-// //     pub market: String,
-// //     pub expected_net_oracle: i128,
-// // }
-
-// #[derive(Debug, Clone)]
-// pub struct SettleHook {
-//     pub op_id: u64,
-//     pub liquidator_capital: Arc<LiquidatorCapital>,
-// }
-
-// impl SettleHook {
-//     fn release(&self) {
-//         // this is very unidiomatic, no?
-//         self.liquidator_capital.release(self.op_id);
-//     }
-// }
-
-// #[derive(Debug, Clone)]
-// pub struct SubmitStellarTx {
-//     pub op: Operation,
-//     pub signing_key: SigningKey,
-//     pub max_submission_retries: u32,
-//     pub on_settle: Option<SettleHook>,
-// }
-
-// /// Submits transactions to the Stellar network using the shared
-// /// [`Gateway`] RPC client.
-// pub struct SorobanExecutor {
-//     gateway: Arc<Gateway>,
-//     network_passphrase: String,
-//     /// Locally-tracked next-to-use sequence number. `None` means "fetch from
-//     /// chain on the next submission". Reset to `None` whenever the RPC
-//     /// reports a `tx_bad_seq`-style error.
-//     seq_num_cursor: AsyncMutex<Option<i64>>,
-// }
-
-// impl SorobanExecutor {
-//     pub fn new(gateway: Arc<Gateway>, network_passphrase: impl Into<String>) -> Self {
-//         Self {
-//             gateway,
-//             seq_num_cursor: AsyncMutex::new(None),
-//             network_passphrase: network_passphrase.into(),
-//         }
-//     }
-
-//     /// Return the sequence number to use for the next outgoing tx, bumping
-//     /// the cursor by 1. Initializes from `get_account` if the cursor is
-//     /// empty.
-//     async fn acquire_seq(&self, rpc: &Client, source_address: &str) -> Result<i64> {
-//         let mut guard = self.seq_num_cursor.lock().await;
-
-//         if guard.is_none() {
-//             // NB: Holding the lock across the RPC call: concurrent callers will
-//             // queue and observe the initialized cursor. The lock is small
-//             // and only contended at startup / after a bad_seq reset.
-//             let account = rpc.get_account(source_address).await?;
-//             *guard = Some(account.seq_num.0);
-//         }
-//         let current = guard.expect("guard checked for 'None' above");
-//         let next = current.saturating_add(1);
-
-//         *guard = Some(next);
-
-//         Ok(next)
-//     }
-// }
-
 //! Submits Soroban transactions. Fire-and-forget: `execute` returns once the
 //! tx is sent; a detached task polls for the receipt.
 //!
-//! Sequence numbers are tracked in a local cursor and only refreshed from
-//! `get_account` on init or `tx_bad_seq` — back-to-back submissions otherwise
-//! race the RPC's lagging view of `seq_num`.
-
 use {
     super::Action,
     crate::{
@@ -131,40 +24,24 @@ use {
         TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction,
         TransactionV1Envelope, Uint256, VecM, WriteXdr as _,
     },
-    tokio::sync::Mutex as AsyncMutex,
     tracing::{error, info, warn},
 };
 
-/// Default fee for simulation transactions (in stroops).
-const DEFAULT_SIMULATION_FEE: u32 = 100_000;
-
-/// Optional metric payload attached by liquidation strategies. When present,
-/// the executor emits a "realised" counter on the `confirmed` settlement
-/// path so the dashboard can compare expected-at-dispatch against
-/// expected-on-tx-actually-confirmed. The gap between the two surfaces the
-/// realisation tax — submission failures and confirmation drift — without
-/// reading on-chain settlement values.
 #[derive(Debug, Clone)]
 pub struct LiquidationOutcomeMetric {
     pub market: String,
-    pub expected_net_oracle: i128,
+    pub expected_net_value: i128,
 }
 
-/// Released by the executor on every terminal path: confirm-success,
-/// confirm-failure, simulation-no-results skip, or retry-exhaustion. The
-/// `op_id` was minted by the issuing strategy when it called
-/// `LiquidatorCapital::reserve`.
 #[derive(Debug, Clone)]
 pub struct SettleHook {
-    pub liquidator_capital: Arc<LiquidatorCapital>,
     pub op_id: u64,
-    /// `Some` only for liquidation plans; `None` for capital-neutral or
-    /// non-profit operations (rebalancer swaps, withdrawals).
+    pub liquidator_capital: Arc<LiquidatorCapital>,
     pub liquidation_outcome: Option<LiquidationOutcomeMetric>,
 }
 
 impl SettleHook {
-    fn release(&self) {
+    pub fn release(&self) {
         self.liquidator_capital.release(self.op_id);
     }
 }
@@ -173,100 +50,91 @@ impl SettleHook {
 pub struct SubmitStellarTx {
     pub op: Operation,
     pub signing_key: SigningKey,
-    pub max_retries: u32,
-    /// Some(_) for balance-spending strategies (Liquidator, Rebalancer);
-    /// None for capital-neutral ops (BadDebtRequestInitiator, Withdrawer).
+    pub max_submission_retries: u32,
     pub on_settle: Option<SettleHook>,
 }
 
 /// Submits transactions to the Stellar network using the shared
 /// [`Gateway`] RPC client.
 pub struct SorobanExecutor {
-    network_passphrase: String,
+    pkey: String,
     gateway: Arc<Gateway>,
-    /// Locally-tracked next-to-use sequence number. `None` means "fetch from
-    /// chain on the next submission". Reset to `None` whenever the RPC
-    /// reports a `tx_bad_seq`-style error so we resynchronize.
-    seq_cursor: AsyncMutex<Option<i64>>,
+    network_passphrase: String,
+    default_simulation_fee: u32,
 }
 
 impl SorobanExecutor {
-    pub fn new(gateway: Arc<Gateway>, network_passphrase: impl Into<String>) -> Self {
+    pub fn new(
+        pkey: &str,
+        gateway: Arc<Gateway>,
+        default_simulation_fee: u32,
+        network_passphrase: impl Into<String>,
+    ) -> Self {
         Self {
-            network_passphrase: network_passphrase.into(),
             gateway,
-            seq_cursor: AsyncMutex::new(None),
+            pkey: pkey.to_string(),
+            default_simulation_fee,
+            network_passphrase: network_passphrase.into(),
         }
     }
 
-    /// Return the sequence number to use for the next outgoing tx, bumping
-    /// the cursor by 1. Initializes from `get_account` if the cursor is
-    /// empty.
-    async fn acquire_seq(&self, rpc: &Client, source_address: &str) -> Result<i64> {
-        let mut guard = self.seq_cursor.lock().await;
-        if guard.is_none() {
-            // Hold the lock across the RPC call: concurrent callers will
-            // queue and observe the initialized cursor. The lock is small
-            // and only contended at startup / after a bad_seq reset.
-            let account = rpc.get_account(source_address).await?;
-            *guard = Some(account.seq_num.0);
-        }
-        let current = guard.expect("seq_cursor initialized above");
-        let next = current.saturating_add(1);
-        *guard = Some(next);
+    async fn fetch_seq_num(&self, rpc: &Client) -> Result<i64> {
+        let account = rpc.get_account(&self.pkey).await?;
+        let next = account.seq_num.0.saturating_add(1);
+
         Ok(next)
-    }
-
-    /// Drop the cursor so the next call refetches from RPC. Use on
-    /// `tx_bad_seq` errors.
-    async fn invalidate_seq(&self) {
-        *self.seq_cursor.lock().await = None;
     }
 }
 
 impl Executor<Action> for SorobanExecutor {
     fn execute(&mut self, action: Action) -> BoxFuture<'_, Result<()>> {
+        const BACKOFF_STEP_MILLIS: u64 = 250;
+
         Box::pin(async move {
             match action {
                 Action::SubmitTx(tx) => {
-                    let gateway: Arc<Gateway> = Arc::clone(&self.gateway);
-                    let max = tx.max_retries.max(1);
                     let on_settle = tx.on_settle.clone();
+                    let max_retries = tx.max_submission_retries;
+                    let default_simulation_fee = self.default_simulation_fee;
 
                     let source_strkey = stellar_strkey::ed25519::PublicKey(
                         tx.signing_key.verifying_key().to_bytes(),
                     );
-                    let source_address = source_strkey.to_string();
 
-                    for attempt in 1..=max {
-                        let seq_to_use = match self.acquire_seq(&gateway.rpc, &source_address).await
-                        {
+                    for attempt in 0..max_retries {
+                        let seq_num_to_use = match self.fetch_seq_num(&self.gateway.rpc).await {
                             Ok(n) => n,
                             Err(e) => {
-                                warn!(%e, attempt, "failed to acquire sequence number");
-                                if attempt >= max {
+                                warn!(%e, attempt, "failed to fetch sequence number");
+                                if attempt >= max_retries {
                                     counter!(
                                         "keeper_tx_submitted_total",
-                                        "outcome" => "seq_acquire_failed",
+                                        "outcome" => "seq_fetch_failed",
                                     )
                                     .increment(1);
                                     if let Some(hook) = &on_settle {
                                         hook.release();
                                     }
+
                                     return Err(e);
                                 }
-                                let backoff = Duration::from_millis(250 * (attempt as u64 + 1));
+
+                                let backoff = Duration::from_millis(
+                                    BACKOFF_STEP_MILLIS * (attempt as u64 + 1),
+                                );
                                 tokio::time::sleep(backoff).await;
+
                                 continue;
                             }
                         };
 
                         match build_and_send(
-                            &gateway.rpc,
+                            &self.gateway.rpc,
+                            seq_num_to_use,
                             &self.network_passphrase,
                             &tx,
+                            default_simulation_fee,
                             &source_strkey,
-                            seq_to_use,
                         )
                         .await
                         {
@@ -277,58 +145,61 @@ impl Executor<Action> for SorobanExecutor {
                                     "outcome" => "ok",
                                 )
                                 .increment(1);
-                                spawn_confirmation_poll(gateway, hash_hex, on_settle);
+                                spawn_confirmation_poll(
+                                    Arc::clone(&self.gateway),
+                                    hash_hex,
+                                    on_settle,
+                                );
                                 return Ok(());
                             }
                             Err(e) => {
                                 // Non-retryable: simulation itself produced no results.
                                 if is_no_simulation_results_error(&e) {
                                     warn!(%e, "simulation returned no results; giving up");
+
                                     counter!(
                                         "keeper_tx_submitted_total",
                                         "outcome" => "sim_empty",
                                     )
                                     .increment(1);
+
                                     if let Some(hook) = &on_settle {
                                         hook.release();
                                     }
+
                                     return Ok(());
                                 }
                                 // bad_seq → resync local cursor; the next
-                                // attempt will refetch from RPC.
+                                // attempt will refetch from RPC and likely succeed.
                                 if is_bad_seq_error(&e) {
                                     warn!(%e, attempt, "tx_bad_seq; resyncing seq cursor");
                                     counter!("keeper_tx_bad_seq_retries_total").increment(1);
-                                    self.invalidate_seq().await;
                                 }
-                                if attempt >= max {
+                                if attempt >= max_retries {
                                     error!(%e, attempt, "tx failed after all retries");
                                     counter!(
                                         "keeper_tx_submitted_total",
                                         "outcome" => "retry_exhausted",
                                     )
                                     .increment(1);
+
                                     if let Some(hook) = &on_settle {
                                         hook.release();
                                     }
+
                                     return Err(e);
                                 }
-                                let backoff = Duration::from_millis(250 * (attempt as u64 + 1));
+
+                                let backoff = Duration::from_millis(
+                                    BACKOFF_STEP_MILLIS * (attempt as u64 + 1),
+                                );
                                 warn!(%e, attempt, ?backoff, "tx attempt failed, retrying");
+
                                 tokio::time::sleep(backoff).await;
                             }
                         }
                     }
-                    // Loop guard fall-through (max == 0 was clamped to 1, so unreachable
-                    // in practice). Release defensively.
-                    counter!(
-                        "keeper_tx_submitted_total",
-                        "outcome" => "unreachable",
-                    )
-                    .increment(1);
-                    if let Some(hook) = &on_settle {
-                        hook.release();
-                    }
+
                     Ok(())
                 }
             }
@@ -336,16 +207,6 @@ impl Executor<Action> for SorobanExecutor {
     }
 }
 
-// ми маємо лочити sequence number, допоки ми не отримаємо
-// конфірмацію про траназцію...
-
-// все, що до цього буде нам збивати sequence_number
-
-// Чому нам не брати sequence number кожен раз з RPC?
-// well, він може не відповідати дійсності
-
-/// Spawn a detached task that polls for the tx receipt. Logs the outcome and
-/// releases the capital reservation regardless of success/failure.
 fn spawn_confirmation_poll(gateway: Arc<Gateway>, hash_hex: String, on_settle: Option<SettleHook>) {
     tokio::spawn(async move {
         let hash_bytes = match hex::decode(&hash_hex) {
@@ -361,12 +222,15 @@ fn spawn_confirmation_poll(gateway: Arc<Gateway>, hash_hex: String, on_settle: O
                     "outcome" => "hash_decode_failed",
                 )
                 .increment(1);
+
                 if let Some(hook) = &on_settle {
-                    hook.release(); // вони його собі тут релізять
+                    hook.release();
                 }
+
                 return;
             }
         };
+
         match gateway.rpc.get_transaction_polling(&hash_bytes, None).await {
             Ok(_) => {
                 info!(hash = %hash_hex, "tx confirmed");
@@ -378,7 +242,7 @@ fn spawn_confirmation_poll(gateway: Arc<Gateway>, hash_hex: String, on_settle: O
                 if let Some(hook) = &on_settle
                     && let Some(metric) = &hook.liquidation_outcome
                 {
-                    let net = metric.expected_net_oracle.max(0);
+                    let net = metric.expected_net_value.max(0);
                     counter!(
                         "liquidator_plan_realised_net_profit_oracle_units_total",
                         "market" => metric.market.clone(),
@@ -408,6 +272,7 @@ fn spawn_confirmation_poll(gateway: Arc<Gateway>, hash_hex: String, on_settle: O
                 .increment(1);
             }
         }
+
         if let Some(hook) = &on_settle {
             hook.release();
         }
@@ -416,14 +281,15 @@ fn spawn_confirmation_poll(gateway: Arc<Gateway>, hash_hex: String, on_settle: O
 
 async fn build_and_send(
     rpc: &Client,
+    seq_num_to_use: i64,
     network_passphrase: &str,
     action: &SubmitStellarTx,
+    default_simulation_fee: u32,
     source_strkey: &stellar_strkey::ed25519::PublicKey,
-    seq_num_to_use: i64,
 ) -> Result<String> {
     let tx = Transaction {
         source_account: MuxedAccount::Ed25519(Uint256(source_strkey.0)),
-        fee: DEFAULT_SIMULATION_FEE,
+        fee: default_simulation_fee,
         seq_num: SequenceNumber(seq_num_to_use),
         cond: Preconditions::None,
         memo: Memo::None,
@@ -500,7 +366,9 @@ async fn build_and_send(
 
     let hash = rpc.send_transaction(&signed).await?;
     let hash_hex = hex::encode(hash.0);
+
     info!(hash = %hash_hex, "tx sent");
+
     Ok(hash_hex)
 }
 

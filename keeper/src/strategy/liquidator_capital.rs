@@ -42,9 +42,9 @@ impl CapitalInner {
 
 #[derive(Debug)]
 pub struct LiquidatorCapitalConfig {
-    xlm_address: String,
-    reservation_ttl: Duration,
-    balance_cache_ttl: Duration,
+    pub xlm_address: String,
+    pub reservation_ttl: Duration,
+    pub balance_cache_ttl: Duration,
 }
 
 #[derive(Debug)]
@@ -55,10 +55,10 @@ pub struct LiquidatorCapital {
 }
 
 impl LiquidatorCapital {
-    pub fn new(pkey: String, config: LiquidatorCapitalConfig) -> Self {
+    pub fn new(pkey: &str, config: LiquidatorCapitalConfig) -> Self {
         Self {
-            pkey,
             config,
+            pkey: pkey.to_string(),
             inner: Mutex::new(CapitalInner {
                 balances: HashMap::new(),
                 reservations: HashMap::new(),
