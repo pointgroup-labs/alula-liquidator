@@ -113,30 +113,30 @@ async fn main() -> anyhow::Result<()> {
     );
 
     
-    let liquidator = Liquidator::new(
-        pkey.clone(),
-        skey.clone(),
-        gateway.clone(),
-        store.cursor(),
-        LiquidatorConfig {
-            markets: markets.clone(),
-            min_profit_margin_cents,
-            assets_to_hold,
-            swap_providers,
-            xlm_address,
-            xlm_safety_margin,
-            allowed_swap_slippage_bps: 100,
-            max_retries: 4,
-            refresh_interval_blocks: 5,
-            // gain_haircut_bps: LIQUIDATOR_GAIN_HAIRCUT_BPS,
-            inclusion_fee_oracle_units: LIQUIDATOR_INCLUSION_FEE_ORACLE_UNITS,
-            // flash_enabled: LIQUIDATOR_FLASH_ENABLED,
-            // flash_safety_haircut_bps: LIQUIDATOR_FLASH_SAFETY_HAIRCUT_BPS,
-        },
-        store.obligations(),
-        ledger_reader.clone(),
-        liquidator_capital,
-    );
+    // let liquidator = Liquidator::new(
+    //     pkey.clone(),
+    //     skey.clone(),
+    //     gateway.clone(),
+    //     store.cursor(),
+    //     LiquidatorConfig {
+    //         markets: markets.clone(),
+    //         min_profit_margin_cents,
+    //         assets_to_hold,
+    //         swap_providers,
+    //         xlm_address,
+    //         xlm_safety_margin,
+    //         allowed_swap_slippage_bps: 100,
+    //         max_retries: 4,
+    //         refresh_interval_blocks: 5,
+    //         // gain_haircut_bps: LIQUIDATOR_GAIN_HAIRCUT_BPS,
+    //         inclusion_fee_oracle_units: LIQUIDATOR_INCLUSION_FEE_ORACLE_UNITS,
+    //         // flash_enabled: LIQUIDATOR_FLASH_ENABLED,
+    //         // flash_safety_haircut_bps: LIQUIDATOR_FLASH_SAFETY_HAIRCUT_BPS,
+    //     },
+    //     store.obligations(),
+    //     ledger_reader.clone(),
+    //     liquidator_capital,
+    // );
  
 
     engine.add_strategy(Box::new(bad_debt_request_initiator));
