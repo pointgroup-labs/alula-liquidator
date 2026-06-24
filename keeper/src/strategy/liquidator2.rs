@@ -283,7 +283,7 @@ impl Liquidator {
                 if key.user == self.pkey
                     && let Some(md) = self.market_data.get(market)
                 {
-                    emit_self_position_metrics(market, &obligation, md);
+                    // emit_self_position_metrics(market, &obligation, md);
                 }
 
                 self.obligations
@@ -334,7 +334,7 @@ impl Liquidator {
                 Ok(market_data) => {
                     let own_key = ObligationKey::new(self.pkey.clone());
                     if let Some(obl) = self.obligations.get(&market).and_then(|m| m.get(&own_key)) {
-                        emit_self_position_metrics(&market, obl, &market_data);
+                        // emit_self_position_metrics(&market, obl, &market_data);
                     }
 
                     self.market_data.insert(market, market_data);
@@ -539,7 +539,7 @@ impl Liquidator {
                 "selected best (borrow, deposit) pair",
             );
 
-            self.execute_liquidation_plan(market, plan, &liquidator_obl_key)
+            self.execute_liquidation_plan(market, &liquidator_obl_key, plan)
                 .await
         } else {
             error!("failed to come up with a liquidation plan");
@@ -645,24 +645,9 @@ impl Liquidator {
             raw_borrow_balance
         };
 
-        // let plan = if usable_borrow >= profitable_repay {
-        //     self.try_direct_plan(
-        //         is_insolvent,
-        //         profitable_repay,
-        //         borrow_pool,
-        //         borrower_obligation,
-        //         market_data,
-        //         collateral_pool,
-        //         borrower_obligation_key,
-        //         deposit_position,
-        //     )
-        //     .await
-        // } else {
-        //     // self.try_flash_plan();
-        //     todo!()
-        // };
+        assert!(usable_borrow >= profitable_repay);
 
-        self.try_preswap_plan(
+        self.try_direct_plan(
             is_insolvent,
             profitable_repay,
             borrow_pool,
@@ -673,6 +658,24 @@ impl Liquidator {
             deposit_position,
         )
         .await
+
+        // let plan = if usable_borrow >= profitable_repay {
+        // } else {
+        //     // self.try_flash_plan();
+        //     todo!()
+        // };
+
+        // self.try_preswap_plan(
+        //     is_insolvent,
+        //     profitable_repay,
+        //     borrow_pool,
+        //     borrower_obligation,
+        //     market_data,
+        //     collateral_pool,
+        //     borrower_obligation_key,
+        //     deposit_position,
+        // )
+        // .await
 
         // None
     }
@@ -1118,70 +1121,343 @@ impl Liquidator {
         }
     }
 
-    async fn execute_liquidation_plan(
-        &self,
-        market: &str,
-        plan: LiquidationPlan,
-        liquidator_obligation_key: &ObligationKey,
-    ) -> Option<Action> {
-        let requests = self.build_batch_requests(&plan)?;
-
+    fn find_token_for_pool(&self, pool_address: &str) -> Option<String> {
+        for md in self.market_data.values() {
+            if let Some(pool) = md
+                .pools_data
+                .iter()
+                .find(|p| p.pool_address == pool_address)
+            {
+                return Some(pool.token_address.clone());
+            }
+        }
         None
     }
 
+    async fn execute_liquidation_plan(
+        &self,
+        market: &str,
+        liquidator_obl_key: &ObligationKey,
+        plan: LiquidationPlan,
+    ) -> Option<Action> {
+        let requests = self.build_batch_requests(&plan)?;
+
+        match self
+            .gateway
+            .simulate_batch(market, liquidator_obl_key, &requests)
+            .await
+        {
+            Ok(true) => {
+                let flash_fee_log =
+                    if let LiquidationType::Flash { flash_fee, .. } = &plan.liquidation_type {
+                        *flash_fee
+                    } else {
+                        0
+                    };
+                info!(
+                    ?plan.borrower_key,
+                    flash_fee = flash_fee_log,
+                    "batch simulation OK"
+                );
+            }
+            Ok(false) => {
+                warn!(?plan.borrower_key, "batch simulation failed, dropping plan");
+                counter!("liquidator_skip_total", "reason" => "batch_sim_failed").increment(1);
+                return None;
+            }
+            Err(e) => {
+                warn!(?e, ?plan.borrower_key, "batch simulation error");
+                counter!("liquidator_skip_total", "reason" => "batch_sim_failed").increment(1);
+                return None;
+            }
+        }
+
+        // Reserve in-flight capital so other opportunities (and the balancer)
+        // don't double-spend the wallet balance. The reservation is released by
+        // the executor's SettleHook on every terminal tx outcome; the 5-minute
+        // ledger TTL is now only a safety ceiling for hooks lost to executor
+        // task panics.
+        let (reserve_token, reserve_amount) = match &plan.liquidation_type {
+            LiquidationType::Direct { repay_amount } => {
+                let borrow_token = self.find_token_for_pool(&plan.borrow_pool_address)?;
+                (borrow_token, *repay_amount)
+            }
+            LiquidationType::PreSwap {
+                source_asset,
+                source_amount_in,
+                ..
+            } => (source_asset.clone(), *source_amount_in),
+            // Flash liquidations source their capital from the protocol — the
+            // keeper's wallet is not at risk for the repay amount, so there is
+            // nothing to reserve.
+            LiquidationType::Flash { .. } => {
+                let borrow_token = self.find_token_for_pool(&plan.borrow_pool_address)?;
+                (borrow_token, 0)
+            }
+        };
+
+        // Direct / PreSwap spend wallet capital and must pass the reservation
+        // gate. Flash spends protocol capital, so it mints a standalone op_id
+        // for the SettleHook (releasing an unreserved id is a no-op).
+        let op_id = if reserve_amount > 0 {
+            let raw_balance = match self
+                .liquidator_capital
+                .try_get_balance(&reserve_token, &*self.ledger_reader)
+                .await
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!(?e, %reserve_token, "balance query failed at reservation time");
+                    counter!("liquidator_skip_total", "reason" => "balance_query_failed")
+                        .increment(1);
+                    return None;
+                }
+            };
+            let available = if reserve_token == self.config.xlm_address {
+                raw_balance.saturating_sub(self.config.xlm_safety_margin)
+            } else {
+                raw_balance
+            };
+            match self
+                .liquidator_capital
+                .reserve(reserve_amount, available, &reserve_token)
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        repay_amount = reserve_amount,
+                        %reserve_token,
+                        "skipping liquidation: insufficient available balance after pending reservations"
+                    );
+                    counter!(
+                        "liquidator_skip_total",
+                        "reason" => "insufficient_balance_after_reservations",
+                    )
+                    .increment(1);
+                    return None;
+                }
+            }
+        } else {
+            random_id()
+        };
+
+        match self.gateway.batch_op(market, liquidator_obl_key, &requests) {
+            Ok(op) => {
+                // Counts plans handed to the executor — NOT confirmed liquidations.
+                // The tx may still fail at simulate, bad_seq retry, or confirmation
+                // poll; those outcomes are tracked separately by the executor's
+                // own counters.
+                let liq_type_label = match &plan.liquidation_type {
+                    LiquidationType::Direct { .. } => "direct",
+                    LiquidationType::PreSwap { .. } => "preswap",
+                    LiquidationType::Flash { .. } => "flash",
+                };
+                counter!(
+                    "liquidator_liquidation_plans_dispatched_total",
+                    "market" => market.to_string(),
+                    "type" => liq_type_label,
+                )
+                .increment(1);
+                Some(Action::SubmitTx(SubmitStellarTx {
+                    op,
+                    signing_key: self.skey.clone(),
+                    max_submission_retries: self.config.max_retries,
+                    on_settle: Some(SettleHook {
+                        liquidator_capital: self.liquidator_capital.clone(),
+                        op_id,
+                        liquidation_outcome: None,
+                    }),
+                }))
+            }
+            Err(e) => {
+                error!(?e, ?plan.borrower_key, "failed to build batch op");
+                counter!("liquidator_skip_total", "reason" => "op_build_failed").increment(1);
+                self.liquidator_capital.release(op_id);
+
+                None
+            }
+        }
+    }
+}
+
+impl Liquidator {
     fn build_batch_requests(
         &self,
         plan: &LiquidationPlan,
     ) -> Option<Vec<<Gateway as OperationBuilder>::Request>> {
-        // let mut requests = vec![];
+        let mut requests = Vec::new();
 
-        // TODO: WTF
-        None
+        match &plan.liquidation_type {
+            LiquidationType::Flash {
+                repay_amount,
+                // collateral_token,
+                // seized_amount,
+                min_swap_out,
+                swap_provider,
+                ..
+            } => {
+                // 1. Flash-borrow the borrow asset.
+                let flash_req = match self
+                    .gateway
+                    .flash_borrow_request(&plan.borrow_pool_address, *repay_amount)
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(?e, "failed to build flash_borrow request");
+                        return None;
+                    }
+                };
+                requests.push(flash_req);
+
+                // 2. Liquidate — pays repay_amount of borrow asset, receives
+                //    seized_amount of collateral underlying.
+                let liquidate_req = match self.gateway.liquidate_request(
+                    &plan.borrower_key,
+                    &plan.borrow_pool_address,
+                    &plan.collateral_pool_address,
+                    *repay_amount,
+                    plan.expected_seized_collateral,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(?e, "failed to build liquidate request (flash path)");
+                        return None;
+                    }
+                };
+                requests.push(liquidate_req);
+
+                // 3. Swap seized collateral → borrow asset. The swap output
+                //    must be ≥ min_swap_out so the end-of-batch flash repayment
+                //    can be satisfied. If the swap delivers less, the whole
+                //    batch reverts atomically.
+
+                // let borrow_token = self.find_token_for_pool(&plan.borrow_pool_address)?;
+                // let swap_path = [collateral_token.as_str(), borrow_token.as_str()];
+                // let swap_req = match self.gateway.swap_exact_tokens_request(
+                //     swap_provider,
+                //     *seized_amount,
+                //     *min_swap_out,
+                //     &swap_path,
+                // ) {
+                //     Ok(r) => r,
+                //     Err(e) => {
+                //         error!(?e, "failed to build swap_exact_tokens request (flash path)");
+                //         return None;
+                //     }
+                // };
+                // requests.push(swap_req);
+
+                // The flash repayment (repay_amount + fee) is automatic —
+                // RequestTransfers::execute_transfers handles it at end-of-batch.
+                // No explicit Repay request is needed.
+            }
+
+            LiquidationType::PreSwap {
+                source_asset,
+                source_amount_in,
+                // min_source_out,
+                swap_provider,
+                repay_amount,
+                ..
+            } => {
+                // let borrow_token_address = self.find_token_for_pool(&plan.borrow_pool_address)?;
+                // let preswap_path = [source_asset.as_str(), borrow_token_address.as_str()];
+
+                // let preswap_req = match self.gateway.swap_exact_tokens_request(
+                //     swap_provider,
+                //     *source_amount_in,
+                //     *min_source_out,
+                //     &preswap_path,
+                // ) {
+                //     Ok(r) => r,
+                //     Err(e) => {
+                //         error!(?e, "failed to build pre-swap request");
+                //         return None;
+                //     }
+                // };
+                // requests.push(preswap_req);
+
+                // let liquidate_req = match self.gateway.liquidate_request(
+                //     &plan.borrower_key,
+                //     &plan.borrow_pool_address,
+                //     &plan.collateral_pool_address,
+                //     *repay_amount,
+                //     plan.expected_seized_collateral,
+                // ) {
+                //     Ok(r) => r,
+                //     Err(e) => {
+                //         error!(?e, "failed to build liquidate request");
+                //         return None;
+                //     }
+                // };
+                // requests.push(liquidate_req);
+            }
+
+            LiquidationType::Direct { repay_amount } => {
+                let liquidate_req = match self.gateway.liquidate_request(
+                    &plan.borrower_key,
+                    &plan.borrow_pool_address,
+                    &plan.collateral_pool_address,
+                    *repay_amount,
+                    plan.expected_seized_collateral,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(?e, "failed to build liquidate request");
+                        return None;
+                    }
+                };
+                requests.push(liquidate_req);
+            }
+        }
+
+        Some(requests)
     }
 }
 
-fn emit_self_position_metrics(market: &str, obligation: &Obligation, market_data: &MarketData) {
-    // for deposit in &obligation.deposits {
-    //     let Some(pool) = market_data
-    //         .pools_data
-    //         .iter()
-    //         .find(|p| p.pool_address == deposit.pool_address)
-    //     else {
-    //         warn!(%market, pool = %deposit.pool_address, "emit_self_position_metrics: pool not found");
-    //         continue;
-    //     };
-    //     let labels = [
-    //         ("market", market.to_string()),
-    //         ("pool_address", pool.pool_address.clone()),
-    //         ("token_symbol", pool.token_symbol.clone()),
-    //     ];
-    //     gauge!("liquidator_self_j_tokens", &labels).set(deposit.j_tokens.0 as f64);
-    //     gauge!("liquidator_self_plain_collateral", &labels).set(deposit.collateral.0 as f64);
-    //     gauge!("liquidator_self_j_tokens_underlying", &labels).set(
-    //         pool.j_tokens_to_tokens_floor(deposit.j_tokens)
-    //             .map(|u| u.0)
-    //             .unwrap_or(0) as f64,
-    //     );
-    // }
-    // for borrow in &obligation.borrows {
-    //     let Some(pool) = market_data
-    //         .pools_data
-    //         .iter()
-    //         .find(|p| p.pool_address == borrow.pool_address)
-    //     else {
-    //         warn!(%market, pool = %borrow.pool_address, "emit_self_position_metrics: pool not found");
-    //         continue;
-    //     };
-    //     let labels = [
-    //         ("market", market.to_string()),
-    //         ("pool_address", pool.pool_address.clone()),
-    //         ("token_symbol", pool.token_symbol.clone()),
-    //     ];
-    //     gauge!("liquidator_self_d_tokens", &labels).set(borrow.d_tokens.0 as f64);
-    //     gauge!("liquidator_self_d_tokens_underlying", &labels).set(
-    //         pool.d_tokens_to_tokens_ceil(borrow.d_tokens)
-    //             .map(|u| u.0)
-    //             .unwrap_or(0) as f64,
-    //     );
-    // }
-}
+// fn emit_self_position_metrics(market: &str, obligation: &Obligation, market_data: &MarketData) {
+//     // for deposit in &obligation.deposits {
+//     //     let Some(pool) = market_data
+//     //         .pools_data
+//     //         .iter()
+//     //         .find(|p| p.pool_address == deposit.pool_address)
+//     //     else {
+//     //         warn!(%market, pool = %deposit.pool_address, "emit_self_position_metrics: pool not found");
+//     //         continue;
+//     //     };
+//     //     let labels = [
+//     //         ("market", market.to_string()),
+//     //         ("pool_address", pool.pool_address.clone()),
+//     //         ("token_symbol", pool.token_symbol.clone()),
+//     //     ];
+//     //     gauge!("liquidator_self_j_tokens", &labels).set(deposit.j_tokens.0 as f64);
+//     //     gauge!("liquidator_self_plain_collateral", &labels).set(deposit.collateral.0 as f64);
+//     //     gauge!("liquidator_self_j_tokens_underlying", &labels).set(
+//     //         pool.j_tokens_to_tokens_floor(deposit.j_tokens)
+//     //             .map(|u| u.0)
+//     //             .unwrap_or(0) as f64,
+//     //     );
+//     // }
+//     // for borrow in &obligation.borrows {
+//     //     let Some(pool) = market_data
+//     //         .pools_data
+//     //         .iter()
+//     //         .find(|p| p.pool_address == borrow.pool_address)
+//     //     else {
+//     //         warn!(%market, pool = %borrow.pool_address, "emit_self_position_metrics: pool not found");
+//     //         continue;
+//     //     };
+//     //     let labels = [
+//     //         ("market", market.to_string()),
+//     //         ("pool_address", pool.pool_address.clone()),
+//     //         ("token_symbol", pool.token_symbol.clone()),
+//     //     ];
+//     //     gauge!("liquidator_self_d_tokens", &labels).set(borrow.d_tokens.0 as f64);
+//     //     gauge!("liquidator_self_d_tokens_underlying", &labels).set(
+//     //         pool.d_tokens_to_tokens_ceil(borrow.d_tokens)
+//     //             .map(|u| u.0)
+//     //             .unwrap_or(0) as f64,
+//     //     );
+//     // }
+// }

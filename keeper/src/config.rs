@@ -37,7 +37,12 @@ pub struct CliConfig {
     pub network_passphrase: String,
     pub assets_to_hold: Vec<String>,
     pub swap_providers: Vec<String>,
-    pub min_profit_margin_cents: i128,
+    pub liquidator_min_profit_margin_cents: i128,
+    pub liquidator_inclusion_fee_oracle_units: i128,
+    pub liquidator_max_retries: u32,
+    pub liquidator_refresh_interval_blocks: u32,
+    pub liquidator_max_allowed_swap_slippage_bps: i128,
+
     pub min_withdraw_value_cents: i128,
 
     pub ledger_polling_interval_secs: u64,

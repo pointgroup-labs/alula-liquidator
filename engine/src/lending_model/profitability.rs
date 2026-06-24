@@ -54,6 +54,67 @@ pub fn compute_repay_cap_from_collateral(
     borrow_pool: &PoolData,
     collateral_pool: &PoolData,
     profit_margin_borrow_tokens: i128,
+    // TODO: Account for solvent cases here separately?
+) -> Option<i128> {
+    if available_collateral <= 0 {
+        return None;
+    }
+    let (borrow_price, collateral_price) = (
+        borrow_pool.oracle_asset_price,
+        collateral_pool.oracle_asset_price,
+    );
+    if borrow_price <= 0 || collateral_price <= 0 {
+        return None;
+    }
+
+    let (borrow_decimals_pow, collateral_decimals_pow) = (
+        10_i128.pow(borrow_pool.token_decimals),
+        10_i128.pow(collateral_pool.token_decimals),
+    );
+
+    let liquidation_incentive_bps = borrow_pool
+        .max_liquidation_incentive_bps
+        .min(collateral_pool.max_liquidation_incentive_bps);
+    let incentive_bps = BPS_FACTOR.checked_add(liquidation_incentive_bps)?;
+    if incentive_bps <= 0 {
+        return None;
+    }
+
+    let all_collateral_value = available_collateral
+        .checked_mul(collateral_price)?
+        .checked_div(collateral_decimals_pow)?;
+
+    let numerator = all_collateral_value.checked_mul(borrow_decimals_pow)?;
+    let denominator = borrow_price
+        .checked_mul(incentive_bps)?
+        .checked_div(BPS_FACTOR)?;
+
+    let max_repay_borrow_units = numerator.checked_div(denominator)?;
+    let max_profitable_repay = max_repay_borrow_units.saturating_sub(profit_margin_borrow_tokens);
+
+    let result = max_feasible_repay.min(max_profitable_repay);
+    if result > 0 { Some(result) } else { None }
+}
+
+/// Largest repay (in borrow tokens) such that the bonus-inflated collateral
+/// seizure still fits in `available_collateral`, minus a profit-margin slack.
+///
+/// The incentive is `min(borrow_pool, collateral_pool)` — the same pair-wise
+/// minimum the contract's `liquidate` applies (and that
+/// `compute_expected_seized_collateral` mirrors). Using only the collateral
+/// pool's incentive would over-estimate the bonus whenever the borrow pool's
+/// is smaller, under-sizing the repay cap.
+///
+/// Returns `min(max_feasible_repay, R_max − profit_margin)`, or `None` if any
+/// factor collapses (zero/negative prices or collateral, arithmetic overflow,
+/// or the cap falls to zero).
+pub fn compute_repay_cap_from_collateral3(
+    max_feasible_repay: i128,
+    available_collateral: i128,
+    borrow_pool: &PoolData,
+    collateral_pool: &PoolData,
+    profit_margin_borrow_tokens: i128,
+    // TODO: Account for solvent cases here separately?
 ) -> Option<i128> {
     if available_collateral <= 0 {
         return None;

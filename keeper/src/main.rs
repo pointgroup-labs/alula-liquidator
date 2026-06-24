@@ -52,16 +52,23 @@ async fn main() -> anyhow::Result<()> {
         event_collector_start_ledger,
         liquidator_capital_reservation_ttl_secs,
         liquidator_capital_balance_ttl_secs,
-        // swap_providers,
-        // assets_to_hold,
+        swap_providers,
+        assets_to_hold,
         metrics_bind_addr,
         xlm_safety_margin,
+
+        liquidator_max_allowed_swap_slippage_bps,
+
+        liquidator_inclusion_fee_oracle_units,
+
+        liquidator_max_retries,
+        liquidator_refresh_interval_blocks,
 
         ledger_collector_polling_interval_secs,
         network_passphrase,
         // rebalancer_max_fee_bps,
         // rebalancer_slippage_bps,
-        // min_profit_margin_cents,
+        liquidator_min_profit_margin_cents,
         // min_withdraw_value_cents,
         // rebalancer_interval_blocks,
         // ledger_polling_interval_secs,
@@ -112,34 +119,30 @@ async fn main() -> anyhow::Result<()> {
         },
     );
 
-    
-    // let liquidator = Liquidator::new(
-    //     pkey.clone(),
-    //     skey.clone(),
-    //     gateway.clone(),
-    //     store.cursor(),
-    //     LiquidatorConfig {
-    //         markets: markets.clone(),
-    //         min_profit_margin_cents,
-    //         assets_to_hold,
-    //         swap_providers,
-    //         xlm_address,
-    //         xlm_safety_margin,
-    //         allowed_swap_slippage_bps: 100,
-    //         max_retries: 4,
-    //         refresh_interval_blocks: 5,
-    //         // gain_haircut_bps: LIQUIDATOR_GAIN_HAIRCUT_BPS,
-    //         inclusion_fee_oracle_units: LIQUIDATOR_INCLUSION_FEE_ORACLE_UNITS,
-    //         // flash_enabled: LIQUIDATOR_FLASH_ENABLED,
-    //         // flash_safety_haircut_bps: LIQUIDATOR_FLASH_SAFETY_HAIRCUT_BPS,
-    //     },
-    //     store.obligations(),
-    //     ledger_reader.clone(),
-    //     liquidator_capital,
-    // );
- 
+    let liquidator = Liquidator::new(
+        pkey.clone(),
+        skey.clone(),
+        gateway.clone(),
+        store.cursor(),
+        LiquidatorConfig {
+            markets: markets.clone(),
+            min_profit_margin_cents: liquidator_min_profit_margin_cents,
+            assets_to_hold,
+            swap_providers,
+            xlm_address,
+            xlm_safety_margin,
+            allowed_swap_slippage_bps: liquidator_max_allowed_swap_slippage_bps,
+            max_retries: liquidator_max_retries,
+            refresh_interval_blocks: liquidator_refresh_interval_blocks,
+            inclusion_fee_oracle_units: liquidator_inclusion_fee_oracle_units,
+        },
+        store.obligations(),
+        ledger_reader.clone(),
+        liquidator_capital,
+    );
 
     engine.add_strategy(Box::new(bad_debt_request_initiator));
+    engine.add_strategy(Box::new(liquidator));
 
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::try_new(

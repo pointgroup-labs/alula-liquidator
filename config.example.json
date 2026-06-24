@@ -18,7 +18,7 @@
         "CCQBZY6KF6CGL76D3MFYMPCHCI23BKYAN2KHPGJA2MV3QM3PDEXLO34Y",
         "CDWL35O3H3NSM5JBUPWN5LEDAITWYNHRLCCWCYJFFXFRR6MGH6IVKIIU"
     ],
-    "min_profit_margin_cents": 50,
+    "liquidator_min_profit_margin_cents": 0,
     "min_withdraw_value_cents": 500,
     "withdrawer_utilization_safety_margin_bps": 500,
     "rebalancer_max_price_impact_bps": 1200,
@@ -32,5 +32,9 @@
     "bad_debt_request_initiator_refresh_interval_blocks": 5,
     "event_collector_start_ledger": 3213202,
     "ledger_collector_polling_interval_secs": 2,
-    "default_simulation_fee": 10000
+    "default_simulation_fee": 10000,
+    "liquidator_inclusion_fee_oracle_units": 0,
+    "liquidator_max_retries": 3,
+    "liquidator_refresh_interval_blocks": 2,
+    "liquidator_max_allowed_swap_slippage_bps": 100
 }
