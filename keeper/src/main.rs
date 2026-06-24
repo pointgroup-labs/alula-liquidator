@@ -56,7 +56,9 @@ async fn main() -> anyhow::Result<()> {
         // assets_to_hold,
         metrics_bind_addr,
         xlm_safety_margin,
-        // network_passphrase,
+
+        ledger_collector_polling_interval_secs,
+        network_passphrase,
         // rebalancer_max_fee_bps,
         // rebalancer_slippage_bps,
         // min_profit_margin_cents,
@@ -66,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
         // rebalancer_max_price_impact_bps,
         // withdrawer_utilization_safety_margin_bps,
         // rebalancer_min_swap_amount_value_cents,
+        default_simulation_fee,
         bad_debt_request_initiator_max_retries,
         bad_debt_request_initiator_refresh_interval_blocks,
         ..
@@ -109,6 +112,33 @@ async fn main() -> anyhow::Result<()> {
         },
     );
 
+    
+    let liquidator = Liquidator::new(
+        pkey.clone(),
+        skey.clone(),
+        gateway.clone(),
+        store.cursor(),
+        LiquidatorConfig {
+            markets: markets.clone(),
+            min_profit_margin_cents,
+            assets_to_hold,
+            swap_providers,
+            xlm_address,
+            xlm_safety_margin,
+            allowed_swap_slippage_bps: 100,
+            max_retries: 4,
+            refresh_interval_blocks: 5,
+            // gain_haircut_bps: LIQUIDATOR_GAIN_HAIRCUT_BPS,
+            inclusion_fee_oracle_units: LIQUIDATOR_INCLUSION_FEE_ORACLE_UNITS,
+            // flash_enabled: LIQUIDATOR_FLASH_ENABLED,
+            // flash_safety_haircut_bps: LIQUIDATOR_FLASH_SAFETY_HAIRCUT_BPS,
+        },
+        store.obligations(),
+        ledger_reader.clone(),
+        liquidator_capital,
+    );
+ 
+
     engine.add_strategy(Box::new(bad_debt_request_initiator));
 
     let cursor_repo = Arc::new(store.cursor());
@@ -122,10 +152,20 @@ async fn main() -> anyhow::Result<()> {
         },
         cursor_repo,
     )?));
+    engine.add_collector(Box::new(LedgerCollector::new(
+        &rpc_url,
+        ledger_collector_polling_interval_secs,
+    )));
 
-    engine.add_collector(Box::new(LedgerCollector::new(&rpc_url, secs)));
+    engine.add_executor(Box::new(SorobanExecutor::new(
+        &pkey,
+        gateway,
+        default_simulation_fee,
+        network_passphrase,
+    )));
 
     tokio::select! {
+        _ = run_engine(engine) => {},
         res = metrics::serve(metrics_handle, metrics_bind_addr) => {
             if let Err(e) = res {
                 error!(?e, "metrics server stopped");

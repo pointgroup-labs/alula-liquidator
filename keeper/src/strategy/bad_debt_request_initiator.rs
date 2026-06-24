@@ -1,4 +1,4 @@
-//! Bad-debt request initiator strategy. Initiates the bad debt request if needed
+//! Bad-debt request initiator strategy. Initiates the bad debt request if needed.
 
 use {
     crate::{
@@ -120,9 +120,9 @@ impl BadDebtRequestInitiator {
 
                 if !eligible {
                     counter!("bad_debt_outcome_total", "outcome" => "ineligible").increment(1);
+
                     continue;
                 }
-
                 info!(
                     ?obligation_key,
                     "obligation eligible for bad debt request issuance"
@@ -191,10 +191,10 @@ impl BadDebtRequestInitiator {
         else {
             return vec![];
         };
-
         let Some(borrower_obligation) = obligation_opt else {
             debug!(?borrower_key, "borrower obligation removed; nothing to do");
             counter!("bad_debt_outcome_total", "outcome" => "obligation_cleared").increment(1);
+
             return vec![];
         };
 
@@ -210,7 +210,6 @@ impl BadDebtRequestInitiator {
         else {
             return vec![];
         };
-
         let Ok(eligible) = self
             .is_eligible_for_bad_debt_request_issuance(
                 &borrower_key,
@@ -227,6 +226,7 @@ impl BadDebtRequestInitiator {
 
         if !eligible {
             counter!("bad_debt_outcome_total", "outcome" => "ineligible").increment(1);
+
             return vec![];
         }
 
@@ -240,6 +240,7 @@ impl BadDebtRequestInitiator {
             vec![action]
         } else {
             counter!("bad_debt_outcome_total", "outcome" => "build_failed").increment(1);
+
             vec![]
         }
     }
@@ -280,7 +281,7 @@ impl BadDebtRequestInitiator {
             };
 
             let underlying_from_j = pool.j_tokens_to_tokens_ceil(deposit_pos.j_tokens)?;
-            let total_collateral = underlying_from_j + deposit_pos.collateral;
+            let total_collateral = underlying_from_j + deposit_pos.collateral; // TODO: checked/saturating?
 
             let collateral_value = total_collateral.checked_mul(pool.oracle_asset_price)?;
             if collateral_value > min_collateral_threshold_value {
@@ -291,6 +292,7 @@ impl BadDebtRequestInitiator {
                     min_collateral_threshold_value,
                     "still has liquidatable collateral, not eligible"
                 );
+
                 return Ok(false);
             }
         }

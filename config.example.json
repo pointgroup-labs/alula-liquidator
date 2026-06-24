@@ -30,5 +30,7 @@
     "ledger_polling_interval_secs": 2,
     "bad_debt_request_initiator_max_retries": 3,
     "bad_debt_request_initiator_refresh_interval_blocks": 5,
-    "event_collector_start_ledger": 3213202
+    "event_collector_start_ledger": 3213202,
+    "ledger_collector_polling_interval_secs": 2,
+    "default_simulation_fee": 10000
 }

@@ -29,7 +29,6 @@ pub struct EventFilter {
 pub struct SorobanEventCollector {
     network_url: Url,
     last_ledger: u32,
-    start_ledger: u32,
     filter: EventFilter,
     cursor_repo: Arc<CursorRepo>,
     last_cursor_id: Option<String>,
@@ -64,7 +63,6 @@ impl SorobanEventCollector {
             filter,
             last_ledger,
             cursor_repo,
-            start_ledger,
             last_cursor_id,
             network_url: network_url.clone(),
         })
@@ -115,6 +113,7 @@ impl Collector<Event> for SorobanEventCollector {
                                 last_ledger = event.ledger;
                                 if let Err(err) = sender.send(Event::SorobanEvents(event)) {
                                     warn!(?err, "no receivers, stopping");
+
                                     return;
                                 }
                             }
@@ -171,6 +170,7 @@ impl Collector<Event> for SorobanEventCollector {
                             }
 
                             is_first_poll = false;
+
                             tokio::time::sleep(Duration::from_secs(1)).await;
                         }
                     }
@@ -178,6 +178,7 @@ impl Collector<Event> for SorobanEventCollector {
             });
 
             let stream = lag_counted_stream(receiver, "soroban_events");
+
             Ok(Box::pin(stream) as CollectorStream<'_, Event>)
         })
     }

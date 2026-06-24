@@ -287,6 +287,13 @@ async fn build_and_send(
     default_simulation_fee: u32,
     source_strkey: &stellar_strkey::ed25519::PublicKey,
 ) -> Result<String> {
+    info!(
+        seq_num_to_use,
+        ?action,
+        default_simulation_fee,
+        %source_strkey
+    );
+
     let tx = Transaction {
         source_account: MuxedAccount::Ed25519(Uint256(source_strkey.0)),
         fee: default_simulation_fee,
@@ -308,8 +315,10 @@ async fn build_and_send(
 
     if sim_response.results.is_empty() {
         error!(
+            ?sim_response,
             "simulation returned no results — contract execution likely failed, skipping submission"
         );
+
         return Err(anyhow::anyhow!("simulation returned no results"));
     }
 

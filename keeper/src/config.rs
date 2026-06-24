@@ -27,6 +27,10 @@ pub struct CliConfig {
     pub markets: Vec<String>,
     pub xlm_safety_margin: i128,
 
+    pub default_simulation_fee: u32,
+
+    pub ledger_collector_polling_interval_secs: u64,
+
     pub liquidator_capital_balance_ttl_secs: u64,
     pub liquidator_capital_reservation_ttl_secs: u64,
 
