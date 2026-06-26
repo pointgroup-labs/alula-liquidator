@@ -31,6 +31,7 @@ use {
 
 mod collect;
 mod config;
+mod constants;
 mod error;
 mod execute;
 mod liquidator_capital;
@@ -131,10 +132,9 @@ async fn main() -> anyhow::Result<()> {
             swap_providers,
             xlm_address,
             xlm_safety_margin,
-            allowed_swap_slippage_bps: liquidator_max_allowed_swap_slippage_bps,
+            max_allowed_swap_slippage_bps: liquidator_max_allowed_swap_slippage_bps,
             max_retries: liquidator_max_retries,
             refresh_interval_blocks: liquidator_refresh_interval_blocks,
-            inclusion_fee_oracle_units: liquidator_inclusion_fee_oracle_units,
         },
         store.obligations(),
         ledger_reader.clone(),

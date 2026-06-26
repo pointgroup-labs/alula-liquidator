@@ -10,7 +10,7 @@ use {
     ed25519_dalek::SigningKey,
     engine::{
         lending_model::{
-            MarketData, Obligation, ObligationKey, profitability::cents_to_oracle_value_floor,
+            MarketData, Obligation, ObligationKey, profitability::cents_to_oracle_value_ceil,
         },
         ports::{EventCodec, LedgerReader, OperationEvent},
         reactor::{BoxFuture, Strategy},
@@ -261,7 +261,8 @@ impl BadDebtRequestInitiator {
             return Ok(true);
         }
 
-        let min_collateral_threshold_value = cents_to_oracle_value_floor(
+        let min_collateral_threshold_value = cents_to_oracle_value_ceil(
+            // TODO: must be floor?
             market_data.min_collateral_value_cents,
             market_data.oracle_price_decimals,
         )?;

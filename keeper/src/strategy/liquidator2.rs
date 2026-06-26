@@ -4,6 +4,7 @@
 use {
     crate::{
         collect::{Event, stellar_ledger::NewLedger},
+        constants::BPS_FACTOR,
         execute::{
             Action,
             stellar_tx::{SettleHook, SubmitStellarTx},
@@ -27,8 +28,6 @@ use {
     tracing::{debug, error, info, warn},
 };
 
-const BPS_FACTOR: i128 = 10_000;
-
 pub struct LiquidatorConfig {
     pub max_retries: u32,
     pub xlm_address: String,
@@ -38,8 +37,7 @@ pub struct LiquidatorConfig {
     pub swap_providers: Vec<String>,
     pub refresh_interval_blocks: u32,
     pub min_profit_margin_cents: i128,
-    pub allowed_swap_slippage_bps: i128,
-    pub inclusion_fee_oracle_units: i128,
+    pub max_allowed_swap_slippage_bps: i128,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +45,7 @@ enum LiquidationType {
     /// Direct liquidation using the available liquidator's liquidity
     Direct {
         /// 'repay_amount', passed to the 'liquidate' endpoint
-        repay_amount: i128,
+        repay_amount: i128, // TODO: Remove it from here...
     },
     /// PreSwap liquidation via swapping the available liquidator's liquidity
     /// for the repaid asset during liquidation
@@ -79,6 +77,7 @@ enum LiquidationType {
 
 #[derive(Debug)]
 struct LiquidationPlan {
+    repay_amount: i128,
     net_profit_value: i128,
     borrower_key: ObligationKey,
     borrow_pool_address: String,
@@ -140,7 +139,7 @@ impl Strategy<Event, Action> for Liquidator {
 
     fn sync_state(&mut self) -> BoxFuture<'_, anyhow::Result<()>> {
         Box::pin(async {
-            info!(?self.config.markets, "sync_state: loading market(s)");
+            info!(?self.config.markets, "sync_state: loading market(s)...");
             for market in &self.config.markets {
                 match self.ledger_reader.read_market_data(market).await {
                     Ok(md) => {
@@ -196,10 +195,10 @@ impl Liquidator {
             | OperationEvent::RemoveCollateral => {
                 let pool = self.gateway.decode_topic(&event, 1);
                 let obl_display = self.gateway.decode_topic(&event, 2);
-                debug!(%event_name, ledger = event.ledger, %market, %pool, %obl_display, "position update event");
+                info!(%event_name, ledger = event.ledger, %market, %pool, %obl_display, "position update event");
 
                 let Ok(key) = self.gateway.parse_obligation_key_from_topic(&event, 2) else {
-                    warn!(%event_name, "cannot parse obligation key");
+                    error!(%event_name, "cannot parse obligation key");
 
                     return vec![];
                 };
@@ -283,7 +282,7 @@ impl Liquidator {
                 if key.user == self.pkey
                     && let Some(md) = self.market_data.get(market)
                 {
-                    // emit_self_position_metrics(market, &obligation, md);
+                    emit_keeper_position_metrics(market, &obligation, md);
                 }
 
                 self.obligations
@@ -311,7 +310,7 @@ impl Liquidator {
         }
         self.last_refresh_ledger = ledger;
 
-        info!(ledger, "refresh + evaluate");
+        info!(ledger, "refreshing market data + evaluating obligations...");
 
         self.refresh_market_data().await;
 
@@ -321,7 +320,7 @@ impl Liquidator {
         }
 
         if !actions.is_empty() {
-            info!(ledger, count = actions.len(), "submitting liquidations");
+            info!(ledger, count = actions.len(), "submitting liquidations...");
         }
 
         actions
@@ -334,7 +333,7 @@ impl Liquidator {
                 Ok(market_data) => {
                     let own_key = ObligationKey::new(self.pkey.clone());
                     if let Some(obl) = self.obligations.get(&market).and_then(|m| m.get(&own_key)) {
-                        // emit_self_position_metrics(&market, obl, &market_data);
+                        emit_keeper_position_metrics(&market, obl, &market_data);
                     }
 
                     self.market_data.insert(market, market_data);
@@ -384,14 +383,19 @@ impl Liquidator {
         for (obligation_key, obligation) in obligations {
             checked += 1;
             if obligation_key.user == self.pkey {
+                // NB: self liquidations are not supported on the market currently
                 continue;
             }
-            if !liquidation::compute_is_unhealthy(obligation, market_data) {
+            if !liquidation::compute_is_liquidatable(obligation, market_data) {
                 continue;
             }
 
             liquidatable += 1;
-            let is_insolvent = liquidation::compute_is_insolvent(obligation, market_data);
+            let Ok(is_insolvent) = liquidation::compute_is_insolvent(obligation, market_data)
+                .inspect_err(|e| error!(?e))
+            else {
+                return vec![];
+            };
 
             info!(?obligation_key, ?obligation, is_insolvent, "LIQUIDATABLE");
 
@@ -433,6 +437,7 @@ impl Liquidator {
             )
             .set(now.as_secs() as f64);
         }
+
         info!(%market, checked, liquidatable, "market evaluation complete");
 
         actions
@@ -448,7 +453,7 @@ impl Liquidator {
     ) -> Option<Action> {
         let liquidator_obl_key = ObligationKey::new(self.pkey.clone());
 
-        let mut best: Option<LiquidationPlan> = None;
+        let mut best_liquidation_plan: Option<LiquidationPlan> = None;
         for borrow_position in &borrower_obligation.borrows {
             let Some(borrow_pool) = market_data
                 .pools_data
@@ -492,14 +497,14 @@ impl Liquidator {
                 };
 
                 let Some(plan) = self
-                    .build_liquidation_plan(
+                    .build_liquidation_plan_for_asset_pool_pair(
                         is_insolvent,
                         borrow_position.d_tokens.0,
                         borrow_pool,
                         market_data,
                         collateral_pool,
-                        deposit_position,
                         borrower_obligation,
+                        deposit_position,
                         borrower_obligation_key,
                     )
                     .await
@@ -509,17 +514,20 @@ impl Liquidator {
                     continue;
                 };
 
-                if best
+                if best_liquidation_plan
                     .as_ref()
+                    // TODO: Fix to 'repay_amount' here
                     .is_none_or(|b| plan.net_profit_value > b.net_profit_value)
                 {
-                    best = Some(plan);
+                    best_liquidation_plan = Some(plan);
                 }
             }
         }
 
-        if let Some(plan) = best {
+        if let Some(plan) = best_liquidation_plan {
             let net_value = plan.net_profit_value.max(0);
+
+            // TODO: emit 'repay_amount' metric, right?
 
             histogram!(
                 "liquidator_plan_expected_net_profit_value_units",
@@ -532,6 +540,7 @@ impl Liquidator {
             )
             .increment(net_value as u64);
             info!(
+                // TODO: repay amount
                 ?plan.borrower_key,
                 borrow_pool = %plan.borrow_pool_address,
                 collateral_pool = %plan.collateral_pool_address,
@@ -539,26 +548,25 @@ impl Liquidator {
                 "selected best (borrow, deposit) pair",
             );
 
-            self.execute_liquidation_plan(market, &liquidator_obl_key, plan)
+            self.execute_liquidation_plan(market, plan, &liquidator_obl_key)
                 .await
         } else {
             error!("failed to come up with a liquidation plan");
-
-            // TODO: metric?
+            // TODO: Add metric?
 
             None
         }
     }
 
-    async fn build_liquidation_plan(
+    async fn build_liquidation_plan_for_asset_pool_pair(
         &self,
         is_insolvent: bool,
         borrow_d_tokens: i128,
         borrow_pool: &PoolData,
         market_data: &MarketData,
         collateral_pool: &PoolData,
-        deposit_position: &DepositPosition,
         borrower_obligation: &Obligation,
+        deposit_position: &DepositPosition,
         borrower_obligation_key: &ObligationKey,
     ) -> Option<LiquidationPlan> {
         let borrow_token = borrow_pool.token_address.as_str();
@@ -573,15 +581,16 @@ impl Liquidator {
         }
 
         let close_factor_cap = liquidation::compute_close_factor_repay_cap(
+            is_insolvent,
             position_debt_tokens.0,
             borrow_pool.liquidation_close_factor_bps,
-            is_insolvent,
         );
         let position_collateral_sum = collateral_pool
             .j_tokens_to_tokens_floor(deposit_position.j_tokens)
             .ok()?
             .0
             + deposit_position.collateral.0;
+
         let position_collateral_value = position_collateral_sum
             .saturating_mul(collateral_pool.oracle_asset_price)
             .saturating_div(10_i128.pow(collateral_pool.token_decimals));
@@ -606,6 +615,7 @@ impl Liquidator {
             return None;
         }
 
+        // TODO: can be negative, by the way...
         let profit_margin_borrow = profitability::compute_profit_margin_in_borrow_token(
             self.config.min_profit_margin_cents,
             market_data.oracle_price_decimals,
@@ -615,12 +625,13 @@ impl Liquidator {
         .unwrap_or(0);
 
         let max_feasible_repay = position_debt_tokens.0.min(close_factor_cap);
-        if max_feasible_repay <= 0 {
-            error!(max_feasible_repay, "max_feasible_repay non-positive");
+        if !max_feasible_repay.is_positive() {
+            error!(max_feasible_repay, "non-positive max_feasible_repay");
 
             return None;
         }
 
+        // TODO: Account for LTV-improvement here
         let profitable_repay = profitability::compute_repay_cap_from_collateral(
             max_feasible_repay,
             position_collateral_sum,
@@ -718,7 +729,6 @@ impl Liquidator {
             expected_received_value,
             repay_value,
             profit_margin_value,
-            self.config.inclusion_fee_oracle_units,
         )
         .ok()?;
         if !profitability.is_profitable {
@@ -739,12 +749,13 @@ impl Liquidator {
         );
 
         return Some(LiquidationPlan {
-            liquidation_type: LiquidationType::Direct { repay_amount },
+            repay_amount: 0,
+            expected_seized_collateral,
             borrower_key: borrower_key.clone(),
+            net_profit_value: profitability.net_value,
+            liquidation_type: LiquidationType::Direct { repay_amount },
             borrow_pool_address: borrow_pool.pool_address.clone(),
             collateral_pool_address: collateral_pool.pool_address.clone(),
-            expected_seized_collateral,
-            net_profit_value: profitability.net_value,
         });
     }
 
@@ -853,7 +864,6 @@ impl Liquidator {
             received_collateral_value,
             flash_repay_value,
             profit_margin_value,
-            self.config.inclusion_fee_oracle_units,
         )
         .ok()?;
         if !profitability.is_profitable {
@@ -878,6 +888,7 @@ impl Liquidator {
         );
 
         Some(LiquidationPlan {
+            repay_amount: 0,
             liquidation_type: LiquidationType::Flash {
                 flash_fee,
                 repay_amount,
@@ -948,7 +959,7 @@ impl Liquidator {
             };
 
             let max_amount_in = max_amount_in
-                .saturating_mul(BPS_FACTOR + self.config.allowed_swap_slippage_bps)
+                .saturating_mul(BPS_FACTOR + self.config.max_allowed_swap_slippage_bps)
                 / BPS_FACTOR;
             if max_amount_in > swappable_balance {
                 error!(
@@ -996,7 +1007,6 @@ impl Liquidator {
                 gain_value,
                 cost_value,
                 profit_margin_value,
-                self.config.inclusion_fee_oracle_units,
             )
             .ok()?;
             if !profitability.is_profitable {
@@ -1016,18 +1026,19 @@ impl Liquidator {
             if let Some(ref bp) = best_plan {
                 if bp.net_profit_value < profitability.net_value {
                     best_plan = Some(LiquidationPlan {
+                        repay_amount: 0,
                         liquidation_type: LiquidationType::PreSwap {
                             repay_amount,
-                            source_asset: source_asset.clone(),
-                            source_amount_in: max_amount_in,
-                            min_amount_out: repay_amount,
                             swap_provider: best_provider,
+                            min_amount_out: repay_amount,
+                            source_amount_in: max_amount_in,
+                            source_asset: source_asset.clone(),
                         },
                         borrower_key: borrower_key.clone(),
+                        net_profit_value: profitability.net_value,
+                        expected_seized_collateral: expected_seized,
                         borrow_pool_address: borrow_pool.pool_address.clone(),
                         collateral_pool_address: collateral_pool.pool_address.clone(),
-                        expected_seized_collateral: expected_seized,
-                        net_profit_value: profitability.net_value,
                     })
                 }
             };
@@ -1134,11 +1145,12 @@ impl Liquidator {
         None
     }
 
+    // TODO: Check this
     async fn execute_liquidation_plan(
         &self,
         market: &str,
-        liquidator_obl_key: &ObligationKey,
         plan: LiquidationPlan,
+        liquidator_obl_key: &ObligationKey,
     ) -> Option<Action> {
         let requests = self.build_batch_requests(&plan)?;
 
@@ -1154,6 +1166,7 @@ impl Liquidator {
                     } else {
                         0
                     };
+
                 info!(
                     ?plan.borrower_key,
                     flash_fee = flash_fee_log,
@@ -1163,11 +1176,13 @@ impl Liquidator {
             Ok(false) => {
                 warn!(?plan.borrower_key, "batch simulation failed, dropping plan");
                 counter!("liquidator_skip_total", "reason" => "batch_sim_failed").increment(1);
+
                 return None;
             }
             Err(e) => {
                 warn!(?e, ?plan.borrower_key, "batch simulation error");
                 counter!("liquidator_skip_total", "reason" => "batch_sim_failed").increment(1);
+
                 return None;
             }
         }
@@ -1177,6 +1192,9 @@ impl Liquidator {
         // the executor's SettleHook on every terminal tx outcome; the 5-minute
         // ledger TTL is now only a safety ceiling for hooks lost to executor
         // task panics.
+
+        // TODO: This can change later
+
         let (reserve_token, reserve_amount) = match &plan.liquidation_type {
             LiquidationType::Direct { repay_amount } => {
                 let borrow_token = self.find_token_for_pool(&plan.borrow_pool_address)?;
@@ -1196,6 +1214,8 @@ impl Liquidator {
             }
         };
 
+        // TODO: This has to be updated as well
+
         // Direct / PreSwap spend wallet capital and must pass the reservation
         // gate. Flash spends protocol capital, so it mints a standalone op_id
         // for the SettleHook (releasing an unreserved id is a no-op).
@@ -1210,6 +1230,7 @@ impl Liquidator {
                     warn!(?e, %reserve_token, "balance query failed at reservation time");
                     counter!("liquidator_skip_total", "reason" => "balance_query_failed")
                         .increment(1);
+
                     return None;
                 }
             };
@@ -1218,6 +1239,7 @@ impl Liquidator {
             } else {
                 raw_balance
             };
+
             match self
                 .liquidator_capital
                 .reserve(reserve_amount, available, &reserve_token)
@@ -1235,6 +1257,7 @@ impl Liquidator {
                         "reason" => "insufficient_balance_after_reservations",
                     )
                     .increment(1);
+
                     return None;
                 }
             }
@@ -1404,7 +1427,8 @@ impl Liquidator {
                 ) {
                     Ok(r) => r,
                     Err(e) => {
-                        error!(?e, "failed to build liquidate request");
+                        error!(?e, "failed to build DIRECT liquidation request");
+
                         return None;
                     }
                 };
@@ -1416,48 +1440,51 @@ impl Liquidator {
     }
 }
 
-// fn emit_self_position_metrics(market: &str, obligation: &Obligation, market_data: &MarketData) {
-//     // for deposit in &obligation.deposits {
-//     //     let Some(pool) = market_data
-//     //         .pools_data
-//     //         .iter()
-//     //         .find(|p| p.pool_address == deposit.pool_address)
-//     //     else {
-//     //         warn!(%market, pool = %deposit.pool_address, "emit_self_position_metrics: pool not found");
-//     //         continue;
-//     //     };
-//     //     let labels = [
-//     //         ("market", market.to_string()),
-//     //         ("pool_address", pool.pool_address.clone()),
-//     //         ("token_symbol", pool.token_symbol.clone()),
-//     //     ];
-//     //     gauge!("liquidator_self_j_tokens", &labels).set(deposit.j_tokens.0 as f64);
-//     //     gauge!("liquidator_self_plain_collateral", &labels).set(deposit.collateral.0 as f64);
-//     //     gauge!("liquidator_self_j_tokens_underlying", &labels).set(
-//     //         pool.j_tokens_to_tokens_floor(deposit.j_tokens)
-//     //             .map(|u| u.0)
-//     //             .unwrap_or(0) as f64,
-//     //     );
-//     // }
-//     // for borrow in &obligation.borrows {
-//     //     let Some(pool) = market_data
-//     //         .pools_data
-//     //         .iter()
-//     //         .find(|p| p.pool_address == borrow.pool_address)
-//     //     else {
-//     //         warn!(%market, pool = %borrow.pool_address, "emit_self_position_metrics: pool not found");
-//     //         continue;
-//     //     };
-//     //     let labels = [
-//     //         ("market", market.to_string()),
-//     //         ("pool_address", pool.pool_address.clone()),
-//     //         ("token_symbol", pool.token_symbol.clone()),
-//     //     ];
-//     //     gauge!("liquidator_self_d_tokens", &labels).set(borrow.d_tokens.0 as f64);
-//     //     gauge!("liquidator_self_d_tokens_underlying", &labels).set(
-//     //         pool.d_tokens_to_tokens_ceil(borrow.d_tokens)
-//     //             .map(|u| u.0)
-//     //             .unwrap_or(0) as f64,
-//     //     );
-//     // }
-// }
+fn emit_keeper_position_metrics(market: &str, obligation: &Obligation, market_data: &MarketData) {
+    for deposit in &obligation.deposits {
+        let Some(pool) = market_data
+            .pools_data
+            .iter()
+            .find(|p| p.pool_address == deposit.pool_address)
+        else {
+            error!(%market, pool = %deposit.pool_address, "emit_keeper_position_metrics: pool not found");
+
+            continue;
+        };
+        let labels = [
+            ("market", market.to_string()),
+            ("pool_address", pool.pool_address.clone()),
+            ("token_symbol", pool.token_symbol.clone()),
+        ];
+        gauge!("liquidator_self_j_tokens", &labels).set(deposit.j_tokens.0 as f64);
+        gauge!("liquidator_self_plain_collateral", &labels).set(deposit.collateral.0 as f64);
+        gauge!("liquidator_self_j_tokens_underlying", &labels).set(
+            pool.j_tokens_to_tokens_floor(deposit.j_tokens)
+                .map(|u| u.0)
+                .unwrap_or(0) as f64,
+        );
+    }
+
+    for borrow in &obligation.borrows {
+        let Some(pool) = market_data
+            .pools_data
+            .iter()
+            .find(|p| p.pool_address == borrow.pool_address)
+        else {
+            warn!(%market, pool = %borrow.pool_address, "emit_keeper_position_metrics: pool not found");
+
+            continue;
+        };
+        let labels = [
+            ("market", market.to_string()),
+            ("pool_address", pool.pool_address.clone()),
+            ("token_symbol", pool.token_symbol.clone()),
+        ];
+        gauge!("liquidator_self_d_tokens", &labels).set(borrow.d_tokens.0 as f64);
+        gauge!("liquidator_self_d_tokens_underlying", &labels).set(
+            pool.d_tokens_to_tokens_ceil(borrow.d_tokens)
+                .map(|u| u.0)
+                .unwrap_or(0) as f64,
+        );
+    }
+}

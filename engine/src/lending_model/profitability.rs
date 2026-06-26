@@ -5,6 +5,7 @@ use crate::lending_model::{
     error::{LMError, MapArithmeticError},
     pool::PoolData,
 };
+use tracing::error;
 
 pub fn compute_flash_fee(
     amount: Underlying,
@@ -27,13 +28,78 @@ pub fn compute_profit_margin_in_borrow_token(
         return Err(LMError::InternalError);
     }
 
-    let margin_value = cents_to_oracle_value_floor(min_profit_margin_cents, oracle_price_decimals)?;
+    let margin_value = cents_to_oracle_value_ceil(min_profit_margin_cents, oracle_price_decimals)?;
 
-    value_to_underlying_asset_amount_floor(
+    value_to_underlying_asset_amount_ceil(
         margin_value,
         borrow_pool.oracle_asset_price,
         borrow_pool.token_decimals,
     )
+}
+
+pub fn compute_repay_cap_from_collateral(
+    is_solvent: bool,
+    borrow_pool: &PoolData,
+    max_feasible_repay: i128,
+    collateral_pool: &PoolData,
+    available_collateral: i128,
+    obligation_debt_value: i128,
+    profit_margin_borrow_tokens: i128,
+    obligation_collateral_value: i128,
+) -> Option<i128> {
+    if available_collateral <= 0 {
+        return None;
+    }
+    let (borrow_price, collateral_price) = (
+        borrow_pool.oracle_asset_price,
+        collateral_pool.oracle_asset_price,
+    );
+    if borrow_price <= 0 || collateral_price <= 0 {
+        return None;
+    }
+
+    let pool_incentive_bps = borrow_pool
+        .max_liquidation_incentive_bps
+        .min(collateral_pool.max_liquidation_incentive_bps);
+
+    let effective_incentive_bps = if is_solvent {
+        let max_allowed_multiplier = obligation_collateral_value
+            .checked_mul(9990)?
+            .checked_div(obligation_debt_value)?;
+
+        let max_ltv_incentive_bps = max_allowed_multiplier.saturating_sub(10000);
+
+        pool_incentive_bps.min(max_ltv_incentive_bps)
+    } else {
+        pool_incentive_bps
+    };
+
+    let incentive_bps_factor = BPS_FACTOR.checked_add(effective_incentive_bps as i128)?;
+    if incentive_bps_factor <= 0 {
+        return None;
+    }
+
+    let (borrow_decimals_pow, collateral_decimals_pow) = (
+        10_i128.pow(borrow_pool.token_decimals),
+        10_i128.pow(collateral_pool.token_decimals),
+    );
+
+    let all_collateral_value = available_collateral
+        .checked_mul(collateral_price)?
+        .checked_div(collateral_decimals_pow)?;
+
+    let numerator = all_collateral_value.checked_mul(borrow_decimals_pow)?;
+    let denominator = borrow_price
+        .checked_mul(incentive_bps_factor)?
+        .checked_div(BPS_FACTOR)?;
+
+    let max_repay_borrow_units = numerator.checked_div(denominator)?;
+
+    let max_profitable_repay = max_repay_borrow_units.saturating_sub(profit_margin_borrow_tokens);
+
+    let result = max_feasible_repay.min(max_profitable_repay);
+
+    if result > 0 { Some(result) } else { None }
 }
 
 /// Largest repay (in borrow tokens) such that the bonus-inflated collateral
@@ -48,13 +114,12 @@ pub fn compute_profit_margin_in_borrow_token(
 /// Returns `min(max_feasible_repay, R_max − profit_margin)`, or `None` if any
 /// factor collapses (zero/negative prices or collateral, arithmetic overflow,
 /// or the cap falls to zero).
-pub fn compute_repay_cap_from_collateral(
+pub fn compute_repay_cap_from_collateral4(
     max_feasible_repay: i128,
     available_collateral: i128,
     borrow_pool: &PoolData,
     collateral_pool: &PoolData,
     profit_margin_borrow_tokens: i128,
-    // TODO: Account for solvent cases here separately?
 ) -> Option<i128> {
     if available_collateral <= 0 {
         return None;
@@ -93,6 +158,7 @@ pub fn compute_repay_cap_from_collateral(
     let max_profitable_repay = max_repay_borrow_units.saturating_sub(profit_margin_borrow_tokens);
 
     let result = max_feasible_repay.min(max_profitable_repay);
+
     if result > 0 { Some(result) } else { None }
 }
 
@@ -172,7 +238,6 @@ pub fn compute_liquidation_profitability(
     gain_value: i128,
     cost_value: i128,
     min_profit_margin_value: i128,
-    inclusion_fee_value: i128, // TODO: Units or value here?
 ) -> Result<LiquidationProfitability, LMError> {
     if !gain_value.is_positive() || !cost_value.is_positive() {
         return Err(LMError::InternalError);
@@ -180,8 +245,6 @@ pub fn compute_liquidation_profitability(
 
     let required_value = cost_value
         .checked_add(min_profit_margin_value)
-        .map_over_or_underflow()?
-        .checked_add(inclusion_fee_value)
         .map_over_or_underflow()?;
     let net_value = gain_value.saturating_sub(required_value);
 
@@ -193,31 +256,57 @@ pub fn compute_liquidation_profitability(
     })
 }
 
-pub fn cents_to_oracle_value_floor(
+pub fn cents_to_oracle_value_ceil(
     cents: i128,
     oracle_price_decimals: u32,
 ) -> Result<i128, LMError> {
+    if cents < 0 {
+        return Err(LMError::InternalError);
+    }
+
+    let multiplier = 10_i128
+        .checked_pow(oracle_price_decimals)
+        .map_over_or_underflow()?;
+
     cents
-        .checked_mul(10_i128.pow(oracle_price_decimals))
+        .checked_mul(multiplier)
+        .map_over_or_underflow()?
+        .checked_add(99)
         .map_over_or_underflow()?
         .checked_div(100)
         .map_over_or_underflow()
 }
 
-pub fn value_to_underlying_asset_amount_floor(
+pub fn value_to_underlying_asset_amount_ceil(
     value: i128,
     oracle_asset_price: i128,
     token_decimals: u32,
 ) -> Result<Underlying, LMError> {
+    if value.is_negative() {
+        error!(value, "negative value passed to underlying conversion");
+
+        return Err(LMError::InternalError);
+    }
+    if !oracle_asset_price.is_positive() {
+        error!(oracle_asset_price, "non-positive oracle asset price");
+
+        return Err(LMError::InternalError);
+    }
+
+    let multiplier = 10_i128
+        .checked_pow(token_decimals)
+        .map_over_or_underflow()?;
+    let numerator = value
+        .checked_mul(multiplier)
+        .map_over_or_underflow()?
+        .checked_add(oracle_asset_price - 1)
+        .map_over_or_underflow()?;
+    let denominator = oracle_asset_price;
+
     Ok(Underlying(
-        value
-            .checked_mul(10_i128.pow(token_decimals))
-            .map_over_or_underflow()?
-            .checked_div(oracle_asset_price)
-            .map_over_or_underflow()?,
+        numerator.checked_div(denominator).map_over_or_underflow()?,
     ))
 }
-
 // #[cfg(test)]
 // mod tests {
 //     use super::*;
