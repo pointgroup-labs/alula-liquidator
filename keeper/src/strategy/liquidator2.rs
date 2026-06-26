@@ -72,6 +72,12 @@ enum LiquidationType {
         /// `min_amount_out` passed to SwapExactTok
         min_swap_out: i128,
         swap_provider: String,
+        /// Underlying collateral that the seizure draws from jTokens (i.e. the
+        /// portion beyond the borrower's plain collateral). The contract credits
+        /// it as jTokens to the keeper's OWN obligation, so it must be withdrawn
+        /// to the wallet before the seized collateral can be swapped to repay the
+        /// flash loan. Zero when plain collateral covers the whole seizure.
+        withdraw_collateral_amount: i128,
     },
 }
 
@@ -516,8 +522,10 @@ impl Liquidator {
 
                 if best_liquidation_plan
                     .as_ref()
-                    // TODO: Fix to 'repay_amount' here
-                    .is_none_or(|b| plan.net_profit_value > b.net_profit_value)
+                    // Rank by liquidated debt: prefer the (borrow, deposit) pair
+                    // whose chosen type repays the most. Each per-pair candidate
+                    // was already selected for biggest repay across types.
+                    .is_none_or(|b| plan.repay_amount > b.repay_amount)
                 {
                     best_liquidation_plan = Some(plan);
                 }
@@ -631,13 +639,25 @@ impl Liquidator {
             return None;
         }
 
+        // The solvent-path repay cap needs the obligation-wide debt and
+        // collateral values to bound the seizure to an LTV-improving amount
+        // (mirrors the contract's `liquidate`). Computed once and reused.
+        let (obligation_debt_value, obligation_collateral_value) = (
+            liquidation::compute_obligation_debt_value(borrower_obligation, market_data).ok()?,
+            liquidation::compute_obligation_collateral_value(borrower_obligation, market_data)
+                .ok()?,
+        );
+
         // TODO: Account for LTV-improvement here
         let profitable_repay = profitability::compute_repay_cap_from_collateral(
-            max_feasible_repay,
-            position_collateral_sum,
+            !is_insolvent,
             borrow_pool,
+            max_feasible_repay,
             collateral_pool,
+            position_collateral_sum,
+            obligation_debt_value,
             profit_margin_borrow,
+            obligation_collateral_value,
         )?;
 
         let raw_borrow_balance = self
@@ -656,39 +676,70 @@ impl Liquidator {
             raw_borrow_balance
         };
 
-        assert!(usable_borrow >= profitable_repay);
+        // Each liquidation type draws on a different capital source, so each can
+        // afford a different slice of `profitable_repay` (the collateral- and
+        // margin-capped ceiling on profitable repay for this pair):
+        //   - Direct  → keeper wallet balance of the borrow token.
+        //   - Flash   → the borrow pool's available liquidity (protocol capital).
+        //   - PreSwap → other held assets swapped into the borrow token.
+        // Build every feasible candidate, then let the caller pick the one that
+        // liquidates the most debt (Task 1b).
+        let mut candidates: Vec<LiquidationPlan> = Vec::new();
 
-        self.try_direct_plan(
-            is_insolvent,
-            profitable_repay,
-            borrow_pool,
-            borrower_obligation,
-            market_data,
-            collateral_pool,
-            borrower_obligation_key,
-            deposit_position,
-        )
-        .await
+        let direct_repay = profitable_repay.min(usable_borrow);
+        if direct_repay.is_positive()
+            && let Some(plan) = self
+                .try_direct_plan(
+                    is_insolvent,
+                    direct_repay,
+                    borrow_pool,
+                    borrower_obligation,
+                    market_data,
+                    collateral_pool,
+                    borrower_obligation_key,
+                    deposit_position,
+                )
+                .await
+        {
+            candidates.push(plan);
+        }
 
-        // let plan = if usable_borrow >= profitable_repay {
-        // } else {
-        //     // self.try_flash_plan();
-        //     todo!()
-        // };
+        let flash_repay = profitable_repay.min(borrow_pool.total_available.0);
+        if flash_repay.is_positive()
+            && let Some(plan) = self
+                .try_flash_plan(
+                    is_insolvent,
+                    flash_repay,
+                    borrow_pool,
+                    borrower_obligation,
+                    market_data,
+                    collateral_pool,
+                    borrower_obligation_key,
+                    deposit_position,
+                )
+                .await
+        {
+            candidates.push(plan);
+        }
 
-        // self.try_preswap_plan(
-        //     is_insolvent,
-        //     profitable_repay,
-        //     borrow_pool,
-        //     borrower_obligation,
-        //     market_data,
-        //     collateral_pool,
-        //     borrower_obligation_key,
-        //     deposit_position,
-        // )
-        // .await
+        if let Some(plan) = self
+            .try_preswap_plan(
+                is_insolvent,
+                profitable_repay,
+                borrow_pool,
+                borrower_obligation,
+                market_data,
+                collateral_pool,
+                borrower_obligation_key,
+                deposit_position,
+            )
+            .await
+        {
+            candidates.push(plan);
+        }
 
-        // None
+        // Prefer the type that liquidates the most debt (biggest repay_amount).
+        candidates.into_iter().max_by_key(|plan| plan.repay_amount)
     }
 
     async fn try_direct_plan(
@@ -748,15 +799,15 @@ impl Liquidator {
             "DIRECT liquidation plan"
         );
 
-        return Some(LiquidationPlan {
-            repay_amount: 0,
+        Some(LiquidationPlan {
+            repay_amount,
             expected_seized_collateral,
             borrower_key: borrower_key.clone(),
             net_profit_value: profitability.net_value,
             liquidation_type: LiquidationType::Direct { repay_amount },
             borrow_pool_address: borrow_pool.pool_address.clone(),
             collateral_pool_address: collateral_pool.pool_address.clone(),
-        });
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -797,6 +848,15 @@ impl Liquidator {
             deposit_position,
         )?;
 
+        // The contract draws plain collateral first; any shortfall comes from
+        // jTokens, which it credits to the keeper's OWN obligation rather than
+        // the wallet (see `obligation.rs::liquidate`). That jToken-sourced
+        // underlying must be explicitly withdrawn before it can be swapped to
+        // repay the flash loan. Mirror the contract's
+        // `tokens_from_j_tokens_seized = max(0, seized - plain_collateral)`.
+        let withdraw_collateral_amount =
+            seized_amount.saturating_sub(deposit_position.collateral.0).max(0);
+
         let flash_repay_amount = repay_amount.saturating_add(flash_fee);
         let min_swap_out = flash_repay_amount;
 
@@ -817,20 +877,6 @@ impl Liquidator {
                     return None;
                 }
             };
-
-        if quoted_out < min_swap_out {
-            debug!(
-                quoted_out,
-                min_swap_out, seized_amount, "flash swap quote below min_swap_out threshold"
-            );
-            counter!(
-                "liquidator_skip_total",
-                "reason" => "flash_swap_shortfall"
-            )
-            .increment(1);
-
-            return None;
-        }
 
         if quoted_out < min_swap_out {
             debug!(
@@ -888,12 +934,13 @@ impl Liquidator {
         );
 
         Some(LiquidationPlan {
-            repay_amount: 0,
+            repay_amount,
             liquidation_type: LiquidationType::Flash {
                 flash_fee,
                 repay_amount,
                 min_swap_out,
                 swap_provider: best_provider,
+                withdraw_collateral_amount,
             },
             borrower_key: borrower_key.clone(),
             net_profit_value: profitability.net_value,
@@ -1023,25 +1070,30 @@ impl Liquidator {
                 "PRESWAP liquidation plan"
             );
 
-            if let Some(ref bp) = best_plan {
-                if bp.net_profit_value < profitability.net_value {
-                    best_plan = Some(LiquidationPlan {
-                        repay_amount: 0,
-                        liquidation_type: LiquidationType::PreSwap {
-                            repay_amount,
-                            swap_provider: best_provider,
-                            min_amount_out: repay_amount,
-                            source_amount_in: max_amount_in,
-                            source_asset: source_asset.clone(),
-                        },
-                        borrower_key: borrower_key.clone(),
-                        net_profit_value: profitability.net_value,
-                        expected_seized_collateral: expected_seized,
-                        borrow_pool_address: borrow_pool.pool_address.clone(),
-                        collateral_pool_address: collateral_pool.pool_address.clone(),
-                    })
-                }
-            };
+            // Keep the most profitable source asset for this pair. `is_none_or`
+            // also captures the first profitable candidate (the old `if let
+            // Some(..)` guard silently dropped it because `best_plan` starts as
+            // `None`).
+            if best_plan
+                .as_ref()
+                .is_none_or(|bp| bp.net_profit_value < profitability.net_value)
+            {
+                best_plan = Some(LiquidationPlan {
+                    repay_amount,
+                    liquidation_type: LiquidationType::PreSwap {
+                        repay_amount,
+                        swap_provider: best_provider,
+                        min_amount_out: repay_amount,
+                        source_amount_in: max_amount_in,
+                        source_asset: source_asset.clone(),
+                    },
+                    borrower_key: borrower_key.clone(),
+                    net_profit_value: profitability.net_value,
+                    expected_seized_collateral: expected_seized,
+                    borrow_pool_address: borrow_pool.pool_address.clone(),
+                    collateral_pool_address: collateral_pool.pool_address.clone(),
+                })
+            }
         }
 
         best_plan
@@ -1314,10 +1366,9 @@ impl Liquidator {
         match &plan.liquidation_type {
             LiquidationType::Flash {
                 repay_amount,
-                // collateral_token,
-                // seized_amount,
                 min_swap_out,
                 swap_provider,
+                withdraw_collateral_amount,
                 ..
             } => {
                 // 1. Flash-borrow the borrow asset.
@@ -1334,7 +1385,9 @@ impl Liquidator {
                 requests.push(flash_req);
 
                 // 2. Liquidate — pays repay_amount of borrow asset, receives
-                //    seized_amount of collateral underlying.
+                //    seized_amount of collateral. Only the plain-collateral
+                //    portion lands in the wallet; any jToken-sourced portion is
+                //    credited to the keeper's OWN obligation deposit position.
                 let liquidate_req = match self.gateway.liquidate_request(
                     &plan.borrower_key,
                     &plan.borrow_pool_address,
@@ -1350,26 +1403,46 @@ impl Liquidator {
                 };
                 requests.push(liquidate_req);
 
-                // 3. Swap seized collateral → borrow asset. The swap output
-                //    must be ≥ min_swap_out so the end-of-batch flash repayment
-                //    can be satisfied. If the swap delivers less, the whole
-                //    batch reverts atomically.
+                // 3. Withdraw the jToken-sourced collateral into the wallet.
+                //    Without this, only the plain-collateral portion is swappable
+                //    and the flash loan cannot be repaid. SwapExactTokens (step 4)
+                //    flushes pending transfers first, so this withdrawal settles
+                //    to the wallet before the swap pulls from it. Skipped when the
+                //    seizure is entirely plain collateral.
+                if *withdraw_collateral_amount > 0 {
+                    let withdraw_req = match self
+                        .gateway
+                        .withdraw_request(&plan.collateral_pool_address, *withdraw_collateral_amount)
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            error!(?e, "failed to build withdraw request (flash path)");
+                            return None;
+                        }
+                    };
+                    requests.push(withdraw_req);
+                }
 
-                // let borrow_token = self.find_token_for_pool(&plan.borrow_pool_address)?;
-                // let swap_path = [collateral_token.as_str(), borrow_token.as_str()];
-                // let swap_req = match self.gateway.swap_exact_tokens_request(
-                //     swap_provider,
-                //     *seized_amount,
-                //     *min_swap_out,
-                //     &swap_path,
-                // ) {
-                //     Ok(r) => r,
-                //     Err(e) => {
-                //         error!(?e, "failed to build swap_exact_tokens request (flash path)");
-                //         return None;
-                //     }
-                // };
-                // requests.push(swap_req);
+                // 4. Swap the full seized collateral → borrow asset. The swap
+                //    output must be ≥ min_swap_out so the end-of-batch flash
+                //    repayment can be satisfied. If the swap delivers less, the
+                //    whole batch reverts atomically.
+                let collateral_token = self.find_token_for_pool(&plan.collateral_pool_address)?;
+                let borrow_token = self.find_token_for_pool(&plan.borrow_pool_address)?;
+                let swap_path = [collateral_token.as_str(), borrow_token.as_str()];
+                let swap_req = match self.gateway.swap_exact_tokens_request(
+                    swap_provider,
+                    plan.expected_seized_collateral,
+                    *min_swap_out,
+                    &swap_path,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(?e, "failed to build swap_exact_tokens request (flash path)");
+                        return None;
+                    }
+                };
+                requests.push(swap_req);
 
                 // The flash repayment (repay_amount + fee) is automatic —
                 // RequestTransfers::execute_transfers handles it at end-of-batch.
@@ -1379,42 +1452,47 @@ impl Liquidator {
             LiquidationType::PreSwap {
                 source_asset,
                 source_amount_in,
-                // min_source_out,
+                min_amount_out,
                 swap_provider,
                 repay_amount,
                 ..
             } => {
-                // let borrow_token_address = self.find_token_for_pool(&plan.borrow_pool_address)?;
-                // let preswap_path = [source_asset.as_str(), borrow_token_address.as_str()];
+                // 1. Swap a held asset → borrow asset. SwapExactTokens flushes
+                //    pending transfers first, so the acquired borrow tokens land
+                //    in the wallet before Liquidate pulls from it. min_amount_out
+                //    guarantees enough output to fund the repay.
+                let borrow_token_address = self.find_token_for_pool(&plan.borrow_pool_address)?;
+                let preswap_path = [source_asset.as_str(), borrow_token_address.as_str()];
 
-                // let preswap_req = match self.gateway.swap_exact_tokens_request(
-                //     swap_provider,
-                //     *source_amount_in,
-                //     *min_source_out,
-                //     &preswap_path,
-                // ) {
-                //     Ok(r) => r,
-                //     Err(e) => {
-                //         error!(?e, "failed to build pre-swap request");
-                //         return None;
-                //     }
-                // };
-                // requests.push(preswap_req);
+                let preswap_req = match self.gateway.swap_exact_tokens_request(
+                    swap_provider,
+                    *source_amount_in,
+                    *min_amount_out,
+                    &preswap_path,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(?e, "failed to build pre-swap request");
+                        return None;
+                    }
+                };
+                requests.push(preswap_req);
 
-                // let liquidate_req = match self.gateway.liquidate_request(
-                //     &plan.borrower_key,
-                //     &plan.borrow_pool_address,
-                //     &plan.collateral_pool_address,
-                //     *repay_amount,
-                //     plan.expected_seized_collateral,
-                // ) {
-                //     Ok(r) => r,
-                //     Err(e) => {
-                //         error!(?e, "failed to build liquidate request");
-                //         return None;
-                //     }
-                // };
-                // requests.push(liquidate_req);
+                // 2. Liquidate, paying the just-acquired borrow asset.
+                let liquidate_req = match self.gateway.liquidate_request(
+                    &plan.borrower_key,
+                    &plan.borrow_pool_address,
+                    &plan.collateral_pool_address,
+                    *repay_amount,
+                    plan.expected_seized_collateral,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(?e, "failed to build liquidate request (preswap path)");
+                        return None;
+                    }
+                };
+                requests.push(liquidate_req);
             }
 
             LiquidationType::Direct { repay_amount } => {

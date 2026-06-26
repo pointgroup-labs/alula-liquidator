@@ -14,27 +14,53 @@ pub fn compute_flash_fee(
     amount.scale_with_bps_ceil(flash_loan_fee_bps)
 }
 
-/// Profit margin expressed in borrow-token units.
+/// Profit margin expressed in borrow-token units (signed).
 ///
 /// `min_profit_margin_cents` is converted to oracle value
 /// (`cents * 10^oracle_decimals / 100`) and then to borrow tokens
 /// (`value * 10^borrow_decimals / borrow_oracle_price`).
+///
+/// The margin is **signed**. A positive value is the usual profit cushion the
+/// repay cap subtracts. A negative value is a deliberate, bounded loss budget:
+/// an operator running the keeper for protocol safety may accept liquidations
+/// that lose money. Because `compute_repay_cap_from_collateral` *subtracts*
+/// this slack, a negative margin *widens* the repay cap (subtracting a
+/// negative adds magnitude), letting the keeper repay more than a strictly
+/// break-even amount.
+///
+/// The `_ceil` helpers only accept non-negative inputs, so the magnitude is
+/// computed on `|cents|` and the sign is restored afterwards. Returns
+/// `Underlying::ZERO` for a zero margin (no slack).
 pub fn compute_profit_margin_in_borrow_token(
     min_profit_margin_cents: i128,
     oracle_price_decimals: u32,
     borrow_pool: &PoolData,
 ) -> Result<Underlying, LMError> {
-    if !borrow_pool.oracle_asset_price.is_positive() || !min_profit_margin_cents.is_positive() {
+    if !borrow_pool.oracle_asset_price.is_positive() {
         return Err(LMError::InternalError);
     }
+    if min_profit_margin_cents == 0 {
+        return Ok(Underlying::ZERO);
+    }
 
-    let margin_value = cents_to_oracle_value_ceil(min_profit_margin_cents, oracle_price_decimals)?;
+    // `i128::MIN.abs()` overflows; reject it explicitly rather than panic.
+    let magnitude_cents = min_profit_margin_cents
+        .checked_abs()
+        .map_over_or_underflow()?;
 
-    value_to_underlying_asset_amount_ceil(
+    let margin_value = cents_to_oracle_value_ceil(magnitude_cents, oracle_price_decimals)?;
+
+    let magnitude = value_to_underlying_asset_amount_ceil(
         margin_value,
         borrow_pool.oracle_asset_price,
         borrow_pool.token_decimals,
-    )
+    )?;
+
+    if min_profit_margin_cents.is_negative() {
+        Ok(Underlying(magnitude.0.checked_neg().map_over_or_underflow()?))
+    } else {
+        Ok(magnitude)
+    }
 }
 
 pub fn compute_repay_cap_from_collateral(
