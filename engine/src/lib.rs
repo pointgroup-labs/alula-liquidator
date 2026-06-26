@@ -1,15 +1,9 @@
 //! `engine` — the deterministic core of the keeper.
 //!
-//! Two top-level modules with **no cross-imports**:
-//!
-//! * [`lending`] — the protocol model: pure, sync, fast-tested.
-//! * [`reactor`] — a generic event-driven runner; knows nothing about lending.
-//!
-//! Plus a third surface used by the binary crate to plug in I/O:
-//!
-//! * [`ports`] — trait surface that adapters in `keeper` implement and
-//!   strategies depend on. This is the architectural firewall.
+//! * [`lending_model`] — the lending protocol model: pure, sync.
+//! * [`reactor`] — a generic event-driven runner.
+//! * [`ports`] — trait surface implemented in `keeper`.
 
-pub mod lending;
+pub mod lending_model;
 pub mod ports;
 pub mod reactor;

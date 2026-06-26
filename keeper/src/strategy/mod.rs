@@ -3,14 +3,13 @@
 //! codec slots — Gateway is the only adapter and the generic-trait dance for
 //! three associated types per slot wasn't pulling its weight.
 
-mod bad_debt;
-pub mod capital;
+mod bad_debt_request_initiator;
+mod balancer;
 mod liquidator;
-mod rebalancer;
+mod liquidator2;
 mod withdrawer;
 
-pub use bad_debt::{BadDebtRequestInitiator, BadDebtRequestInitiatorConfig};
-pub use capital::CapitalLedger;
-pub use liquidator::{Liquidator, LiquidatorConfig};
-pub use rebalancer::{Rebalancer, RebalancerConfig};
+pub use bad_debt_request_initiator::{BadDebtRequestInitiator, BadDebtRequestInitiatorConfig};
+pub use balancer::{Balancer, BalancerConfig};
+pub use liquidator2::{Liquidator, LiquidatorConfig};
 pub use withdrawer::{Withdrawer, WithdrawerConfig};

@@ -22,5 +22,5 @@ pub trait Strategy<E, A>: Send + Sync {
 }
 
 pub trait Executor<A>: Send + Sync {
-    fn execute(&self, action: A) -> BoxFuture<'_, Result<()>>;
+    fn execute(&mut self, action: A) -> BoxFuture<'_, Result<()>>;
 }

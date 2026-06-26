@@ -13,10 +13,8 @@ use {
 /// Saved resume position for the Soroban event stream.
 #[derive(Debug, Clone)]
 pub struct EventCursor {
+    pub ledger: u32,
     pub cursor_id: String,
-    /// Ledger sequence the cursor refers to. Stored as an `i64` in sqlite,
-    /// surfaced as `u32` here to match the RPC's ledger-sequence type.
-    pub last_event_timestamp: u32,
 }
 
 pub struct CursorRepo {
@@ -37,22 +35,24 @@ impl CursorRepo {
                 [],
                 |row| {
                     Ok(EventCursor {
+                        ledger: row.get(1)?,
                         cursor_id: row.get(0)?,
-                        last_event_timestamp: row.get(1)?,
                     })
                 },
             )
             .optional()?;
+
         Ok(row)
     }
 
     /// Upsert the single-row cursor.
-    pub fn set(&self, cursor_id: &str, last_event_timestamp: u32) -> anyhow::Result<()> {
+    pub fn set(&self, cursor_id: &str, ledger: u32) -> anyhow::Result<()> {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT OR REPLACE INTO event_cursor (id, cursor_id, ledger) VALUES (1, ?1, ?2)",
-            params![cursor_id, last_event_timestamp],
+            params![cursor_id, ledger],
         )?;
+
         Ok(())
     }
 }

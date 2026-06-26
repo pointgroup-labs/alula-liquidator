@@ -1,10 +1,11 @@
-//! `OperationEvent` — a closed enum of decoded operation kinds emitted by the
+//! `OperationEvent` — an enum of decoded operation kinds emitted by the
 //! lending market. This is the domain-level vocabulary; the raw chain event
 //! shape stays in the adapter.
 
-use thiserror::Error;
+use {strum::AsRefStr, thiserror::Error};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(AsRefStr)]
 pub enum OperationEvent {
     Repay,
     Borrow,
@@ -26,6 +27,7 @@ impl TryFrom<&str> for OperationEvent {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         use OperationEvent::*;
+
         Ok(match s {
             "repay_event" => Repay,
             "borrow_event" => Borrow,

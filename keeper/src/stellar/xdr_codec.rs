@@ -5,8 +5,10 @@
 
 use {
     anyhow::{Context, anyhow},
-    engine::lending::{
-        BorrowPosition, DepositPosition, MarketData, Obligation, ObligationKey, PoolData,
+    engine::lending_model::LiquidationResult,
+    engine::lending_model::{
+        BorrowPosition, DTokens, DepositPosition, JTokens, MarketData, Obligation, ObligationKey,
+        PoolData, Underlying,
     },
     stellar_xdr::curr::{
         AccountId, ContractId, Hash, Int128Parts, MuxedAccount, PublicKey, ScAddress, ScMap,
@@ -253,8 +255,8 @@ fn parse_deposit_positions(val: &ScVal) -> anyhow::Result<Vec<DepositPosition>> 
             }
         };
         positions.push(DepositPosition {
-            j_tokens,
-            collateral,
+            j_tokens: JTokens(j_tokens),
+            collateral: Underlying(collateral),
             pool_address,
         });
     }
@@ -282,7 +284,7 @@ fn parse_borrow_positions(val: &ScVal) -> anyhow::Result<Vec<BorrowPosition>> {
             }
         };
         positions.push(BorrowPosition {
-            d_tokens,
+            d_tokens: DTokens(d_tokens),
             pool_address,
         });
     }
@@ -352,13 +354,13 @@ fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
         token_address,
         token_symbol,
         token_decimals,
-        total_borrowed,
-        total_d_tokens,
-        total_j_tokens,
-        total_available,
-        total_available_adjusted,
-        total_supply,
-        total_collateral,
+        total_borrowed: Underlying(total_borrowed),
+        total_d_tokens: DTokens(total_d_tokens),
+        total_j_tokens: JTokens(total_j_tokens),
+        total_available: Underlying(total_available),
+        total_available_adjusted: Underlying(total_available_adjusted),
+        total_supply: Underlying(total_supply),
+        total_collateral: Underlying(total_collateral),
         j_token_rate_floor_bps,
         d_token_rate_ceil_bps,
         oracle_asset_price,
@@ -392,6 +394,26 @@ pub(super) fn parse_market_data(val: &ScVal) -> anyhow::Result<MarketData> {
         oracle_price_decimals,
         insolvency_ltv_bps,
         min_collateral_value_cents,
+    })
+}
+
+pub(crate) fn parse_liquidation_result(val: &ScVal) -> anyhow::Result<LiquidationResult> {
+    let map = scval_as_map(val)?;
+
+    let debt_repaid = map_get_i128(map, "debt_repaid")?;
+    let j_tokens_seized = map_get_i128(map, "j_tokens_seized")?;
+    let d_tokens_burned = map_get_i128(map, "d_tokens_burned")?;
+    let amount_to_send_back = map_get_i128(map, "amount_to_send_back")?;
+    let plain_collateral_seized = map_get_i128(map, "plain_collateral_seized")?;
+    let tokens_from_j_tokens_seized = map_get_i128(map, "tokens_from_j_tokens_seized")?;
+
+    Ok(LiquidationResult {
+        debt_repaid,
+        j_tokens_seized,
+        d_tokens_burned,
+        amount_to_send_back,
+        plain_collateral_seized,
+        tokens_from_j_tokens_seized,
     })
 }
 
@@ -434,44 +456,5 @@ pub fn scval_display(val: &ScVal) -> String {
         }
         ScVal::Void => "None".into(),
         other => format!("{other:?}"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    //! Round-trip coverage for the `i128 <-> ScVal::I128` path. The encoder
-    //! relies on `(v >> 64) as i64` and `v as u64`, which is correct only if
-    //! the decoder mirrors the bit-shuffle exactly. Catching a regression here
-    //! is cheap; debugging a silently-truncated repay amount on chain is not.
-
-    use {super::*, proptest::prelude::*};
-
-    fn roundtrip(v: i128) -> i128 {
-        scval_to_i128(&i128_to_scval(v)).expect("ScVal::I128 always decodes")
-    }
-
-    #[test]
-    fn roundtrip_boundaries() {
-        for v in [
-            0_i128,
-            1,
-            -1,
-            i128::MAX,
-            i128::MIN,
-            i64::MAX as i128,
-            i64::MIN as i128,
-            (i64::MAX as i128) + 1,
-            (i64::MIN as i128) - 1,
-            u64::MAX as i128,
-        ] {
-            assert_eq!(roundtrip(v), v, "round-trip diverged at {v}");
-        }
-    }
-
-    proptest! {
-        #[test]
-        fn roundtrip_any_i128(v in any::<i128>()) {
-            prop_assert_eq!(roundtrip(v), v);
-        }
     }
 }

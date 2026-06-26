@@ -1,17 +1,12 @@
-//! SQLite-backed local state. Per-repo DTOs keep `rusqlite`/`serde` plumbing
-//! out of the engine's domain types; repos share one
-//! `Arc<parking_lot::Mutex<Connection>>`.
-
-pub mod cursor;
-pub mod obligations;
-
 use {
+    crate::storage::{cursor::CursorRepo, obligations::ObligationsRepo},
     parking_lot::Mutex,
     rusqlite::Connection,
     std::{path::Path, sync::Arc},
 };
 
-pub use {cursor::CursorRepo, obligations::ObligationsRepo};
+pub mod cursor;
+pub mod obligations;
 
 /// Shared handle to the keeper's local SQLite database.
 #[derive(Clone)]
@@ -26,6 +21,7 @@ impl SqliteStore {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(include_str!("schema.sql"))?;
+
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })

@@ -3,10 +3,9 @@ members = ["engine", "keeper"]
 resolver = "3"
 
 [workspace.package]
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
-rust-version = "1.87"
-authors = ["Poitgroup Team"]
+authors = ["Pointgroup Team"]
 repository = "https://github.com/pointgroup-labs/alula-liquidator"
 readme = "./README.md"
 license = "MIT"
@@ -47,6 +46,7 @@ hex = "0.4.3"
 # Storage / CLI / observability
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 clap = { version = "4.6.1", features = ["derive", "env"] }
+strum = { version = "0.26", features = ["derive"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 metrics = "0.24"

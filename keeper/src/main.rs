@@ -1,36 +1,44 @@
-//! Liquidator bot for Alula lending pools on Stellar/Soroban.
-
-mod collect;
-mod config;
-mod execute;
-mod metrics;
-mod stellar;
-mod storage;
-mod strategy;
+//! Liquidator bot for Alula lending pools on Soroban.
 
 use {
     crate::{
-        collect::{Event, block::BlockCollector, soroban_events::SorobanEventCollector},
+        collect::{
+            Event,
+            stellar_event::{EventFilter, SorobanEventCollector},
+            stellar_ledger::LedgerCollector,
+        },
         config::{Args, CliConfig},
         execute::{Action, stellar_tx::SorobanExecutor},
-        stellar::{Gateway, pubkey_to_strkey},
+        liquidator_capital::{LiquidatorCapital, LiquidatorCapitalConfig},
+        stellar::{client::Gateway, pubkey_to_strkey},
         storage::SqliteStore,
         strategy::{
-            BadDebtRequestInitiator, BadDebtRequestInitiatorConfig, CapitalLedger, Liquidator,
-            LiquidatorConfig, Rebalancer, RebalancerConfig, Withdrawer, WithdrawerConfig,
+            BadDebtRequestInitiator, BadDebtRequestInitiatorConfig, Balancer, BalancerConfig,
+            Liquidator, LiquidatorConfig, Withdrawer, WithdrawerConfig,
         },
     },
     ::metrics::gauge,
     clap::Parser,
     ed25519_dalek::SigningKey,
-    engine::{ports::ChainReader, reactor::Engine},
-    std::sync::Arc,
+    engine::{ports::LedgerReader, reactor::Engine},
+    std::{sync::Arc, time::Duration},
     stellar_rpc_client::EventType,
     stellar_strkey::ed25519::PrivateKey,
     tokio::signal,
     tracing::{error, info},
     tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt},
 };
+
+mod collect;
+mod config;
+mod constants;
+mod error;
+mod execute;
+mod liquidator_capital;
+mod metrics;
+mod stellar;
+mod storage;
+mod strategy;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -42,136 +50,125 @@ async fn main() -> anyhow::Result<()> {
         db_path,
         markets,
         xlm_address,
-        xlm_safety_margin,
-        network_passphrase,
-        assets_to_hold,
+        event_collector_start_ledger,
+        liquidator_capital_reservation_ttl_secs,
+        liquidator_capital_balance_ttl_secs,
         swap_providers,
-        min_profit_margin_cents,
-        min_withdraw_value_cents,
-        withdrawer_utilization_safety_margin_bps,
-        rebalancer_max_price_impact_bps,
-        rebalancer_slippage_bps,
-        rebalancer_interval_blocks,
-        rebalancer_min_swap_amount_value_cents,
-        rebalancer_max_fee_bps,
-        liquidator_gain_haircut_bps,
-        liquidator_inclusion_fee_oracle_units,
+        assets_to_hold,
         metrics_bind_addr,
+        xlm_safety_margin,
+
+        liquidator_max_allowed_swap_slippage_bps,
+
+        liquidator_inclusion_fee_oracle_units,
+
+        liquidator_max_retries,
+        liquidator_refresh_interval_blocks,
+
+        ledger_collector_polling_interval_secs,
+        network_passphrase,
+        // rebalancer_max_fee_bps,
+        // rebalancer_slippage_bps,
+        liquidator_min_profit_margin_cents,
+        // min_withdraw_value_cents,
+        // rebalancer_interval_blocks,
+        // ledger_polling_interval_secs,
+        // rebalancer_max_price_impact_bps,
+        // withdrawer_utilization_safety_margin_bps,
+        // rebalancer_min_swap_amount_value_cents,
+        default_simulation_fee,
+        bad_debt_request_initiator_max_retries,
+        bad_debt_request_initiator_refresh_interval_blocks,
+        ..
     } = CliConfig::load(&config)?;
+    assert_eq!(
+        markets.len(),
+        1,
+        "multiple markets aren't supported for now"
+    );
 
     let skey = SigningKey::from_bytes(&PrivateKey::from_string(&skey)?.0);
     let pkey = pubkey_to_strkey(&skey);
-    info!(%pkey, "keeper identity");
+
+    info!(%pkey, "starting keeper...");
 
     let store = SqliteStore::open(&db_path)?;
+    let metrics_handle = metrics::install_prometheus_recorder();
     let gateway = Arc::new(Gateway::new(&rpc_url, pkey.clone())?);
-    // Same Arc<Gateway> satisfies Arc<dyn ChainReader> for the read surface;
-    // the firewall stays intact at the trait level.
-    let chain: Arc<dyn ChainReader> = gateway.clone();
+    let ledger_reader: Arc<dyn LedgerReader> = gateway.clone();
 
-    let metrics_handle = metrics::install_prometheus_exporter();
-
-    // Surface the configured safety margin as a gauge so the dashboard can
-    // overlay it against the live XLM balance. Emitted once at startup —
-    // the value is immutable for the process lifetime.
     gauge!("liquidator_xlm_safety_margin_stroops").set(xlm_safety_margin as f64);
 
-    let mut engine: Engine<Event, Action> = Engine::new();
+    let liquidator_capital_config = LiquidatorCapitalConfig {
+        xlm_address: xlm_address.clone(),
+        balance_cache_ttl: Duration::from_secs(liquidator_capital_balance_ttl_secs),
+        reservation_ttl: Duration::from_secs(liquidator_capital_reservation_ttl_secs),
+    };
+    let liquidator_capital = Arc::new(LiquidatorCapital::new(&pkey, liquidator_capital_config));
 
-    // Single shared capital ledger across all balance-spending strategies so
-    // Liquidator and Rebalancer cannot double-commit the same wallet capacity.
-    // The executor releases reservations on every terminal tx outcome; the
-    // ledger TTL is only a safety ceiling for hooks lost to task panics.
-    let capital = Arc::new(CapitalLedger::new(xlm_address.clone()));
+    let mut engine = Engine::<Event, Action>::new();
 
-    let bad_debt = BadDebtRequestInitiator::new(
-        chain.clone(),
-        gateway.clone(),
+    let bad_debt_request_initiator = BadDebtRequestInitiator::new(
         skey.clone(),
-        pkey.clone(),
+        gateway.clone(),
+        store.obligations(),
+        Arc::clone(&ledger_reader),
         BadDebtRequestInitiatorConfig {
             markets: markets.clone(),
+            max_retries: bad_debt_request_initiator_max_retries,
+            refresh_interval_blocks: bad_debt_request_initiator_refresh_interval_blocks,
         },
-    );
-
-    let withdrawer = Withdrawer::new(
-        chain.clone(),
-        gateway.clone(),
-        skey.clone(),
-        pkey.clone(),
-        WithdrawerConfig {
-            markets: markets.clone(),
-            min_withdraw_value_cents,
-            utilization_safety_margin_bps: withdrawer_utilization_safety_margin_bps,
-        },
-    );
-
-    // Rebalancer is single-market by design; fan out per-market if needed later.
-    let rebalancer_market = markets
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("config.markets must not be empty"))?;
-    let rebalancer = Rebalancer::new(
-        chain.clone(),
-        gateway.clone(),
-        skey.clone(),
-        pkey.clone(),
-        RebalancerConfig {
-            market: rebalancer_market,
-            xlm_address: xlm_address.clone(),
-            xlm_safety_margin,
-            assets_to_hold: assets_to_hold.clone(),
-            swap_providers: swap_providers.clone(),
-            max_price_impact_bps: rebalancer_max_price_impact_bps,
-            max_slippage_bps: rebalancer_slippage_bps,
-            max_fee_bps: rebalancer_max_fee_bps,
-            refresh_interval_blocks: rebalancer_interval_blocks,
-            min_swap_amount_value_cents: rebalancer_min_swap_amount_value_cents,
-        },
-        capital.clone(),
     );
 
     let liquidator = Liquidator::new(
-        chain.clone(),
-        gateway.clone(),
-        skey.clone(),
         pkey.clone(),
+        skey.clone(),
+        gateway.clone(),
+        store.cursor(),
         LiquidatorConfig {
             markets: markets.clone(),
-            min_profit_margin_cents,
+            min_profit_margin_cents: liquidator_min_profit_margin_cents,
             assets_to_hold,
             swap_providers,
             xlm_address,
             xlm_safety_margin,
-            gain_haircut_bps: liquidator_gain_haircut_bps,
-            inclusion_fee_oracle_units: liquidator_inclusion_fee_oracle_units,
+            max_allowed_swap_slippage_bps: liquidator_max_allowed_swap_slippage_bps,
+            max_retries: liquidator_max_retries,
+            refresh_interval_blocks: liquidator_refresh_interval_blocks,
         },
         store.obligations(),
-        store.cursor(),
-        capital,
+        ledger_reader.clone(),
+        liquidator_capital,
     );
 
-    engine.add_strategy(Box::new(bad_debt));
-    engine.add_strategy(Box::new(withdrawer));
-    engine.add_strategy(Box::new(rebalancer));
+    engine.add_strategy(Box::new(bad_debt_request_initiator));
     engine.add_strategy(Box::new(liquidator));
 
     let cursor_repo = Arc::new(store.cursor());
-    engine.add_collector(Box::new(SorobanEventCollector::new(
+    engine.add_collector(Box::new(SorobanEventCollector::try_new(
         &rpc_url,
-        crate::collect::soroban_events::EventFilter {
-            event_type: EventType::Contract,
-            contract_ids: markets,
+        event_collector_start_ledger,
+        EventFilter {
             topics: vec![],
+            contract_ids: markets,
+            event_type: EventType::Contract,
         },
         cursor_repo,
     )?));
-    engine.add_collector(Box::new(BlockCollector::new(&rpc_url)));
+    engine.add_collector(Box::new(LedgerCollector::new(
+        &rpc_url,
+        ledger_collector_polling_interval_secs,
+    )));
 
-    engine.add_executor(Box::new(SorobanExecutor::new(gateway, network_passphrase)));
+    engine.add_executor(Box::new(SorobanExecutor::new(
+        &pkey,
+        gateway,
+        default_simulation_fee,
+        network_passphrase,
+    )));
 
     tokio::select! {
-        _ = run_engine(engine) => {}
+        _ = run_engine(engine) => {},
         res = metrics::serve(metrics_handle, metrics_bind_addr) => {
             if let Err(e) = res {
                 error!(?e, "metrics server stopped");
@@ -186,22 +183,19 @@ async fn main() -> anyhow::Result<()> {
 async fn run_engine(engine: Engine<Event, Action>) {
     match engine.run().await {
         Ok(mut set) => {
-            while let Some(res) = set.join_next().await {
-                info!(?res, "engine task finished");
+            if let Some(res) = set.join_next().await {
+                match res {
+                    Ok(_) => {
+                        error!("core engine task terminated unexpectedly. shutting down...");
+                    }
+                    Err(e) => {
+                        error!(?e, "engine task panicked");
+                    }
+                }
             }
         }
         Err(e) => error!(?e, "engine failed to start"),
     }
-}
-
-fn setup_tracing() {
-    let filter = EnvFilter::new("warn")
-        .add_directive("keeper=info".parse().unwrap())
-        .add_directive("engine=info".parse().unwrap());
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer())
-        .init();
 }
 
 async fn shutdown_future() {
@@ -221,4 +215,13 @@ async fn shutdown_future() {
         _ = ctrl_c => info!("Received Ctrl+C"),
         _ = terminate => info!("Received SIGTERM"),
     }
+}
+
+fn setup_tracing() {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("warn,keeper=info,engine=info"));
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 }

@@ -1,19 +1,19 @@
-//! `ChainReader` and `BatchSimulator` impls for `Gateway`.
+//! `LedgerReader` and `BatchSimulator` impls for `Gateway`.
 
 use {
     super::{
-        Gateway,
+        client::Gateway,
         errors::is_expected_liquidation_failure,
         xdr_codec::{
             address_to_scval, build_address_vec_scval, build_requests_vec_scval, i128_to_scval,
             obligation_key_to_scval, parse_market_data, parse_obligation, parse_obligation_keys,
-            scval_as_vec, scval_to_i128,
+            scval_to_i128,
         },
     },
-    anyhow::Context,
+    anyhow::{Context, anyhow},
     engine::{
-        lending::{MarketData, Obligation, ObligationKey},
-        ports::{BatchSimulator, ChainReader},
+        lending_model::{MarketData, Obligation, ObligationKey, PoolData},
+        ports::{BatchSimulator, LedgerReader},
         reactor::BoxFuture,
     },
     metrics::counter,
@@ -21,7 +21,7 @@ use {
     tracing::{debug, warn},
 };
 
-impl ChainReader for Gateway {
+impl LedgerReader for Gateway {
     fn read_market_data<'a>(
         &'a self,
         market_address: &'a str,
@@ -41,6 +41,23 @@ impl ChainReader for Gateway {
         })
     }
 
+    fn read_pool_data<'a>(
+        &'a self,
+        market_address: &'a str,
+        pool_address: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<PoolData>> {
+        Box::pin(async move {
+            // The contract exposes pool state through `get_market_data`; pull
+            // the full market view and select the requested pool.
+            let market_data = self.read_market_data(market_address).await?;
+            market_data
+                .pools_data
+                .into_iter()
+                .find(|p| p.pool_address == pool_address)
+                .ok_or_else(|| anyhow!("pool {pool_address} not found in market {market_address}"))
+        })
+    }
+
     fn read_user_obligation<'a>(
         &'a self,
         market_address: &'a str,
@@ -56,7 +73,7 @@ impl ChainReader for Gateway {
         })
     }
 
-    fn read_all_obligation_keys<'a>(
+    fn read_all_obligations_keys<'a>(
         &'a self,
         market_address: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<Vec<ObligationKey>>> {
@@ -83,12 +100,22 @@ impl ChainReader for Gateway {
         })
     }
 
-    fn quote_amount_out<'a>(
+    fn read_account_token_balance<'a>(
         &'a self,
-        provider: &'a str,
+        token_address: &'a str,
+        account: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<i128>> {
+        // Account and contract balances both resolve through the SEP-41
+        // `balance(account)` entrypoint.
+        self.read_token_balance(token_address, account)
+    }
+
+    fn get_amount_out<'a>(
+        &'a self,
         amount_in: i128,
         asset_in: &'a str,
         asset_out: &'a str,
+        swap_provider_address: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<i128>> {
         Box::pin(async move {
             // The provider's `get_amount_out(path, amount_in) -> i128` is
@@ -97,54 +124,33 @@ impl ChainReader for Gateway {
             let args = vec![path_scval, i128_to_scval(amount_in)];
 
             let result = self
-                .simulate_contract_call(provider, "get_amount_out", &args)
+                .simulate_contract_call(swap_provider_address, "get_amount_out", &args)
                 .await
                 .context("simulate swap_provider get_amount_out")?;
             scval_to_i128(&result).context("get_amount_out result is not an i128")
         })
     }
 
-    fn router_quote_out<'a>(
+    fn get_amount_in<'a>(
         &'a self,
-        router: &'a str,
-        amount_in: i128,
-        path: &'a [&'a str],
-    ) -> BoxFuture<'a, anyhow::Result<Vec<i128>>> {
-        Box::pin(async move {
-            let path_scval = build_address_vec_scval(path)?;
-            let args = vec![i128_to_scval(amount_in), path_scval];
-
-            let result = self
-                .simulate_contract_call(router, "router_get_amounts_out", &args)
-                .await
-                .context("simulate router_get_amounts_out")?;
-
-            let vec_vals = scval_as_vec(&result)?;
-            vec_vals.iter().map(scval_to_i128).collect()
-        })
-    }
-
-    fn router_quote_in<'a>(
-        &'a self,
-        router: &'a str,
         amount_out: i128,
-        path: &'a [&'a str],
-    ) -> BoxFuture<'a, anyhow::Result<Vec<i128>>> {
+        asset_in: &'a str,
+        asset_out: &'a str,
+        swap_provider_address: &'a str,
+    ) -> BoxFuture<'a, anyhow::Result<i128>> {
         Box::pin(async move {
-            let path_scval = build_address_vec_scval(path)?;
-            let args = vec![i128_to_scval(amount_out), path_scval];
+            let path_scval = build_address_vec_scval(&[asset_in, asset_out])?;
+            let args = vec![path_scval, i128_to_scval(amount_out)];
 
             let result = self
-                .simulate_contract_call(router, "router_get_amounts_in", &args)
+                .simulate_contract_call(swap_provider_address, "get_amount_in", &args)
                 .await
-                .context("simulate router_get_amounts_in")?;
-
-            let vec_vals = scval_as_vec(&result)?;
-            vec_vals.iter().map(scval_to_i128).collect()
+                .context("simulate swap_provider get_amount_in")?;
+            scval_to_i128(&result).context("get_amount_in result is not an i128")
         })
     }
 
-    fn simulate_liquidation<'a>(
+    fn get_is_obligation_liquidatable<'a>(
         &'a self,
         market: &'a str,
         liquidator_address: &'a str,
