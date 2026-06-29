@@ -510,6 +510,7 @@ impl Liquidator {
                     continue;
                 };
 
+                // TODO: Introduce repay_value and prioritize according to it
                 if best_liquidation_plan
                     .as_ref()
                     .is_none_or(|b| plan.net_profit_value > b.net_profit_value)
@@ -1270,6 +1271,7 @@ impl Liquidator {
 
         let (reserve_token, reserve_amount) = match &plan.liquidation_type {
             LiquidationType::Direct => {
+                // NB: Relying on token_address == pool_addresss
                 let borrow_token = plan.borrow_pool_address;
 
                 (borrow_token, plan.repay_amount)
@@ -1283,6 +1285,7 @@ impl Liquidator {
             // keeper's wallet is not at risk for the repay amount, so there is
             // nothing to reserve.
             LiquidationType::Flash { .. } => {
+                // NB: Relying on token_address == pool_addresss
                 let borrow_token = plan.borrow_pool_address;
 
                 (borrow_token, 0)
@@ -1449,7 +1452,7 @@ impl Liquidator {
                 //    output must be ≥ min_swap_out so the end-of-batch flash
                 //    repayment can be satisfied. If the swap delivers less, the
                 //    whole batch reverts atomically.
-                let collateral_token = &plan.collateral_pool_address;
+                let collateral_token = &plan.collateral_pool_address; // NB: Relying on pool_address == token-address
                 let borrow_token = &plan.borrow_pool_address;
                 let swap_path = [collateral_token.as_str(), borrow_token.as_str()];
                 let swap_req = match self.gateway.swap_exact_tokens_request(
