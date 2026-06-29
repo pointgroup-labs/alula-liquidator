@@ -31,7 +31,7 @@ pub struct BalancerConfig {
     pub xlm_safety_margin: i128,
     /// Max price impact of the swapped asset, compared to the oracle's asset price
     pub max_price_impact_bps: i128,
-    pub max_submission_retries: u32,
+    pub max_retries: u32,
     /// Allowed slippage applied to the swap after `price impact` checks
     pub allowed_swap_slippage_bps: i128,
     pub assets_to_hold: Vec<String>,
@@ -371,7 +371,7 @@ impl Balancer {
         Ok(Some(Action::SubmitTx(SubmitStellarTx {
             op,
             signing_key: self.skey.clone(),
-            max_submission_retries: self.config.max_submission_retries,
+            max_submission_retries: self.config.max_retries,
             on_settle: Some(SettleHook {
                 op_id,
                 liquidation_outcome: None,

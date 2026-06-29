@@ -38,14 +38,12 @@ pub struct CliConfig {
     pub assets_to_hold: Vec<String>,
     pub swap_providers: Vec<String>,
     pub liquidator_min_profit_margin_cents: i128,
-    pub liquidator_inclusion_fee_oracle_units: i128,
     pub liquidator_max_retries: u32,
+    pub balancer_max_retries: u32,
     pub liquidator_refresh_interval_blocks: u32,
     pub liquidator_max_allowed_swap_slippage_bps: i128,
-
-    pub min_withdraw_value_cents: i128,
-
-    pub ledger_polling_interval_secs: u64,
+    pub balancer_max_allowed_swap_slippage_bps: i128,
+    pub balancer_refresh_interval_blocks: u32,
 
     pub bad_debt_request_initiator_max_retries: u32,
     pub bad_debt_request_initiator_refresh_interval_blocks: u32,
@@ -53,11 +51,14 @@ pub struct CliConfig {
     pub event_collector_start_ledger: u32,
 
     pub withdrawer_utilization_safety_margin_bps: i128,
-    pub rebalancer_max_price_impact_bps: i128,
-    pub rebalancer_slippage_bps: i128,
-    pub rebalancer_interval_blocks: u32,
-    pub rebalancer_min_swap_amount_value_cents: i128,
-    pub rebalancer_max_fee_bps: i128,
+
+    pub withdrawer_max_retries: u32,
+    pub withdrawrer_refresh_interval_blocks: u32,
+    pub withdrawer_min_withdraw_value_cents: i128,
+
+    pub balancer_max_price_impact_bps: i128,
+    pub balancer_min_swap_amount_value_cents: i128,
+    pub balancer_max_swap_provider_probes: u32,
     /// Address the Prometheus `/metrics` endpoint binds to.
     pub metrics_bind_addr: SocketAddr,
 }

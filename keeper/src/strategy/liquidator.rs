@@ -741,7 +741,7 @@ impl Liquidator {
                 )
                 .await
         {
-            // candidates.push(plan);
+            candidates.push(plan);
         }
 
         // -- PRESWAP LIQUIDATION --
@@ -760,7 +760,7 @@ impl Liquidator {
             )
             .await
         {
-            // candidates.push(plan);
+            candidates.push(plan);
         }
 
         // Prefer the type that liquidates the most debt (biggest repay_amount).

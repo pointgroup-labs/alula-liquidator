@@ -46,40 +46,41 @@ async fn main() -> anyhow::Result<()> {
 
     let Args { config, skey } = Args::parse();
     let CliConfig {
+        // -- General --
         rpc_url,
         db_path,
         markets,
         xlm_address,
-        event_collector_start_ledger,
-        liquidator_capital_reservation_ttl_secs,
-        liquidator_capital_balance_ttl_secs,
         swap_providers,
         assets_to_hold,
         metrics_bind_addr,
         xlm_safety_margin,
-
-        liquidator_max_allowed_swap_slippage_bps,
-
-        liquidator_inclusion_fee_oracle_units,
-
-        liquidator_max_retries,
-        liquidator_refresh_interval_blocks,
-
-        ledger_collector_polling_interval_secs,
         network_passphrase,
-        // rebalancer_max_fee_bps,
-        // rebalancer_slippage_bps,
-        liquidator_min_profit_margin_cents,
-        // min_withdraw_value_cents,
-        // rebalancer_interval_blocks,
-        // ledger_polling_interval_secs,
-        // rebalancer_max_price_impact_bps,
-        // withdrawer_utilization_safety_margin_bps,
-        // rebalancer_min_swap_amount_value_cents,
         default_simulation_fee,
+        event_collector_start_ledger,
+        ledger_collector_polling_interval_secs,
+        // -- Bad Debt Request Initiator --
         bad_debt_request_initiator_max_retries,
         bad_debt_request_initiator_refresh_interval_blocks,
-        ..
+        // -- Withdrawer --
+        withdrawer_max_retries,
+        withdrawrer_refresh_interval_blocks,
+        withdrawer_min_withdraw_value_cents,
+        withdrawer_utilization_safety_margin_bps,
+        // -- Liquidator --
+        liquidator_max_retries,
+        liquidator_refresh_interval_blocks,
+        liquidator_capital_balance_ttl_secs,
+        liquidator_capital_reservation_ttl_secs,
+        liquidator_max_allowed_swap_slippage_bps,
+        liquidator_min_profit_margin_cents,
+        // -- Balancer --
+        balancer_max_retries,
+        balancer_max_price_impact_bps,
+        balancer_refresh_interval_blocks,
+        balancer_max_swap_provider_probes,
+        balancer_min_swap_amount_value_cents,
+        balancer_max_allowed_swap_slippage_bps,
     } = CliConfig::load(&config)?;
     assert_eq!(
         markets.len(),
@@ -128,21 +129,58 @@ async fn main() -> anyhow::Result<()> {
         LiquidatorConfig {
             markets: markets.clone(),
             min_profit_margin_cents: liquidator_min_profit_margin_cents,
-            assets_to_hold,
-            swap_providers,
-            xlm_address,
+            assets_to_hold: assets_to_hold.clone(),
+            swap_providers: swap_providers.clone(),
+            xlm_address: xlm_address.clone(),
             xlm_safety_margin,
             max_allowed_swap_slippage_bps: liquidator_max_allowed_swap_slippage_bps,
             max_retries: liquidator_max_retries,
             refresh_interval_blocks: liquidator_refresh_interval_blocks,
         },
         store.obligations(),
-        ledger_reader.clone(),
-        liquidator_capital,
+        Arc::clone(&ledger_reader),
+        Arc::clone(&liquidator_capital),
+    );
+
+    let withdrawer = Withdrawer::new(
+        pkey.clone(),
+        skey.clone(),
+        gateway.clone(),
+        WithdrawerConfig {
+            markets: markets.clone(),
+            max_retries: withdrawer_max_retries,
+            refresh_interval_blocks: withdrawrer_refresh_interval_blocks,
+            min_withdraw_value_cents: withdrawer_min_withdraw_value_cents,
+            utilization_safety_margin_bps: withdrawer_utilization_safety_margin_bps,
+        },
+        Arc::clone(&ledger_reader),
+    );
+
+    let balancer = Balancer::new(
+        pkey.clone(),
+        skey.clone(),
+        gateway.clone(),
+        BalancerConfig {
+            market: markets[0].clone(),
+            xlm_address: xlm_address.clone(),
+            xlm_safety_margin,
+            max_price_impact_bps: balancer_max_price_impact_bps,
+            max_retries: balancer_max_retries,
+            allowed_swap_slippage_bps: balancer_max_allowed_swap_slippage_bps,
+            assets_to_hold: assets_to_hold.clone(),
+            swap_providers: swap_providers.clone(),
+            refresh_interval_blocks: balancer_refresh_interval_blocks,
+            max_swap_provider_probes: balancer_max_swap_provider_probes,
+            min_swap_amount_value_cents: balancer_min_swap_amount_value_cents,
+        },
+        Arc::clone(&ledger_reader),
+        Arc::clone(&liquidator_capital),
     );
 
     engine.add_strategy(Box::new(bad_debt_request_initiator));
     engine.add_strategy(Box::new(liquidator));
+    engine.add_strategy(Box::new(withdrawer));
+    engine.add_strategy(Box::new(balancer));
 
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::try_new(
