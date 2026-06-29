@@ -57,7 +57,9 @@ pub fn compute_profit_margin_in_borrow_token(
     )?;
 
     if min_profit_margin_cents.is_negative() {
-        Ok(Underlying(magnitude.0.checked_neg().map_over_or_underflow()?))
+        Ok(Underlying(
+            magnitude.0.checked_neg().map_over_or_underflow()?,
+        ))
     } else {
         Ok(magnitude)
     }
@@ -253,11 +255,12 @@ pub fn compute_repay_cap_from_collateral3(
     if result > 0 { Some(result) } else { None }
 }
 
+#[derive(Debug)]
 pub struct LiquidationProfitability {
     pub net_value: i128,
     pub gain_value: i128,
-    pub is_profitable: bool,
-    pub required_value: i128,
+    pub is_acceptable: bool,
+    pub required_profitability: i128,
 }
 
 pub fn compute_liquidation_profitability(
@@ -269,18 +272,38 @@ pub fn compute_liquidation_profitability(
         return Err(LMError::InternalError);
     }
 
-    let required_value = cost_value
-        .checked_add(min_profit_margin_value)
-        .map_over_or_underflow()?;
-    let net_value = gain_value.saturating_sub(required_value);
+    let net_value = gain_value.saturating_sub(cost_value);
+    let required_profitability = net_value.saturating_add(min_profit_margin_value);
 
     Ok(LiquidationProfitability {
         net_value,
         gain_value,
-        required_value,
-        is_profitable: net_value > 0,
+        required_profitability,
+        is_acceptable: net_value > min_profit_margin_value,
     })
 }
+
+// pub fn compute_liquidation_profitability(
+//     gain_value: i128,
+//     cost_value: i128,
+//     min_profit_margin_value: i128,
+// ) -> Result<LiquidationProfitability, LMError> {
+//     if !gain_value.is_positive() || !cost_value.is_positive() {
+//         return Err(LMError::InternalError);
+//     }
+
+//     let required_value = cost_value
+//         .checked_add(min_profit_margin_value)
+//         .map_over_or_underflow()?;
+//     let net_value = gain_value.saturating_sub(required_value);
+
+//     Ok(LiquidationProfitability {
+//         net_value,
+//         gain_value,
+//         required_value,
+//         is_acceptable: net_value > 0,
+//     })
+// }
 
 pub fn cents_to_oracle_value_ceil(
     cents: i128,

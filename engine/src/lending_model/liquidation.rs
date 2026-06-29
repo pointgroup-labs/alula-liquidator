@@ -3,7 +3,6 @@
 use core::cmp::Ord;
 
 use crate::lending_model::{
-    DTokens, Underlying,
     amount::{BPS_FACTOR, bps_fixed_div_ceil},
     error::{LMError, MapArithmeticError},
     market::MarketData,
