@@ -272,7 +272,7 @@ impl Withdrawer {
             .withdraw_op(market, &self.liquidator_key, pool_address, amount)?;
         Ok(Action::SubmitTx(SubmitStellarTx {
             op,
-            on_settle: None, // TODO: What?
+            on_settle: None,
             signing_key: self.skey.clone(),
             max_submission_retries: self.config.max_retries,
         }))

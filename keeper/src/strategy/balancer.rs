@@ -31,7 +31,7 @@ pub struct BalancerConfig {
     pub xlm_safety_margin: i128,
     /// Max price impact of the swapped asset, compared to the oracle's asset price
     pub max_price_impact_bps: i128,
-    pub max_submission_retries: u32,
+    pub max_retries: u32,
     /// Allowed slippage applied to the swap after `price impact` checks
     pub allowed_swap_slippage_bps: i128,
     pub assets_to_hold: Vec<String>,
@@ -97,7 +97,11 @@ impl Balancer {
     }
 
     async fn handle_new_ledger(&mut self, ledger: NewLedger) -> Vec<Action> {
-        if ledger.seq_num % self.config.refresh_interval_blocks != 0 || !self.is_swap_reasonable() {
+        if !ledger
+            .seq_num
+            .is_multiple_of(self.config.refresh_interval_blocks)
+            || !self.is_swap_reasonable()
+        {
             return vec![];
         }
 
@@ -371,7 +375,7 @@ impl Balancer {
         Ok(Some(Action::SubmitTx(SubmitStellarTx {
             op,
             signing_key: self.skey.clone(),
-            max_submission_retries: self.config.max_submission_retries,
+            max_submission_retries: self.config.max_retries,
             on_settle: Some(SettleHook {
                 op_id,
                 liquidation_outcome: None,
@@ -398,7 +402,7 @@ impl Balancer {
 
             let price_impact = compute_swap_price_impact_bps(oracle_price, amount_in, amount_out);
             if price_impact > self.config.max_price_impact_bps {
-                amount_in = amount_in / 2;
+                amount_in /= 2;
 
                 continue;
             } else {
@@ -456,9 +460,8 @@ fn compute_swap_price_impact_bps(oracle_price: i128, amount_in: i128, amount_out
 
     // 4. Convert the difference into BPS relative to the oracle price
     // Multiply by 10_000 before dividing to maintain precision.
-    let impact_bps = (price_diff * 10_000) / oracle_price;
 
-    impact_bps
+    (price_diff * 10_000) / oracle_price
 }
 
 fn compute_value_cents(token_amount: i128, info: &AssetInfo) -> i128 {

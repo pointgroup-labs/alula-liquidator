@@ -49,7 +49,7 @@ fn parse_liquidation_result_from_liquidation_event_value_inner(
         Some(ScVal::Vec(None)) => Ok(None),
         Some(inner) => {
             let liquidation_result = parse_liquidation_result(inner)
-                .with_context(|| format!("parse liquidation_result"))?;
+                .with_context(|| "parse liquidation_result".to_string())?;
 
             Ok(Some(liquidation_result))
         }

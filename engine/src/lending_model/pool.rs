@@ -1,6 +1,7 @@
 //! Pool data with j-token / d-token / underlying conversion math.
 
 use crate::lending_model::{
+    BPS_FACTOR,
     amount::{DTokens, JTokens, Underlying},
     error::{LMError, MapArithmeticError},
 };
@@ -37,6 +38,23 @@ impl PoolData {
         } else {
             self.total_borrowed.bps_fixed_div_floor(self.total_supply.0)
         }
+    }
+
+    pub fn available_for_borrow(&self) -> Result<Underlying, LMError> {
+        let utilization_ratio_bps = self.utilization_ratio_bps()?;
+
+        if utilization_ratio_bps >= self.utilization_ratio_limit_bps {
+            return Ok(Underlying::ZERO);
+        }
+        let utilization_ratio_left_bps = self.utilization_ratio_limit_bps - utilization_ratio_bps; // safe
+
+        let res = self
+            .total_supply
+            .0
+            .saturating_mul(utilization_ratio_left_bps)
+            .saturating_div(BPS_FACTOR);
+
+        Ok(Underlying(res))
     }
 
     pub fn j_tokens_to_tokens_floor(&self, j_tokens: JTokens) -> Result<Underlying, LMError> {
@@ -394,7 +412,10 @@ mod tests {
         let safe = pool.utilization_ratio_limit_bps - margin;
 
         let w = pool.compute_max_safe_withdrawal(margin)?;
-        assert!(w.0 > 0, "20% utilization must allow a withdrawal, got {w:?}");
+        assert!(
+            w.0 > 0,
+            "20% utilization must allow a withdrawal, got {w:?}"
+        );
         assert!(w.0 < pool.total_supply.0);
 
         // Post-withdrawal utilization — recomputed with the contract's ceil
@@ -406,7 +427,10 @@ mod tests {
         // …and withdrawing a single extra token would breach it (the cap is
         // tight, not just safe).
         let util_breach = bps_fixed_div_ceil(pool.total_borrowed.0, supply_after - 1).unwrap();
-        assert!(util_breach > safe, "cap is not tight: {util_breach} <= {safe}");
+        assert!(
+            util_breach > safe,
+            "cap is not tight: {util_breach} <= {safe}"
+        );
 
         Ok(())
     }
