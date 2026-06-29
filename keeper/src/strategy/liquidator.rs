@@ -96,6 +96,7 @@ pub struct Liquidator {
 }
 
 impl Liquidator {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pkey: String,
         skey: SigningKey,
@@ -549,6 +550,7 @@ impl Liquidator {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn build_liquidation_plan_for_asset_pool_pair(
         &self,
         is_insolvent: bool,
@@ -767,6 +769,7 @@ impl Liquidator {
         candidates.into_iter().max_by_key(|plan| plan.repay_amount)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn try_direct_plan(
         &self,
         is_insolvent: bool,
@@ -968,6 +971,7 @@ impl Liquidator {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn try_preswap_plan(
         &self,
         is_insolvent: bool,
@@ -1188,6 +1192,7 @@ impl Liquidator {
         best
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn compute_seized(
         &self,
         repay_amount: i128,
@@ -1340,7 +1345,7 @@ impl Liquidator {
                 // poll; those outcomes are tracked separately by the executor's
                 // own counters.
                 let liq_type_label = match &plan.liquidation_type {
-                    LiquidationType::Direct { .. } => "direct",
+                    LiquidationType::Direct => "direct",
                     LiquidationType::PreSwap { .. } => "preswap",
                     LiquidationType::Flash { .. } => "flash",
                 };
@@ -1448,7 +1453,7 @@ impl Liquidator {
                 let borrow_token = &plan.borrow_pool_address;
                 let swap_path = [collateral_token.as_str(), borrow_token.as_str()];
                 let swap_req = match self.gateway.swap_exact_tokens_request(
-                    &swap_provider,
+                    swap_provider,
                     plan.expected_seized_collateral,
                     *flash_repay_amount,
                     &swap_path,

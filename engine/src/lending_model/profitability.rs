@@ -65,6 +65,7 @@ pub fn compute_profit_margin_in_borrow_token(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn compute_repay_cap_from_collateral(
     is_solvent: bool,
     borrow_pool: &PoolData,
@@ -102,7 +103,7 @@ pub fn compute_repay_cap_from_collateral(
         pool_incentive_bps
     };
 
-    let incentive_bps_factor = BPS_FACTOR.checked_add(effective_incentive_bps as i128)?;
+    let incentive_bps_factor = BPS_FACTOR.checked_add(effective_incentive_bps)?;
     if incentive_bps_factor <= 0 {
         return None;
     }
