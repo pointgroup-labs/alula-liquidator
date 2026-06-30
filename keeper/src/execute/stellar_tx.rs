@@ -34,13 +34,13 @@ pub struct LiquidationOutcomeMetric {
 }
 
 #[derive(Debug, Clone)]
-pub struct SettleHook {
+pub struct TransactionSettleHook {
     pub op_id: u64,
     pub liquidator_capital: Arc<LiquidatorCapital>,
     pub liquidation_outcome: Option<LiquidationOutcomeMetric>,
 }
 
-impl SettleHook {
+impl TransactionSettleHook {
     pub fn release(&self) {
         self.liquidator_capital.release(self.op_id);
     }
@@ -51,7 +51,7 @@ pub struct SubmitStellarTx {
     pub op: Operation,
     pub signing_key: SigningKey,
     pub max_submission_retries: u32,
-    pub on_settle: Option<SettleHook>,
+    pub on_settle: Option<TransactionSettleHook>,
 }
 
 /// Submits transactions to the Stellar network using the shared
@@ -93,121 +93,130 @@ impl Executor<Action> for SorobanExecutor {
         Box::pin(async move {
             match action {
                 Action::SubmitTx(tx) => {
-                    let on_settle = tx.on_settle.clone();
                     let max_retries = tx.max_submission_retries;
-                    let default_simulation_fee = self.default_simulation_fee;
-
+                    let default_fee = self.default_simulation_fee;
                     let source_strkey = stellar_strkey::ed25519::PublicKey(
                         tx.signing_key.verifying_key().to_bytes(),
                     );
 
-                    for attempt in 0..max_retries {
-                        let seq_num_to_use = match self.fetch_seq_num(&self.gateway.rpc).await {
-                            Ok(n) => n,
-                            Err(e) => {
-                                warn!(%e, attempt, "failed to fetch sequence number");
-                                if attempt >= max_retries {
-                                    counter!(
-                                        "keeper_tx_submitted_total",
-                                        "outcome" => "seq_fetch_failed",
-                                    )
-                                    .increment(1);
-                                    if let Some(hook) = &on_settle {
-                                        hook.release();
-                                    }
-
-                                    return Err(e);
-                                }
-
-                                let backoff = Duration::from_millis(
-                                    BACKOFF_STEP_MILLIS * (attempt as u64 + 1),
-                                );
-                                tokio::time::sleep(backoff).await;
-
-                                continue;
-                            }
-                        };
-
-                        match build_and_send(
-                            &self.gateway.rpc,
-                            seq_num_to_use,
-                            &self.network_passphrase,
-                            &tx,
-                            default_simulation_fee,
-                            &source_strkey,
-                        )
-                        .await
-                        {
-                            Ok(hash_hex) => {
-                                info!(hash = %hash_hex, "tx submitted; polling in background");
-                                counter!(
-                                    "keeper_tx_submitted_total",
-                                    "outcome" => "ok",
-                                )
-                                .increment(1);
-                                spawn_confirmation_poll(
-                                    Arc::clone(&self.gateway),
-                                    hash_hex,
-                                    on_settle,
-                                );
-                                return Ok(());
-                            }
-                            Err(e) => {
-                                // Non-retryable: simulation itself produced no results.
-                                if is_no_simulation_results_error(&e) {
-                                    warn!(%e, "simulation returned no results; giving up");
-
-                                    counter!(
-                                        "keeper_tx_submitted_total",
-                                        "outcome" => "sim_empty",
-                                    )
-                                    .increment(1);
-
-                                    if let Some(hook) = &on_settle {
-                                        hook.release();
-                                    }
-
-                                    return Ok(());
-                                }
-                                // bad_seq → resync local cursor; the next
-                                // attempt will refetch from RPC and likely succeed.
-                                if is_bad_seq_error(&e) {
-                                    warn!(%e, attempt, "tx_bad_seq; resyncing seq cursor");
-                                    counter!("keeper_tx_bad_seq_retries_total").increment(1);
-                                }
-                                if attempt >= max_retries {
-                                    error!(%e, attempt, "tx failed after all retries");
-                                    counter!(
-                                        "keeper_tx_submitted_total",
-                                        "outcome" => "retry_exhausted",
-                                    )
-                                    .increment(1);
-
-                                    if let Some(hook) = &on_settle {
-                                        hook.release();
-                                    }
-
-                                    return Err(e);
-                                }
-
-                                let backoff = Duration::from_millis(
-                                    BACKOFF_STEP_MILLIS * (attempt as u64 + 1),
-                                );
-                                warn!(%e, attempt, ?backoff, "tx attempt failed, retrying");
-
-                                tokio::time::sleep(backoff).await;
-                            }
-                        }
+                    enum Outcome<E> {
+                        SimEmpty,
+                        Success(String),
+                        SeqFetchFailed(E),
+                        RetryExhausted(E),
                     }
 
-                    Ok(())
+                    let outcome = async {
+                        let mut attempt = 1;
+
+                        loop {
+                            let is_last = attempt >= max_retries;
+
+                            let seq_num = match self.fetch_seq_num(&self.gateway.rpc).await {
+                                Ok(n) => n,
+                                Err(e) => {
+                                    // Logs the correct attempt number (e.g., 1 on the first try)
+                                    warn!(%e, attempt, "failed to fetch sequence number");
+
+                                    if is_last {
+                                        return Outcome::SeqFetchFailed(e);
+                                    }
+
+                                    tokio::time::sleep(Duration::from_millis(
+                                        BACKOFF_STEP_MILLIS * (attempt as u64 + 1),
+                                    ))
+                                    .await;
+
+                                    attempt += 1;
+
+                                    continue;
+                                }
+                            };
+
+                            match build_and_send(
+                                &self.gateway.rpc,
+                                seq_num,
+                                &self.network_passphrase,
+                                &tx,
+                                default_fee,
+                                &source_strkey,
+                            )
+                            .await
+                            {
+                                Ok(hash_hex) => return Outcome::Success(hash_hex),
+                                Err(e) => {
+                                    if is_no_simulation_results_error(&e) {
+                                        warn!(%e, "simulation returned no results; giving up");
+                                        return Outcome::SimEmpty;
+                                    }
+
+                                    if is_bad_seq_error(&e) {
+                                        warn!(%e, attempt, "tx_bad_seq");
+                                        counter!("keeper_tx_bad_seq_retries_total").increment(1);
+                                    }
+
+                                    if is_last {
+                                        error!(%e, attempt, "tx failed after all retries");
+
+                                        return Outcome::RetryExhausted(e);
+                                    }
+
+                                    let backoff = Duration::from_millis(
+                                        BACKOFF_STEP_MILLIS * (attempt as u64 + 1),
+                                    );
+
+                                    warn!(%e, attempt, ?backoff, "tx attempt failed");
+                                    tokio::time::sleep(backoff).await;
+                                }
+                            }
+
+                            attempt += 1;
+                        }
+                    }
+                    .await;
+
+                    match outcome {
+                        Outcome::Success(hash_hex) => {
+                            info!(hash = %hash_hex, "tx submitted; polling in background");
+                            counter!("keeper_tx_submitted_total", "outcome" => "ok").increment(1);
+
+                            spawn_confirmation_poll(
+                                Arc::clone(&self.gateway),
+                                hash_hex,
+                                tx.on_settle,
+                            );
+
+                            Ok(())
+                        }
+                        other => {
+                            let (outcome_label, res) = match other {
+                                Outcome::SimEmpty => ("sim_empty", Ok(())),
+                                Outcome::SeqFetchFailed(e) => ("seq_fetch_failed", Err(e)),
+                                Outcome::RetryExhausted(e) => ("retry_exhausted", Err(e)),
+                                Outcome::Success(_) => unreachable!(),
+                            };
+
+                            counter!("keeper_tx_submitted_total", "outcome" => outcome_label)
+                                .increment(1);
+
+                            if let Some(hook) = &tx.on_settle {
+                                hook.release();
+                            }
+
+                            res
+                        }
+                    }
                 }
             }
         })
     }
 }
 
-fn spawn_confirmation_poll(gateway: Arc<Gateway>, hash_hex: String, on_settle: Option<SettleHook>) {
+fn spawn_confirmation_poll(
+    gateway: Arc<Gateway>,
+    hash_hex: String,
+    on_settle: Option<TransactionSettleHook>,
+) {
     tokio::spawn(async move {
         let hash_bytes = match hex::decode(&hash_hex) {
             Ok(b) if b.len() == 32 => {

@@ -58,6 +58,8 @@ async fn main() -> anyhow::Result<()> {
         network_passphrase,
         default_simulation_fee,
         event_collector_start_ledger,
+        keeper_capital_balance_ttl_secs,
+        keeper_capital_reservation_ttl_secs,
         ledger_collector_polling_interval_secs,
         // -- Bad Debt Request Initiator --
         bad_debt_request_initiator_max_retries,
@@ -70,8 +72,6 @@ async fn main() -> anyhow::Result<()> {
         // -- Liquidator --
         liquidator_max_retries,
         liquidator_refresh_interval_blocks,
-        liquidator_capital_balance_ttl_secs,
-        liquidator_capital_reservation_ttl_secs,
         liquidator_max_allowed_swap_slippage_bps,
         liquidator_min_profit_margin_cents,
         // -- Balancer --
@@ -82,12 +82,6 @@ async fn main() -> anyhow::Result<()> {
         balancer_min_swap_amount_value_cents,
         balancer_max_allowed_swap_slippage_bps,
     } = CliConfig::load(&config)?;
-    assert_eq!(
-        markets.len(),
-        1,
-        "multiple markets aren't supported for now"
-    );
-
     let skey = SigningKey::from_bytes(&PrivateKey::from_string(&skey)?.0);
     let pkey = pubkey_to_strkey(&skey);
 
@@ -102,8 +96,8 @@ async fn main() -> anyhow::Result<()> {
 
     let liquidator_capital_config = LiquidatorCapitalConfig {
         xlm_address: xlm_address.clone(),
-        balance_cache_ttl: Duration::from_secs(liquidator_capital_balance_ttl_secs),
-        reservation_ttl: Duration::from_secs(liquidator_capital_reservation_ttl_secs),
+        balance_cache_ttl: Duration::from_secs(keeper_capital_balance_ttl_secs),
+        reservation_ttl: Duration::from_secs(keeper_capital_reservation_ttl_secs),
     };
     let liquidator_capital = Arc::new(LiquidatorCapital::new(&pkey, liquidator_capital_config));
 

@@ -50,6 +50,7 @@ axum = "0.8"
 metrics = { workspace = true }
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 parking_lot = { workspace = true }
+validator = { version = "0.20.0", features = ["derive"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

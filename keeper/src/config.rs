@@ -5,6 +5,7 @@ use {
     serde::Deserialize,
     std::{fs::File, net::SocketAddr, path::Path, path::PathBuf},
     url::Url,
+    validator::{Validate, ValidationError},
 };
 
 #[derive(Parser, Debug)]
@@ -18,48 +19,155 @@ pub struct Args {
     pub config: PathBuf,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Validate)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct CliConfig {
+    // -------------------------------------------------------------------------
+    // General
+    // -------------------------------------------------------------------------
     pub rpc_url: Url,
+
     pub db_path: PathBuf,
+
+    #[validate(length(min = 1, message = "At least one market must be specified"))]
+    #[validate(custom(function = "validate_stellar_addresses"))]
     pub markets: Vec<String>,
+
+    #[validate(length(equal = 56, message = "XLM address must be exactly 56 characters"))]
     pub xlm_address: String,
+
+    #[validate(range(min = 1, message = "XLM safety margin must be positive"))]
     pub xlm_safety_margin: i128,
+
+    #[validate(range(
+        min = 100,
+        message = "Simulation fee must be reasonable (e.g. >= 100 stroops)"
+    ))]
     pub default_simulation_fee: u32,
+
+    #[validate(length(min = 1, message = "Network passphrase cannot be empty"))]
     pub network_passphrase: String,
+
+    #[validate(length(min = 1, message = "At least one asset to hold must be specified"))]
+    #[validate(custom(function = "validate_stellar_addresses"))]
     pub assets_to_hold: Vec<String>,
+
+    #[validate(length(min = 1, message = "At least one swap provider must be specified"))]
+    #[validate(custom(function = "validate_stellar_addresses"))]
     pub swap_providers: Vec<String>,
+
     pub metrics_bind_addr: SocketAddr,
     pub event_collector_start_ledger: u32,
+
+    #[validate(range(min = 1, max = 10))]
+    pub keeper_capital_balance_ttl_secs: u64,
+
+    #[validate(range(min = 1, max = 30))]
+    pub keeper_capital_reservation_ttl_secs: u64,
+
+    #[validate(range(
+        min = 1,
+        message = "Ledger collector's polling interval must be at least 1 second"
+    ))]
     pub ledger_collector_polling_interval_secs: u64,
 
+    // -------------------------------------------------------------------------
+    // Bad Debt Request Initiator
+    // -------------------------------------------------------------------------
+    #[validate(range(min = 1, max = 50))]
     pub bad_debt_request_initiator_max_retries: u32,
+
+    #[validate(range(min = 1))]
     pub bad_debt_request_initiator_refresh_interval_blocks: u32,
 
+    // -------------------------------------------------------------------------
+    // Withdrawer
+    // -------------------------------------------------------------------------
+    #[validate(range(min = 1, max = 50))]
     pub withdrawer_max_retries: u32,
+
+    #[validate(range(min = 1))]
     pub withdrawrer_refresh_interval_blocks: u32,
+
+    #[validate(range(min = 0))]
     pub withdrawer_min_withdraw_value_cents: i128,
+
+    #[validate(range(min = 0, max = 10000))]
     pub withdrawer_utilization_safety_margin_bps: i128,
 
+    // -------------------------------------------------------------------------
+    // Liquidator
+    // -------------------------------------------------------------------------
+    #[validate(range(min = 1, max = 50))]
     pub liquidator_max_retries: u32,
+
+    #[validate(range(min = 1))]
     pub liquidator_refresh_interval_blocks: u32,
+
+    // Negative assumes the liquidator is run by the entity prioritizing the protocol safety over
+    // profitability(like Alula team)
+    #[validate(range(min = -10_00))]
     pub liquidator_min_profit_margin_cents: i128,
-    pub liquidator_capital_balance_ttl_secs: u64,
-    pub liquidator_capital_reservation_ttl_secs: u64,
+
+    #[validate(range(
+        min = 0,
+        max = 10000,
+        message = "Slippage BPS must be between 0 and 10000"
+    ))]
     pub liquidator_max_allowed_swap_slippage_bps: i128,
 
+    // -------------------------------------------------------------------------
+    // Balancer
+    // -------------------------------------------------------------------------
+    #[validate(range(min = 1, max = 50))]
     pub balancer_max_retries: u32,
+
+    #[validate(range(min = 1))]
     pub balancer_refresh_interval_blocks: u32,
+
+    #[validate(range(
+        min = 0,
+        max = 10000,
+        message = "Slippage BPS must be between 0 and 10000"
+    ))]
     pub balancer_max_allowed_swap_slippage_bps: i128,
 
+    #[validate(range(
+        min = 0,
+        max = 10000,
+        message = "Price impact BPS must be between 0 and 10000"
+    ))]
     pub balancer_max_price_impact_bps: i128,
+
+    #[validate(range(min = 1))]
     pub balancer_max_swap_provider_probes: u32,
+
+    #[validate(range(min = 0))]
     pub balancer_min_swap_amount_value_cents: i128,
+}
+
+fn validate_stellar_address(addr: &str) -> Result<(), ValidationError> {
+    if addr.len() != 56 || (!addr.starts_with('C') && !addr.starts_with('G')) {
+        return Err(ValidationError::new("invalid_stellar_address"));
+    }
+
+    Ok(())
+}
+
+fn validate_stellar_addresses(addresses: &[String]) -> Result<(), ValidationError> {
+    for addr in addresses {
+        validate_stellar_address(addr)?;
+    }
+
+    Ok(())
 }
 
 impl CliConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        Ok(serde_json::from_reader(File::open(path)?)?)
+        let config: Self = serde_json::from_reader(File::open(path)?)?;
+        config.validate()?;
+
+        Ok(config)
     }
 }

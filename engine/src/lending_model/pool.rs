@@ -77,9 +77,7 @@ impl PoolData {
 
         let denominator = self.total_j_tokens.0;
         let numerator = j_tokens.checked_mul(self.total_supply.0)?;
-        let numerator_adjusted = numerator
-            .checked_add(denominator - 1)
-            .map_over_or_underflow()?;
+        let numerator_adjusted = numerator.checked_add(denominator - 1).m_ou()?;
 
         let res = numerator_adjusted / denominator;
 
@@ -108,9 +106,7 @@ impl PoolData {
 
         let denominator = self.total_supply.0;
         let numerator = tokens.checked_mul(self.total_j_tokens.0)?;
-        let numerator_adjusted = numerator
-            .checked_add(denominator - 1)
-            .map_over_or_underflow()?;
+        let numerator_adjusted = numerator.checked_add(denominator - 1).m_ou()?;
 
         let res = numerator_adjusted / denominator;
 
@@ -137,9 +133,7 @@ impl PoolData {
 
         let denominator = self.total_d_tokens.0;
         let numerator = d_tokens.checked_mul(self.total_borrowed.0)?;
-        let numerator_adjusted = numerator
-            .checked_add(denominator - 1)
-            .map_over_or_underflow()?;
+        let numerator_adjusted = numerator.checked_add(denominator - 1).m_ou()?;
 
         let res = numerator_adjusted / denominator;
 
@@ -168,9 +162,7 @@ impl PoolData {
 
         let denominator = self.total_borrowed.0;
         let numerator = tokens.checked_mul(self.total_d_tokens.0)?;
-        let numerator_adjusted = numerator
-            .checked_add(denominator - 1)
-            .map_over_or_underflow()?;
+        let numerator_adjusted = numerator.checked_add(denominator - 1).m_ou()?;
 
         let res = numerator_adjusted / denominator;
 

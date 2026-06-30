@@ -16,61 +16,54 @@ macro_rules! amount_newtype {
             pub const BPS_FACTOR: Self = Self(BPS_FACTOR);
 
             pub fn checked_add(self, other: Self) -> Result<Self, LMError> {
-                let res = self.0.checked_add(other.0).map_over_or_underflow()?;
+                let res = self.0.checked_add(other.0).m_ou()?;
 
                 Ok($name(res))
             }
 
             pub fn checked_sub(self, other: Self) -> Result<Self, LMError> {
-                let res = self.0.checked_sub(other.0).map_over_or_underflow()?;
+                let res = self.0.checked_sub(other.0).m_ou()?;
 
                 Ok($name(res))
             }
 
             pub fn checked_mul(self, other: i128) -> Result<i128, LMError> {
-                self.0.checked_mul(other).map_over_or_underflow()
+                self.0.checked_mul(other).m_ou()
             }
 
             pub fn checked_div_floor(self, other: i128) -> Result<i128, LMError> {
-                self.0.checked_div(other).map_over_or_underflow()
+                self.0.checked_div(other).m_ou()
             }
 
             pub fn checked_div_ceil(self, other: i128) -> Result<i128, LMError> {
                 let denominator = other;
-                let numerator = self
-                    .0
-                    .checked_add(denominator - 1)
-                    .map_over_or_underflow()?;
+                let numerator = self.0.checked_add(denominator - 1).m_ou()?;
 
-                numerator.checked_div(denominator).map_over_or_underflow()
+                numerator.checked_div(denominator).m_ou()
             }
 
             pub fn scale_with_bps_floor(self, bps: i128) -> Result<Self, LMError> {
-                let res = self.0.checked_mul(bps).map_over_or_underflow()? / BPS_FACTOR;
+                let res = self.0.checked_mul(bps).m_ou()? / BPS_FACTOR;
 
                 Ok($name(res))
             }
 
             pub fn scale_with_bps_ceil(self, bps: i128) -> Result<Self, LMError> {
-                let numerator = self.0.checked_mul(bps).map_over_or_underflow()?;
-                let numerator_adjusted = numerator
-                    .checked_add(BPS_FACTOR - 1)
-                    .map_over_or_underflow()?;
+                let numerator = self.0.checked_mul(bps).m_ou()?;
+                let numerator_adjusted = numerator.checked_add(BPS_FACTOR - 1).m_ou()?;
                 let denominator = BPS_FACTOR;
 
-                let res = numerator_adjusted
-                    .checked_div(denominator)
-                    .map_over_or_underflow()?;
+                let res = numerator_adjusted.checked_div(denominator).m_ou()?;
 
                 Ok($name(res))
             }
 
             pub fn bps_fixed_div_ceil(self, val: i128) -> Result<i128, LMError> {
-                bps_fixed_div_ceil(self.0, val).map_over_or_underflow()
+                bps_fixed_div_ceil(self.0, val).m_ou()
             }
 
             pub fn bps_fixed_div_floor(self, val: i128) -> Result<i128, LMError> {
-                bps_fixed_div_floor(self.0, val).map_over_or_underflow()
+                bps_fixed_div_floor(self.0, val).m_ou()
             }
         }
 

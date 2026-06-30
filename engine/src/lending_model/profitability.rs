@@ -44,9 +44,7 @@ pub fn compute_profit_margin_in_borrow_token(
     }
 
     // `i128::MIN.abs()` overflows; reject it explicitly rather than panic.
-    let magnitude_cents = min_profit_margin_cents
-        .checked_abs()
-        .map_over_or_underflow()?;
+    let magnitude_cents = min_profit_margin_cents.checked_abs().m_ou()?;
 
     let margin_value = cents_to_oracle_value_ceil(magnitude_cents, oracle_price_decimals)?;
 
@@ -57,9 +55,7 @@ pub fn compute_profit_margin_in_borrow_token(
     )?;
 
     if min_profit_margin_cents.is_negative() {
-        Ok(Underlying(
-            magnitude.0.checked_neg().map_over_or_underflow()?,
-        ))
+        Ok(Underlying(magnitude.0.checked_neg().m_ou()?))
     } else {
         Ok(magnitude)
     }
@@ -148,8 +144,8 @@ pub fn compute_liquidation_profitability(
         return Err(LMError::InternalError);
     }
 
-    let net_value = gain_value.saturating_sub(cost_value);
-    let required_profitability = net_value.saturating_add(min_profit_margin_value);
+    let net_value = gain_value.checked_sub(cost_value).m_ou()?;
+    let required_profitability = net_value.checked_add(min_profit_margin_value).m_ou()?;
 
     Ok(LiquidationProfitability {
         net_value,
@@ -170,7 +166,7 @@ pub fn compute_liquidation_profitability(
 
 //     let required_value = cost_value
 //         .checked_add(min_profit_margin_value)
-//         .map_over_or_underflow()?;
+//         .m_ou()?;
 //     let net_value = gain_value.saturating_sub(required_value);
 
 //     Ok(LiquidationProfitability {
@@ -189,17 +185,15 @@ pub fn cents_to_oracle_value_ceil(
         return Err(LMError::InternalError);
     }
 
-    let multiplier = 10_i128
-        .checked_pow(oracle_price_decimals)
-        .map_over_or_underflow()?;
+    let multiplier = 10_i128.checked_pow(oracle_price_decimals).m_ou()?;
 
     cents
         .checked_mul(multiplier)
-        .map_over_or_underflow()?
+        .m_ou()?
         .checked_add(99)
-        .map_over_or_underflow()?
+        .m_ou()?
         .checked_div(100)
-        .map_over_or_underflow()
+        .m_ou()
 }
 
 pub fn value_to_underlying_asset_amount_ceil(
@@ -218,19 +212,15 @@ pub fn value_to_underlying_asset_amount_ceil(
         return Err(LMError::InternalError);
     }
 
-    let multiplier = 10_i128
-        .checked_pow(token_decimals)
-        .map_over_or_underflow()?;
+    let multiplier = 10_i128.checked_pow(token_decimals).m_ou()?;
     let numerator = value
         .checked_mul(multiplier)
-        .map_over_or_underflow()?
+        .m_ou()?
         .checked_add(oracle_asset_price - 1)
-        .map_over_or_underflow()?;
+        .m_ou()?;
     let denominator = oracle_asset_price;
 
-    Ok(Underlying(
-        numerator.checked_div(denominator).map_over_or_underflow()?,
-    ))
+    Ok(Underlying(numerator.checked_div(denominator).m_ou()?))
 }
 // #[cfg(test)]
 // mod tests {

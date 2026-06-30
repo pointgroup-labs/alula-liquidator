@@ -11,11 +11,11 @@ pub enum LendingModelError {
 pub type LMError = LendingModelError;
 
 pub trait MapArithmeticError<T> {
-    fn map_over_or_underflow(self) -> Result<T, LMError>;
+    fn m_ou(self) -> Result<T, LMError>;
 }
 
 impl<T> MapArithmeticError<T> for Option<T> {
-    fn map_over_or_underflow(self) -> Result<T, LMError> {
+    fn m_ou(self) -> Result<T, LMError> {
         self.ok_or(LMError::OverOrUnderflow)
     }
 }

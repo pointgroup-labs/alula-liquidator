@@ -7,7 +7,7 @@ use {
         constants::BPS_FACTOR,
         execute::{
             Action,
-            stellar_tx::{SettleHook, SubmitStellarTx},
+            stellar_tx::{LiquidationOutcomeMetric, SubmitStellarTx, TransactionSettleHook},
         },
         liquidator_capital::{LiquidatorCapital, random_id},
         stellar::client::Gateway,
@@ -382,8 +382,18 @@ impl Liquidator {
                 // NB: self liquidations are not supported on the market currently
                 continue;
             }
-            if !liquidation::compute_is_liquidatable(obligation, market_data) {
-                continue;
+
+            match liquidation::compute_is_liquidatable(obligation, market_data) {
+                Ok(is_liquidatable) => {
+                    if !is_liquidatable {
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    error!(%e);
+
+                    continue;
+                }
             }
 
             liquidatable += 1;
@@ -567,6 +577,7 @@ impl Liquidator {
 
         let position_debt_tokens = borrow_pool
             .d_tokens_to_tokens_ceil(borrow_d_tokens.into())
+            .inspect_err(|e| error!(%e))
             .ok()?;
         if position_debt_tokens <= Underlying::ZERO {
             error!(?borrower_obligation_key, "empty borrow position");
@@ -581,6 +592,7 @@ impl Liquidator {
         );
         let position_collateral_sum = collateral_pool
             .j_tokens_to_tokens_floor(deposit_position.j_tokens)
+            .inspect_err(|e| error!(%e))
             .ok()?
             .0
             + deposit_position.collateral.0;
@@ -628,8 +640,11 @@ impl Liquidator {
         // collateral values to bound the seizure to an LTV-improving amount
         // (mirrors the contract's `liquidate`). Computed once and reused.
         let (obligation_debt_value, obligation_collateral_value) = (
-            liquidation::compute_obligation_debt_value(borrower_obligation, market_data).ok()?,
+            liquidation::compute_obligation_debt_value(borrower_obligation, market_data)
+                .inspect_err(|e| error!(%e))
+                .ok()?,
             liquidation::compute_obligation_collateral_value(borrower_obligation, market_data)
+                .inspect_err(|e| error!(%e))
                 .ok()?,
         );
 
@@ -701,12 +716,16 @@ impl Liquidator {
         let flash_repay = {
             let all_liquidated_position_deposit = collateral_pool
                 .j_tokens_to_tokens_floor(deposit_position.j_tokens)
+                .inspect_err(|e| error!(%e))
                 .ok()?
                 .0;
             // NB: all that's available for borrowing is available
             // to be withdrawn without applying scarcity fees
-            let available_to_withdraw_without_scarcity_fees =
-                collateral_pool.available_for_borrow().ok()?.0;
+            let available_to_withdraw_without_scarcity_fees = collateral_pool
+                .available_for_borrow()
+                .inspect_err(|e| error!(%e))
+                .ok()?
+                .0;
 
             let (instantly_available_plain_collateral, instantly_available_withdrawable_deposit) = (
                 deposit_position.collateral.0,
@@ -806,6 +825,7 @@ impl Liquidator {
             repay_value,
             min_profit_margin_value,
         )
+        .inspect_err(|e| error!(%e))
         .ok()?;
         if !profitability.is_acceptable {
             info!(
@@ -865,6 +885,7 @@ impl Liquidator {
             } else {
                 let all_deposit = collateral_pool
                     .j_tokens_to_tokens_floor(deposit_position.j_tokens)
+                    .inspect_err(|e| error!(%e))
                     .ok()?
                     .0;
                 let left = seized_amount - all_plain_collateral;
@@ -879,6 +900,7 @@ impl Liquidator {
             Underlying(repay_amount),
             borrow_pool.flash_loan_fee_bps,
         )
+        .inspect_err(|e| error!(%e))
         .ok()?
         .0;
         let flash_repay_amount = repay_amount.saturating_add(flash_fee);
@@ -934,6 +956,7 @@ impl Liquidator {
             flash_repay_value,
             min_profit_margin_value, // TODO: Can we lose some value here?
         )
+        .inspect_err(|e| error!(%e))
         .ok()?;
         if !profitability.is_acceptable {
             info!(
@@ -1095,6 +1118,7 @@ impl Liquidator {
                 cost_value,
                 min_profit_margin_value,
             )
+            .inspect_err(|e| error!(%e))
             .ok()?;
             if !profitability.is_acceptable {
                 info!(
@@ -1205,8 +1229,12 @@ impl Liquidator {
         deposit_pos: &DepositPosition,
     ) -> Option<i128> {
         let (obligation_debt_value, obligation_collateral_value) = (
-            liquidation::compute_obligation_debt_value(obligation, market_data).ok()?,
-            liquidation::compute_obligation_collateral_value(obligation, market_data).ok()?,
+            liquidation::compute_obligation_debt_value(obligation, market_data)
+                .inspect_err(|e| error!(%e))
+                .ok()?,
+            liquidation::compute_obligation_collateral_value(obligation, market_data)
+                .inspect_err(|e| error!(%e))
+                .ok()?,
         );
 
         let seized = liquidation::compute_expected_seized_collateral(
@@ -1219,7 +1247,10 @@ impl Liquidator {
             is_insolvent,
             market_data.min_collateral_value_cents,
             market_data.oracle_price_decimals,
-        );
+        )
+        .inspect_err(|e| error!(%e))
+        .ok()?;
+
         if !seized.is_positive() {
             warn!(repay_amount, "expected seized collateral is zero");
             counter!("liquidator_skip_total", "reason" => "unprofitable_seize_zero").increment(1);
@@ -1362,10 +1393,13 @@ impl Liquidator {
                     op,
                     signing_key: self.skey.clone(),
                     max_submission_retries: self.config.max_retries,
-                    on_settle: Some(SettleHook {
-                        liquidator_capital: self.liquidator_capital.clone(),
+                    on_settle: Some(TransactionSettleHook {
                         op_id,
-                        liquidation_outcome: None,
+                        liquidation_outcome: Some(LiquidationOutcomeMetric {
+                            market: market.to_string(),
+                            expected_net_value: plan.net_profit_value,
+                        }),
+                        liquidator_capital: self.liquidator_capital.clone(),
                     }),
                 }))
             }

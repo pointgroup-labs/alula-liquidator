@@ -6,7 +6,7 @@ use {
         collect::{Event, stellar_ledger::NewLedger},
         execute::{
             Action,
-            stellar_tx::{SettleHook, SubmitStellarTx},
+            stellar_tx::{SubmitStellarTx, TransactionSettleHook},
         },
         liquidator_capital::LiquidatorCapital,
         stellar::client::Gateway,
@@ -376,7 +376,7 @@ impl Balancer {
             op,
             signing_key: self.skey.clone(),
             max_submission_retries: self.config.max_retries,
-            on_settle: Some(SettleHook {
+            on_settle: Some(TransactionSettleHook {
                 op_id,
                 liquidation_outcome: None,
                 liquidator_capital: self.liquidator_capital.clone(),

@@ -4,7 +4,7 @@ use core::cmp::Ord;
 
 use crate::lending_model::{
     amount::{BPS_FACTOR, bps_fixed_div_ceil},
-    error::{LMError, MapArithmeticError},
+    error::{LMError, LendingModelError, MapArithmeticError},
     market::MarketData,
     obligation::{DepositPosition, Obligation},
     pool::PoolData,
@@ -40,12 +40,15 @@ fn fixed_mul_ceil(amount: i128, bps: i128) -> i128 {
 /// Mirrors the contract's liquidate gate (`obligation.rs::liquidate`):
 /// `debt_value_scaled_w_liability_factors > collateral_value_scaled_w_close_ltvs`,
 /// with ceil rounding on the debt side and floor on the collateal side.
-pub fn compute_is_liquidatable(obligation: &Obligation, market_data: &MarketData) -> bool {
+pub fn compute_is_liquidatable(
+    obligation: &Obligation,
+    market_data: &MarketData,
+) -> Result<bool, LendingModelError> {
     // TODO: Rewrite according to amount! types
     let pools = &market_data.pools_data;
 
     if !has_any_collateral(obligation, pools) {
-        return false;
+        return Ok(false);
     }
 
     let mut debt_value: i128 = 0;
@@ -59,13 +62,16 @@ pub fn compute_is_liquidatable(obligation: &Obligation, market_data: &MarketData
             }
         };
         let real_debt = fixed_mul_ceil(borrow.d_tokens.0, pool.d_token_rate_ceil_bps);
-        let decimals_divisor = 10_i128.pow(pool.token_decimals);
+        let decimals_divisor = 10_i128.checked_pow(pool.token_decimals).m_ou()?;
         let value = real_debt
-            .saturating_mul(pool.oracle_asset_price)
-            .saturating_add(decimals_divisor - 1)
-            .saturating_div(decimals_divisor);
+            .checked_mul(pool.oracle_asset_price)
+            .m_ou()?
+            .checked_add(decimals_divisor - 1)
+            .m_ou()?
+            .checked_div(decimals_divisor)
+            .m_ou()?;
         let scaled = fixed_mul_ceil(value, pool.liability_factor_bps);
-        debt_value = debt_value.saturating_add(scaled);
+        debt_value = debt_value.checked_add(scaled).m_ou()?;
     }
 
     let mut collateral_value: i128 = 0;
@@ -82,28 +88,38 @@ pub fn compute_is_liquidatable(obligation: &Obligation, market_data: &MarketData
             }
         };
         let real_supply = fixed_mul_floor(deposit.j_tokens.0, pool.j_token_rate_floor_bps);
-        let total_tokens = real_supply.saturating_add(deposit.collateral.0);
-        let decimals_divisor = 10_i128.pow(pool.token_decimals);
+        let total_tokens = real_supply.checked_add(deposit.collateral.0).m_ou()?;
+        let decimals_divisor = 10_i128.checked_pow(pool.token_decimals).m_ou()?;
         let value = total_tokens
-            .saturating_mul(pool.oracle_asset_price)
-            .saturating_div(decimals_divisor);
+            .checked_mul(pool.oracle_asset_price)
+            .m_ou()?
+            .checked_div(decimals_divisor)
+            .m_ou()?;
         let scaled = fixed_mul_floor(value, pool.close_ltv_bps);
-        collateral_value = collateral_value.saturating_add(scaled);
+        collateral_value = collateral_value.checked_add(scaled).m_ou()?;
     }
 
     let min_collateral_value_cents = market_data.min_collateral_value_cents;
     let min_collateral_value_per_deposit_position = min_collateral_value_cents
-        .saturating_mul(10_i128.pow(market_data.oracle_price_decimals))
-        .saturating_div(100);
-    let collateral_value_to_substract =
-        min_collateral_value_per_deposit_position * (obligation.deposits.len() as i128);
+        .checked_mul(
+            10_i128
+                .checked_pow(market_data.oracle_price_decimals)
+                .m_ou()?,
+        )
+        .m_ou()?
+        .checked_div(100)
+        .m_ou()?;
+    let collateral_value_to_substract = min_collateral_value_per_deposit_position
+        .checked_mul(obligation.deposits.len() as i128)
+        .m_ou()?;
 
     if collateral_value_to_substract > collateral_value {
-        return false;
+        return Ok(false);
     }
     let collateral_value_adjusted = collateral_value - collateral_value_to_substract;
+    let res = debt_value > collateral_value_adjusted;
 
-    debt_value > collateral_value_adjusted
+    Ok(res)
 }
 
 /// Cheap pre-filter used by [`compute_is_liquidatable`] to short-circuit
@@ -120,6 +136,7 @@ pub fn has_any_collateral(obligation: &Obligation, pools: &[PoolData]) -> bool {
             }
         };
         let real_supply = fixed_mul_floor(dep.j_tokens.0, pool.j_token_rate_floor_bps);
+
         real_supply.saturating_add(dep.collateral.0) > 0
     })
 }
@@ -142,13 +159,13 @@ pub fn compute_obligation_debt_value(
             .find(|p| p.pool_address == bor.pool_address)
             .ok_or(LMError::InternalError)?;
         let real_debt = fixed_mul_ceil(bor.d_tokens.0, pool.d_token_rate_ceil_bps);
-        let decimals_divisor = 10_i128.pow(pool.token_decimals);
+        let decimals_divisor = 10_i128.checked_pow(pool.token_decimals).m_ou()?;
         let value = real_debt
             .checked_mul(pool.oracle_asset_price)
             .and_then(|v| v.checked_add(decimals_divisor - 1))
             .and_then(|v| v.checked_div(decimals_divisor))
-            .map_over_or_underflow()?;
-        total = total.checked_add(value).map_over_or_underflow()?;
+            .m_ou()?;
+        total = total.checked_add(value).m_ou()?;
     }
 
     Ok(total)
@@ -167,14 +184,13 @@ pub fn compute_obligation_collateral_value(
             .find(|p| p.pool_address == dep.pool_address)
             .ok_or(LMError::InternalError)?;
         let real_supply = fixed_mul_floor(dep.j_tokens.0, pool.j_token_rate_floor_bps);
-        let total_tokens = real_supply
-            .checked_add(dep.collateral.0)
-            .map_over_or_underflow()?;
+        let total_tokens = real_supply.checked_add(dep.collateral.0).m_ou()?;
+        let pool_token_factor = 10_i128.checked_pow(pool.token_decimals).m_ou()?;
         let value = total_tokens
             .checked_mul(pool.oracle_asset_price)
-            .and_then(|v| v.checked_div(10_i128.pow(pool.token_decimals)))
-            .map_over_or_underflow()?;
-        total = total.checked_add(value).map_over_or_underflow()?;
+            .and_then(|v| v.checked_div(pool_token_factor))
+            .m_ou()?;
+        total = total.checked_add(value).m_ou()?;
     }
     Ok(total)
 }
@@ -206,49 +222,64 @@ pub fn compute_expected_seized_collateral(
     is_insolvent: bool,
     min_collateral_value_cents: i128,
     oracle_price_decimals: u32,
-) -> i128 {
+) -> Result<i128, LMError> {
     if repay_amount <= 0 || collateral_pool.oracle_asset_price <= 0 {
-        return 0;
+        return Ok(0);
     }
 
     let real_supply = fixed_mul_floor(deposit.j_tokens.0, collateral_pool.j_token_rate_floor_bps);
 
-    let position_collateral_sum = real_supply.saturating_add(deposit.collateral.0);
+    let position_collateral_sum = real_supply.checked_add(deposit.collateral.0).m_ou()?;
     if position_collateral_sum <= 0 {
-        return 0;
+        return Ok(0);
     }
 
+    let borrow_token_factor = 10_i128.checked_pow(borrow_pool.token_decimals).m_ou()?;
     let liquidated_value = repay_amount
-        .saturating_mul(borrow_pool.oracle_asset_price)
-        .saturating_div(10_i128.pow(borrow_pool.token_decimals));
+        .checked_mul(borrow_pool.oracle_asset_price)
+        .m_ou()?
+        .checked_div(borrow_token_factor)
+        .m_ou()?;
 
     let min_incentive_bps = borrow_pool
         .max_liquidation_incentive_bps
         .min(collateral_pool.max_liquidation_incentive_bps);
 
+    let collateral_token_factor = 10_i128.checked_pow(collateral_pool.token_decimals).m_ou()?;
     let collateral_amount_no_bonus = liquidated_value
-        .saturating_mul(10_i128.pow(collateral_pool.token_decimals))
-        .saturating_div(collateral_pool.oracle_asset_price);
+        .checked_mul(collateral_token_factor)
+        .m_ou()?
+        .checked_div(collateral_pool.oracle_asset_price)
+        .m_ou()?;
 
     let with_incentive = collateral_amount_no_bonus
-        .saturating_mul(BPS_FACTOR.saturating_add(min_incentive_bps))
-        .saturating_div(BPS_FACTOR);
+        .checked_mul(BPS_FACTOR.checked_add(min_incentive_bps).m_ou()?)
+        .m_ou()?
+        .checked_div(BPS_FACTOR)
+        .m_ou()?;
 
     let ltv_cap = if !is_insolvent {
         // LTV-improvement assertion
-
         if obligation_debt_value <= 0 || obligation_collateral_value <= 0 {
-            return 0;
+            return Ok(0);
         }
         let max_value_recv = liquidated_value
-            .saturating_mul(obligation_collateral_value)
-            .saturating_div(obligation_debt_value);
+            .checked_mul(obligation_collateral_value)
+            .m_ou()?
+            .checked_div(obligation_debt_value)
+            .m_ou()?;
 
-        let strict_max_value_recv = max_value_recv.saturating_mul(999).saturating_div(1000);
+        let strict_max_value_recv = max_value_recv
+            .checked_mul(999)
+            .m_ou()?
+            .checked_div(1000)
+            .m_ou()?;
 
         let ltv_collateral = strict_max_value_recv
-            .saturating_mul(10_i128.pow(collateral_pool.token_decimals))
-            .saturating_div(collateral_pool.oracle_asset_price);
+            .checked_mul(collateral_token_factor)
+            .m_ou()?
+            .checked_div(collateral_pool.oracle_asset_price)
+            .m_ou()?;
 
         // receiving ltv improving amount of collateral for that specific repayment
         Some(ltv_collateral)
@@ -261,20 +292,25 @@ pub fn compute_expected_seized_collateral(
         seized = seized.min(cap);
     }
 
-    let collateral_left = position_collateral_sum.saturating_sub(seized);
+    let collateral_left = position_collateral_sum.checked_sub(seized).m_ou()?;
     let collateral_value_left = collateral_left
-        .saturating_mul(collateral_pool.oracle_asset_price)
-        .saturating_div(10_i128.pow(collateral_pool.token_decimals));
+        .checked_mul(collateral_pool.oracle_asset_price)
+        .m_ou()?
+        .checked_div(collateral_token_factor)
+        .m_ou()?;
 
+    let oracle_price_factor = 10_i128.checked_pow(oracle_price_decimals).m_ou()?;
     let min_collateral_threshold = min_collateral_value_cents
-        .saturating_mul(10_i128.pow(oracle_price_decimals))
-        .saturating_div(100);
+        .checked_mul(oracle_price_factor)
+        .m_ou()?
+        .checked_div(100)
+        .m_ou()?;
 
     if collateral_value_left < min_collateral_threshold {
         seized = position_collateral_sum;
     }
 
-    seized.max(0)
+    Ok(seized.max(0))
 }
 
 /// Checks whether the unparameterized obligation is insolvent
