@@ -85,7 +85,9 @@ async fn main() -> anyhow::Result<()> {
     let skey = SigningKey::from_bytes(&PrivateKey::from_string(&skey)?.0);
     let pkey = pubkey_to_strkey(&skey);
 
-    info!(%pkey, "starting keeper...");
+    let version = env!("CARGO_PKG_VERSION");
+
+    info!(%pkey, %version, "starting keeper...");
 
     let store = SqliteStore::open(&db_path)?;
     let metrics_handle = metrics::install_prometheus_recorder();

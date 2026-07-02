@@ -590,12 +590,14 @@ impl Liquidator {
             position_debt_tokens.0,
             borrow_pool.liquidation_close_factor_bps,
         );
-        let position_collateral_sum = collateral_pool
+
+        let position_j_tokens_as_tokens = collateral_pool
             .j_tokens_to_tokens_floor(deposit_position.j_tokens)
-            .inspect_err(|e| error!(%e))
             .ok()?
-            .0
-            + deposit_position.collateral.0;
+            .0;
+        let position_plain_collateral = deposit_position.collateral.0;
+
+        let position_collateral_sum = position_j_tokens_as_tokens + position_plain_collateral;
 
         let position_collateral_value = position_collateral_sum
             .saturating_mul(collateral_pool.oracle_asset_price)
@@ -713,77 +715,77 @@ impl Liquidator {
 
         // -- FLASH LIQUIDATION --
 
-        let flash_repay = {
-            let all_liquidated_position_deposit = collateral_pool
-                .j_tokens_to_tokens_floor(deposit_position.j_tokens)
-                .inspect_err(|e| error!(%e))
-                .ok()?
-                .0;
-            // NB: all that's available for borrowing is available
-            // to be withdrawn without applying scarcity fees
-            let available_to_withdraw_without_scarcity_fees = collateral_pool
-                .available_for_borrow()
-                .inspect_err(|e| error!(%e))
-                .ok()?
-                .0;
+        // let flash_repay = {
+        //     let all_liquidated_position_deposit = collateral_pool
+        //         .j_tokens_to_tokens_floor(deposit_position.j_tokens)
+        //         .inspect_err(|e| error!(%e))
+        //         .ok()?
+        //         .0;
+        //     // NB: all that's available for borrowing is available
+        //     // to be withdrawn without applying scarcity fees
+        //     let available_to_withdraw_without_scarcity_fees = collateral_pool
+        //         .available_for_borrow()
+        //         .inspect_err(|e| error!(%e))
+        //         .ok()?
+        //         .0;
 
-            let (instantly_available_plain_collateral, instantly_available_withdrawable_deposit) = (
-                deposit_position.collateral.0,
-                all_liquidated_position_deposit.min(available_to_withdraw_without_scarcity_fees),
-            );
-            let instantly_available_collateral =
-                instantly_available_plain_collateral + instantly_available_withdrawable_deposit;
+        //     let (instantly_available_plain_collateral, instantly_available_withdrawable_deposit) = (
+        //         deposit_position.collateral.0,
+        //         all_liquidated_position_deposit.min(available_to_withdraw_without_scarcity_fees),
+        //     );
+        //     let instantly_available_collateral =
+        //         instantly_available_plain_collateral + instantly_available_withdrawable_deposit;
 
-            let updated_max_profitable_repay = profitability::compute_repay_cap_from_collateral(
-                !is_insolvent,
-                borrow_pool,
-                max_feasible_repay,
-                collateral_pool,
-                instantly_available_collateral, // must use instantly available collateral only
-                obligation_debt_value,
-                profit_margin_borrow,
-                obligation_collateral_value,
-            )?;
+        //     let updated_max_profitable_repay = profitability::compute_repay_cap_from_collateral(
+        //         !is_insolvent,
+        //         borrow_pool,
+        //         max_feasible_repay,
+        //         collateral_pool,
+        //         instantly_available_collateral, // must use instantly available collateral only
+        //         obligation_debt_value,
+        //         profit_margin_borrow,
+        //         obligation_collateral_value,
+        //     )?;
 
-            updated_max_profitable_repay.min(borrow_pool.total_available_adjusted.0)
-        };
+        //     updated_max_profitable_repay.min(borrow_pool.total_available_adjusted.0)
+        // };
 
-        if flash_repay.is_positive()
-            && let Some(plan) = self
-                .try_flash_plan(
-                    is_insolvent,
-                    flash_repay,
-                    borrow_pool,
-                    borrower_obligation,
-                    market_data,
-                    collateral_pool,
-                    borrower_obligation_key,
-                    min_profit_margin_value,
-                    deposit_position,
-                )
-                .await
-        {
-            candidates.push(plan);
-        }
+        // if flash_repay.is_positive()
+        //     && let Some(plan) = self
+        //         .try_flash_plan(
+        //             is_insolvent,
+        //             flash_repay,
+        //             borrow_pool,
+        //             borrower_obligation,
+        //             market_data,
+        //             collateral_pool,
+        //             borrower_obligation_key,
+        //             min_profit_margin_value,
+        //             deposit_position,
+        //         )
+        //         .await
+        // {
+        //     candidates.push(plan);
+        // }
 
-        // -- PRESWAP LIQUIDATION --
+        // // -- PRESWAP LIQUIDATION --
 
-        if let Some(plan) = self
-            .try_preswap_plan(
-                is_insolvent,
-                borrow_pool,
-                borrower_obligation,
-                market_data,
-                collateral_pool,
-                max_profitable_repay,
-                borrower_obligation_key,
-                min_profit_margin_value,
-                deposit_position,
-            )
-            .await
-        {
-            candidates.push(plan);
-        }
+        // if let Some(plan) = self
+        //     .try_preswap_plan(
+        //         is_insolvent,
+        //         borrow_pool,
+        //         borrower_obligation,
+        //         market_data,
+        //         collateral_pool,
+        //         max_profitable_repay,
+        //         borrower_obligation_key,
+        //         min_profit_margin_value,
+        //         deposit_position,
+        //     )
+        //     .await
+        // {
+        //     candidates.push(plan);
+        // }
 
         // Prefer the type that liquidates the most debt (biggest repay_amount).
         candidates.into_iter().max_by_key(|plan| plan.repay_amount)

@@ -94,7 +94,11 @@ impl Withdrawer {
                 .read_user_obligation(&market, &self.liquidator_key)
                 .await
                 .inspect_err(|e| {
-                    info!(?e, %market, "no liquidator obligation");
+                    debug!(%e);
+                    info!(
+                        market,
+                        "no liquidator obligation on the market when handling new ledger"
+                    );
                 })
             else {
                 continue;
@@ -148,7 +152,8 @@ impl Withdrawer {
             .read_user_obligation(&market, &self.liquidator_key)
             .await
             .inspect_err(|e| {
-                info!(?e, %market, "no liquidator obligation");
+                debug!(%e);
+                info!(%market, "no liquidator obligation on the market when handling new event");
             })
         else {
             return vec![];
