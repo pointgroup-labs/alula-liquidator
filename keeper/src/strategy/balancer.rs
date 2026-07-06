@@ -286,8 +286,15 @@ impl Balancer {
             return Ok(None);
         }
 
-        let sc14 = 10_i128.pow(oracle_decimals);
-        let candidate_quoted_in_target = (candidate_oracle_price * sc14) / target_oracle_price;
+        if target_oracle_price <= 0 {
+            error!(%target, target_oracle_price, "non-positive target oracle price; skipping candidate");
+            counter!("rebalancer_outcome_total", "outcome" => "bad_oracle_price").increment(1);
+
+            return Ok(None);
+        }
+        let oracle_scale = 10_i128.pow(oracle_decimals);
+        let candidate_quoted_in_target =
+            (candidate_oracle_price * oracle_scale) / target_oracle_price;
 
         let mut best_provider: Option<(String, i128, i128)> = None;
         for provider in &self.config.swap_providers {
@@ -297,6 +304,7 @@ impl Balancer {
                     candidate,
                     target,
                     candidate_quoted_in_target,
+                    oracle_decimals,
                     swappable_balance,
                 )
                 .await
@@ -364,9 +372,26 @@ impl Balancer {
             }
         };
 
+        // Realised execution price of the winning route (candidate priced in
+        // target), on the oracle scale so it's directly comparable to
+        // `candidate_quoted_in_target`. Written out separately from the impact
+        // metric so we have the actual price we transacted at, not just the
+        // spread. `amount_in` is positive here (checked above), so this can't
+        // divide by zero.
+        let realised_price_scaled = amount_out
+            .saturating_mul(oracle_scale)
+            .checked_div(amount_in)
+            .unwrap_or(0);
+        histogram!(
+            "rebalancer_realised_swap_price_scaled",
+            "asset" => candidate.to_string(),
+        )
+        .record(realised_price_scaled as f64);
+
         info!(
             %candidate, swap_value_cents, %target, %provider, amount_in, amount_out,
             min_amount_out, market = %self.config.market,
+            realised_price_scaled, oracle_price_scaled = candidate_quoted_in_target,
             "submitting swap..."
         );
         counter!("rebalancer_outcome_total", "outcome" => "dispatched").increment(1);
@@ -390,6 +415,7 @@ impl Balancer {
         asset_in: &str,
         asset_out: &str,
         oracle_price: i128,
+        oracle_decimals: u32,
         swappable_balance: i128,
     ) -> anyhow::Result<Option<(i128, i128)>> {
         let mut amount_in = swappable_balance;
@@ -400,14 +426,47 @@ impl Balancer {
                 .get_amount_out(amount_in, asset_in, asset_out, provider)
                 .await?;
 
-            let price_impact = compute_swap_price_impact_bps(oracle_price, amount_in, amount_out);
-            if price_impact > self.config.max_price_impact_bps {
-                amount_in /= 2;
+            let Some(impact) =
+                compute_swap_price_impact(oracle_price, amount_in, amount_out, oracle_decimals)
+            else {
+                debug!(
+                    %provider, %asset_in, amount_in, amount_out, oracle_price,
+                    "price impact not computable (non-positive input); treating probe as unviable"
+                );
 
-                continue;
-            } else {
+                return Ok(None);
+            };
+
+            // Observe the oracle-vs-DEX price gap for every probe, tagged by
+            // whether it cleared the configured ceiling. This is the realised
+            // spread the balancer is gating on — useful for tuning
+            // `max_price_impact_bps` and spotting oracle/DEX divergence.
+            let admitted = impact.bps <= self.config.max_price_impact_bps;
+            histogram!(
+                "rebalancer_swap_price_impact_bps",
+                "asset" => asset_in.to_string(),
+                "admitted" => if admitted { "true" } else { "false" },
+            )
+            .record(impact.bps as f64);
+
+            if admitted {
+                debug!(
+                    %provider, %asset_in, amount_in, amount_out,
+                    price_impact_bps = impact.bps,
+                    execution_price_scaled = impact.execution_price_scaled,
+                    "probe within max price impact"
+                );
+
                 return Ok(Some((amount_in, amount_out)));
             }
+
+            debug!(
+                %provider, %asset_in, amount_in, amount_out,
+                price_impact_bps = impact.bps,
+                max = self.config.max_price_impact_bps,
+                "probe exceeds max price impact; halving amount_in"
+            );
+            amount_in /= 2;
         }
 
         Ok(None)
@@ -441,27 +500,64 @@ impl Balancer {
     }
 }
 
-/// Computes the swap price impact in BPS.
-/// Assumes oracle_price is denominated as (Amount Out / Amount In) with 14 decimals.
-fn compute_swap_price_impact_bps(oracle_price: i128, amount_in: i128, amount_out: i128) -> i128 {
-    // 1. Prevent division by zero panic
-    if amount_in == 0 {
-        return 0; // Or revert with a custom error
+/// Outcome of comparing a DEX quote against the oracle price.
+struct SwapPriceImpact {
+    /// Price impact in BPS relative to the oracle price. Positive means the
+    /// realised (DEX) price is *worse* than the oracle — we receive less
+    /// `amount_out` than the oracle-implied value, i.e. we lose value.
+    /// Negative means the DEX executed better than the oracle.
+    bps: i128,
+    /// Realised execution price (`amount_out / amount_in`) scaled by
+    /// `10^oracle_decimals` — i.e. on the *same* scale as the oracle ratio it is
+    /// compared against. Kept scaled to avoid float precision loss; divide by
+    /// `10^oracle_decimals` for a human-readable ratio.
+    execution_price_scaled: i128,
+}
+
+/// Compares a realised DEX quote (`amount_out` per `amount_in`) against the
+/// oracle price ratio, returning both the price impact (BPS) and the realised
+/// execution price.
+///
+/// `oracle_price` is the oracle-implied `candidate/target` ratio already scaled
+/// by `10^oracle_decimals`. The realised price is scaled by the **same**
+/// `10^oracle_decimals` so the subtraction is meaningful — previously this was a
+/// hardcoded `10^14`, which silently produced garbage whenever the oracle used a
+/// different number of decimals. `oracle_price_decimals` is a runtime value on
+/// `MarketData`, not a constant, so the scale must be read from it.
+///
+/// NB: still assumes `amount_in` and `amount_out` share the same token decimals.
+/// A mismatch bakes a `10^(out_decimals - in_decimals)` factor into the realised
+/// price; that pre-existing limitation is documented, not fixed, here.
+///
+/// Returns `None` when the inputs can't yield a meaningful comparison
+/// (non-positive `amount_in` or `oracle_price`, or arithmetic overflow), so the
+/// caller can treat the probe as unviable instead of dividing by zero.
+fn compute_swap_price_impact(
+    oracle_price: i128,
+    amount_in: i128,
+    amount_out: i128,
+    oracle_price_decimals: u32,
+) -> Option<SwapPriceImpact> {
+    // Guard both divisions: `amount_in` scales the realised price, `oracle_price`
+    // scales the BPS conversion.
+    if amount_in <= 0 || oracle_price <= 0 {
+        return None;
     }
 
-    // 2. Compute execution price (scaled to 14 decimals)
-    // Note: This strictly assumes amount_in and amount_out have identical decimals.
-    let execution_price_scaled = (amount_out * 10i128.pow(14)) / amount_in;
+    let scale = 10_i128.checked_pow(oracle_price_decimals)?;
+    let execution_price_scaled = amount_out.checked_mul(scale)?.checked_div(amount_in)?;
 
-    // 3. Compute the raw difference
-    // If execution_price < oracle_price, impact is positive (user lost value).
-    // If execution_price > oracle_price, impact is negative (user gained value).
-    let price_diff = oracle_price - execution_price_scaled;
+    // execution < oracle → positive impact (received less than oracle value)
+    // execution > oracle → negative impact (did better than oracle)
+    let price_diff = oracle_price.checked_sub(execution_price_scaled)?;
+    let bps = price_diff
+        .checked_mul(BPS_FACTOR)?
+        .checked_div(oracle_price)?;
 
-    // 4. Convert the difference into BPS relative to the oracle price
-    // Multiply by 10_000 before dividing to maintain precision.
-
-    (price_diff * 10_000) / oracle_price
+    Some(SwapPriceImpact {
+        bps,
+        execution_price_scaled,
+    })
 }
 
 fn compute_value_cents(token_amount: i128, info: &AssetInfo) -> i128 {
