@@ -173,10 +173,10 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&liquidator_capital),
     );
 
-    engine.add_strategy(Box::new(bad_debt_request_initiator));
+    // engine.add_strategy(Box::new(bad_debt_request_initiator));
     engine.add_strategy(Box::new(liquidator));
-    engine.add_strategy(Box::new(withdrawer));
-    engine.add_strategy(Box::new(balancer));
+    // engine.add_strategy(Box::new(withdrawer));
+    // engine.add_strategy(Box::new(balancer));
 
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::try_new(
@@ -246,8 +246,8 @@ async fn shutdown_future() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => info!("Received Ctrl+C"),
-        _ = terminate => info!("Received SIGTERM"),
+        _ = ctrl_c => info!("received Ctrl+C"),
+        _ = terminate => info!("received SIGTERM"),
     }
 }
 

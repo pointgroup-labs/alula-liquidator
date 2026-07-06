@@ -188,7 +188,7 @@ impl Withdrawer {
                 .iter()
                 .find(|p| p.pool_address == deposit_pos.pool_address)
             else {
-                warn!(pool = deposit_pos.pool_address, "Pool not found");
+                warn!(pool = deposit_pos.pool_address, "pool not found");
                 counter!("withdrawer_outcome_total", "outcome" => "pool_missing").increment(1);
 
                 continue;
@@ -257,7 +257,7 @@ impl Withdrawer {
                             .increment(1);
                     }
                     Err(e) => {
-                        error!(?e, "Failed to build withdrawal action");
+                        error!(?e, "failed to build withdrawal action");
                         counter!("withdrawer_outcome_total", "outcome" => "build_error")
                             .increment(1);
                     }

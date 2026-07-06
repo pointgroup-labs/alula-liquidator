@@ -362,7 +362,7 @@ async fn build_and_send(
             if let Ok(entries) = auth_entries {
                 invoke_op.auth = entries;
             } else {
-                warn!("Failed to parse authorization entries for operation {}", i);
+                warn!("failed to parse authorization entries for operation {}", i);
             }
         }
         new_operations.push(operation);

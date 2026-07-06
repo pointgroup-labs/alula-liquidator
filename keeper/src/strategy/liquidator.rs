@@ -287,6 +287,7 @@ impl Liquidator {
                     .insert(key.clone(), obligation);
             }
             Ok(None) => {
+                // TODO: This is liquidator's obligation, not a borrower's
                 info!(?key, %event_name, %market, "obligation deleted on the market");
                 if let Err(e) = self.obligations_repo.delete(market, key) {
                     warn!(?e, %event_name, %market, "failed to delete obligation");
@@ -515,7 +516,11 @@ impl Liquidator {
                     )
                     .await
                 else {
-                    warn!("Failed to build liquidation plan");
+                    warn!(
+                        ?borrow_pool,
+                        ?collateral_pool,
+                        "failed to build liquidation plan for pair"
+                    );
 
                     continue;
                 };
@@ -543,18 +548,12 @@ impl Liquidator {
                 "market" => market.to_string(),
             )
             .increment(net_value as u64);
-            info!(
-                ?plan.borrower_key,
-                borrow_pool = %plan.borrow_pool_address,
-                collateral_pool = %plan.collateral_pool_address,
-                net = plan.net_profit_value,
-                "selected best (borrow, deposit) pair",
-            );
+            info!(?plan, "selected best (borrow, deposit) pair",);
 
             self.execute_liquidation_plan(market, plan, &liquidator_obl_key)
                 .await
         } else {
-            error!("failed to come up with a liquidation plan");
+            warn!("failed to come up with a liquidation plan");
             // TODO: Add metric?
 
             None
@@ -593,6 +592,7 @@ impl Liquidator {
 
         let position_j_tokens_as_tokens = collateral_pool
             .j_tokens_to_tokens_floor(deposit_position.j_tokens)
+            .inspect_err(|e| error!(%e))
             .ok()?
             .0;
         let position_plain_collateral = deposit_position.collateral.0;
@@ -628,8 +628,9 @@ impl Liquidator {
             market_data.oracle_price_decimals,
             borrow_pool,
         )
+        .inspect_err(|e| error!(%e))
         .map(|u| u.0)
-        .unwrap_or(0);
+        .unwrap_or(0); // TODO: error?
 
         let max_feasible_repay = position_debt_tokens.0.min(close_factor_cap);
         if !max_feasible_repay.is_positive() {
@@ -640,7 +641,7 @@ impl Liquidator {
 
         // The solvent-path repay cap needs the obligation-wide debt and
         // collateral values to bound the seizure to an LTV-improving amount
-        // (mirrors the contract's `liquidate`). Computed once and reused.
+        // (mirrors the contract's `liquidate`).
         let (obligation_debt_value, obligation_collateral_value) = (
             liquidation::compute_obligation_debt_value(borrower_obligation, market_data)
                 .inspect_err(|e| error!(%e))
@@ -659,7 +660,15 @@ impl Liquidator {
             obligation_debt_value,
             profit_margin_borrow,
             obligation_collateral_value,
-        )?;
+        )
+        .inspect_err(|e| error!(%e))
+        .ok()?;
+
+        if max_profitable_repay <= 0 {
+            warn!(max_profitable_repay, "non-positive max profitable repay");
+
+            return None;
+        }
 
         let raw_borrow_balance = self
             .liquidator_capital
@@ -694,24 +703,24 @@ impl Liquidator {
 
         // -- DIRECT LIQUIDATION --
 
-        let direct_repay = max_profitable_repay.min(usable_borrow);
-        if direct_repay.is_positive()
-            && let Some(plan) = self
-                .try_direct_plan(
-                    is_insolvent,
-                    direct_repay,
-                    borrow_pool,
-                    borrower_obligation,
-                    market_data,
-                    collateral_pool,
-                    borrower_obligation_key,
-                    min_profit_margin_value,
-                    deposit_position,
-                )
-                .await
-        {
-            candidates.push(plan);
-        }
+        // let direct_repay = max_profitable_repay.min(usable_borrow);
+        // if direct_repay.is_positive()
+        //     && let Some(plan) = self
+        //         .try_direct_plan(
+        //             is_insolvent,
+        //             direct_repay,
+        //             borrow_pool,
+        //             borrower_obligation,
+        //             market_data,
+        //             collateral_pool,
+        //             borrower_obligation_key,
+        //             min_profit_margin_value,
+        //             deposit_position,
+        //         )
+        //         .await
+        // {
+        //     candidates.push(plan);
+        // }
 
         // -- FLASH LIQUIDATION --
 
@@ -768,24 +777,24 @@ impl Liquidator {
         //     candidates.push(plan);
         // }
 
-        // // -- PRESWAP LIQUIDATION --
+        // -- PRESWAP LIQUIDATION --
 
-        // if let Some(plan) = self
-        //     .try_preswap_plan(
-        //         is_insolvent,
-        //         borrow_pool,
-        //         borrower_obligation,
-        //         market_data,
-        //         collateral_pool,
-        //         max_profitable_repay,
-        //         borrower_obligation_key,
-        //         min_profit_margin_value,
-        //         deposit_position,
-        //     )
-        //     .await
-        // {
-        //     candidates.push(plan);
-        // }
+        if let Some(plan) = self
+            .try_preswap_plan(
+                is_insolvent,
+                borrow_pool,
+                borrower_obligation,
+                market_data,
+                collateral_pool,
+                max_profitable_repay,
+                borrower_obligation_key,
+                min_profit_margin_value,
+                deposit_position,
+            )
+            .await
+        {
+            candidates.push(plan);
+        }
 
         // Prefer the type that liquidates the most debt (biggest repay_amount).
         candidates.into_iter().max_by_key(|plan| plan.repay_amount)
@@ -1039,7 +1048,7 @@ impl Liquidator {
             if !swappable_balance.is_positive() {
                 info!(
                     raw_balance,
-                    swappable_balance, source_asset, "non-positive liqudator usable balance"
+                    swappable_balance, source_asset, "non-positive liquidator usable balance"
                 );
 
                 continue;
@@ -1124,7 +1133,9 @@ impl Liquidator {
             .ok()?;
             if !profitability.is_acceptable {
                 info!(
+                    ?source_pool,
                     ?profitability,
+                    ?collateral_pool,
                     "PRESWAP liquidation's profitability is not acceptable",
                 );
 

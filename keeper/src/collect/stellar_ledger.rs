@@ -48,7 +48,7 @@ impl Collector<Event> for LedgerCollector {
                 let server = match Client::new(url.as_str()) {
                     Ok(s) => s,
                     Err(e) => {
-                        error!(?e, "LedgerCollector: failed to create RPC client");
+                        error!(?e, "failed to create RPC client");
 
                         return;
                     }
@@ -63,14 +63,14 @@ impl Collector<Event> for LedgerCollector {
                             if let Err(err) = sender.send(Event::NewLedger(NewLedger {
                                 seq_num: ledger.sequence,
                             })) {
-                                warn!(?err, "LedgerCollector: no receivers left, stopping");
+                                warn!(?err, "no receivers left, stopping");
 
                                 return;
                             }
                         }
                         Ok(_) => { /* ledger hasn't advanced yet */ }
                         Err(e) => {
-                            warn!("LedgerCollector: get_latest_ledger failed: {e:#}");
+                            warn!("get_latest_ledger failed: {e:#}");
                         }
                     }
 

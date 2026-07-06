@@ -245,7 +245,6 @@ impl BadDebtRequestInitiator {
         }
     }
 
-    // Removed the async keyword here, as it performs no awaiting natively.
     fn is_eligible_for_bad_debt_request_issuance(
         &self,
         obl_key: &ObligationKey,
@@ -254,10 +253,12 @@ impl BadDebtRequestInitiator {
     ) -> anyhow::Result<bool> {
         if obligation.borrows.is_empty() {
             debug!(?obl_key, "no borrows, not eligible");
+
             return Ok(false);
         }
         if obligation.deposits.is_empty() {
             info!(?obl_key, "obligation eligible: debt with no collateral");
+
             return Ok(true);
         }
 

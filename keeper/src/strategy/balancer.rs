@@ -132,7 +132,7 @@ impl Balancer {
             Ok(OperationEvent::Withdraw) => self.try_parse_asset_from_withdraw_event(&event),
             Ok(_) => None,
             Err(e) => {
-                warn!("Failed to decode operation from event: {}", e);
+                warn!("failed to decode operation from event: {}", e);
 
                 None
             }
@@ -170,7 +170,7 @@ impl Balancer {
             .gateway
             .parse_liquidation_result_from_liquidation_event_value(&event.value)
         else {
-            error!("Couldn't parse liquidation_result from the liquidation event");
+            error!("couldn't parse liquidation_result from the liquidation event");
 
             return None;
         };
@@ -184,7 +184,7 @@ impl Balancer {
 
     fn try_parse_asset_from_withdraw_event(&self, event: &SorobanEvent) -> Option<String> {
         let Ok(withdrawer) = self.gateway.parse_obligation_key_from_topic(event, 2) else {
-            error!("Failed to parse withdrawer from the withdrawer event");
+            error!("failed to parse withdrawer from the withdrawer event");
             return None;
         };
 
@@ -280,7 +280,7 @@ impl Balancer {
             raw_balance
         };
         if !swappable_balance.is_positive() {
-            debug!(%candidate, raw_balance, swappable_balance, "Nothing to swap");
+            debug!(%candidate, raw_balance, swappable_balance, "nothing to swap");
             counter!("rebalancer_outcome_total", "outcome" => "nothing_to_swap").increment(1);
 
             return Ok(None);
@@ -367,7 +367,7 @@ impl Balancer {
         info!(
             %candidate, swap_value_cents, %target, %provider, amount_in, amount_out,
             min_amount_out, market = %self.config.market,
-            "Rebalancer: submitting swap"
+            "submitting swap..."
         );
         counter!("rebalancer_outcome_total", "outcome" => "dispatched").increment(1);
         histogram!("rebalancer_dispatched_swap_value_cents").record(swap_value_cents.max(0) as f64);

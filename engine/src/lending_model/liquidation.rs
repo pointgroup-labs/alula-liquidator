@@ -73,6 +73,9 @@ pub fn compute_is_liquidatable(
         let scaled = fixed_mul_ceil(value, pool.liability_factor_bps);
         debt_value = debt_value.checked_add(scaled).m_ou()?;
     }
+    if debt_value == 0 {
+        return Ok(false);
+    }
 
     let mut collateral_value: i128 = 0;
     for deposit in &obligation.deposits {
@@ -320,30 +323,26 @@ pub fn compute_is_insolvent(
 ) -> Result<bool, LMError> {
     let debt_value = compute_obligation_debt_value(obligation, market_data)?;
 
-    // 1. Debt Checks
     if debt_value < 0 {
         error!(debt_value, "negative debt value");
+
         return Err(LMError::InternalError);
     } else if debt_value == 0 {
-        // Optimization & 0/0 fix: No debt = impossible to be insolvent
         return Ok(false);
     }
 
     let collateral_value = compute_obligation_collateral_value(obligation, market_data)?;
 
-    // 2. Collateral Checks
     if collateral_value < 0 {
         error!(collateral_value, "negative collateral value");
+
         return Err(LMError::InternalError);
     } else if collateral_value == 0 {
-        // Debt is > 0, but collateral is 0 = heavily insolvent
         return Ok(true);
     }
 
-    // 3. LTV Calculation
-    Ok(match bps_fixed_div_ceil(debt_value, collateral_value) {
-        Some(unparameterized_ltv_bps) => unparameterized_ltv_bps >= market_data.insolvency_ltv_bps,
-        // Overflow fallback: Debt astronomically dwarfs collateral
-        None => true,
-    })
+    let unparameterized_ltv = bps_fixed_div_ceil(debt_value, collateral_value).m_ou()?;
+    let is_insolvent = unparameterized_ltv >= market_data.insolvency_ltv_bps;
+
+    Ok(is_insolvent)
 }

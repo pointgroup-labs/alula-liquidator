@@ -71,16 +71,23 @@ pub fn compute_repay_cap_from_collateral(
     obligation_debt_value: i128,
     profit_margin_borrow_tokens: i128,
     obligation_collateral_value: i128,
-) -> Option<i128> {
+) -> Result<i128, LMError> {
     if available_collateral <= 0 {
-        return None;
+        error!(available_collateral, "non-positive available collateral");
+
+        return Err(LMError::InternalError);
     }
-    let (borrow_price, collateral_price) = (
+    let (borrow_asset_price, collateral_asset_price) = (
         borrow_pool.oracle_asset_price,
         collateral_pool.oracle_asset_price,
     );
-    if borrow_price <= 0 || collateral_price <= 0 {
-        return None;
+    if borrow_asset_price <= 0 || collateral_asset_price <= 0 {
+        error!(
+            borrow_asset_price,
+            collateral_asset_price, "non-positive price(s)"
+        );
+
+        return Err(LMError::InternalError);
     }
 
     let pool_incentive_bps = borrow_pool
@@ -89,8 +96,10 @@ pub fn compute_repay_cap_from_collateral(
 
     let effective_incentive_bps = if is_solvent {
         let max_allowed_multiplier = obligation_collateral_value
-            .checked_mul(9990)?
-            .checked_div(obligation_debt_value)?;
+            .checked_mul(9990)
+            .m_ou()?
+            .checked_div(obligation_debt_value)
+            .m_ou()?;
 
         let max_ltv_incentive_bps = max_allowed_multiplier.saturating_sub(10000);
 
@@ -99,9 +108,11 @@ pub fn compute_repay_cap_from_collateral(
         pool_incentive_bps
     };
 
-    let incentive_bps_factor = BPS_FACTOR.checked_add(effective_incentive_bps)?;
+    let incentive_bps_factor = BPS_FACTOR.checked_add(effective_incentive_bps).m_ou()?;
     if incentive_bps_factor <= 0 {
-        return None;
+        error!(incentive_bps_factor, "non-positive incentive factor");
+
+        return Err(LMError::InternalError);
     }
 
     let (borrow_decimals_pow, collateral_decimals_pow) = (
@@ -110,21 +121,25 @@ pub fn compute_repay_cap_from_collateral(
     );
 
     let all_collateral_value = available_collateral
-        .checked_mul(collateral_price)?
-        .checked_div(collateral_decimals_pow)?;
+        .checked_mul(collateral_asset_price)
+        .m_ou()?
+        .checked_div(collateral_decimals_pow)
+        .m_ou()?;
 
-    let numerator = all_collateral_value.checked_mul(borrow_decimals_pow)?;
-    let denominator = borrow_price
-        .checked_mul(incentive_bps_factor)?
-        .checked_div(BPS_FACTOR)?;
+    let numerator = all_collateral_value
+        .checked_mul(borrow_decimals_pow)
+        .m_ou()?;
+    let denominator = borrow_asset_price
+        .checked_mul(incentive_bps_factor)
+        .m_ou()?
+        .checked_div(BPS_FACTOR)
+        .m_ou()?;
 
-    let max_repay_borrow_units = numerator.checked_div(denominator)?;
-
+    let max_repay_borrow_units = numerator.checked_div(denominator).m_ou()?;
     let max_profitable_repay = max_repay_borrow_units.saturating_sub(profit_margin_borrow_tokens);
-
     let result = max_feasible_repay.min(max_profitable_repay);
 
-    if result > 0 { Some(result) } else { None }
+    Ok(result)
 }
 
 #[derive(Debug)]
@@ -132,7 +147,6 @@ pub struct LiquidationProfitability {
     pub net_value: i128,
     pub gain_value: i128,
     pub is_acceptable: bool,
-    pub required_profitability: i128,
 }
 
 pub fn compute_liquidation_profitability(
@@ -145,37 +159,13 @@ pub fn compute_liquidation_profitability(
     }
 
     let net_value = gain_value.checked_sub(cost_value).m_ou()?;
-    let required_profitability = net_value.checked_add(min_profit_margin_value).m_ou()?;
 
     Ok(LiquidationProfitability {
         net_value,
         gain_value,
-        required_profitability,
         is_acceptable: net_value > min_profit_margin_value,
     })
 }
-
-// pub fn compute_liquidation_profitability(
-//     gain_value: i128,
-//     cost_value: i128,
-//     min_profit_margin_value: i128,
-// ) -> Result<LiquidationProfitability, LMError> {
-//     if !gain_value.is_positive() || !cost_value.is_positive() {
-//         return Err(LMError::InternalError);
-//     }
-
-//     let required_value = cost_value
-//         .checked_add(min_profit_margin_value)
-//         .m_ou()?;
-//     let net_value = gain_value.saturating_sub(required_value);
-
-//     Ok(LiquidationProfitability {
-//         net_value,
-//         gain_value,
-//         required_value,
-//         is_acceptable: net_value > 0,
-//     })
-// }
 
 pub fn cents_to_oracle_value_ceil(
     cents: i128,
