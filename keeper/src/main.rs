@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
         bad_debt_request_initiator_refresh_interval_blocks,
         // -- Withdrawer --
         withdrawer_max_retries,
-        withdrawrer_refresh_interval_blocks,
+        withdrawer_refresh_interval_blocks,
         withdrawer_min_withdraw_value_cents,
         withdrawer_utilization_safety_margin_bps,
         // -- Liquidator --
@@ -145,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
         WithdrawerConfig {
             markets: markets.clone(),
             max_retries: withdrawer_max_retries,
-            refresh_interval_blocks: withdrawrer_refresh_interval_blocks,
+            refresh_interval_blocks: withdrawer_refresh_interval_blocks,
             min_withdraw_value_cents: withdrawer_min_withdraw_value_cents,
             utilization_safety_margin_bps: withdrawer_utilization_safety_margin_bps,
         },
@@ -173,10 +173,10 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&liquidator_capital),
     );
 
-    // engine.add_strategy(Box::new(bad_debt_request_initiator));
+    engine.add_strategy(Box::new(bad_debt_request_initiator));
     engine.add_strategy(Box::new(liquidator));
-    // engine.add_strategy(Box::new(withdrawer));
-    // engine.add_strategy(Box::new(balancer));
+    engine.add_strategy(Box::new(withdrawer));
+    engine.add_strategy(Box::new(balancer));
 
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::try_new(

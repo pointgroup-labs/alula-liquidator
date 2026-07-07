@@ -703,79 +703,90 @@ impl Liquidator {
 
         // -- DIRECT LIQUIDATION --
 
-        // let direct_repay = max_profitable_repay.min(usable_borrow);
-        // if direct_repay.is_positive()
-        //     && let Some(plan) = self
-        //         .try_direct_plan(
-        //             is_insolvent,
-        //             direct_repay,
-        //             borrow_pool,
-        //             borrower_obligation,
-        //             market_data,
-        //             collateral_pool,
-        //             borrower_obligation_key,
-        //             min_profit_margin_value,
-        //             deposit_position,
-        //         )
-        //         .await
-        // {
-        //     candidates.push(plan);
-        // }
+        let direct_repay = max_profitable_repay.min(usable_borrow);
+        if direct_repay.is_positive()
+            && let Some(plan) = self
+                .try_direct_plan(
+                    is_insolvent,
+                    direct_repay,
+                    borrow_pool,
+                    borrower_obligation,
+                    market_data,
+                    collateral_pool,
+                    borrower_obligation_key,
+                    min_profit_margin_value,
+                    deposit_position,
+                )
+                .await
+        {
+            candidates.push(plan);
+        }
 
         // -- FLASH LIQUIDATION --
 
-        // let flash_repay = {
-        //     let all_liquidated_position_deposit = collateral_pool
-        //         .j_tokens_to_tokens_floor(deposit_position.j_tokens)
-        //         .inspect_err(|e| error!(%e))
-        //         .ok()?
-        //         .0;
-        //     // NB: all that's available for borrowing is available
-        //     // to be withdrawn without applying scarcity fees
-        //     let available_to_withdraw_without_scarcity_fees = collateral_pool
-        //         .available_for_borrow()
-        //         .inspect_err(|e| error!(%e))
-        //         .ok()?
-        //         .0;
+        let flash_repay = {
+            let all_liquidated_position_deposit = collateral_pool
+                .j_tokens_to_tokens_floor(deposit_position.j_tokens)
+                .inspect_err(|e| error!(%e))
+                .ok()?
+                .0;
+            // NB: all that's available for borrowing is available
+            // to be withdrawn without applying scarcity fees
+            let available_to_withdraw_without_scarcity_fees = collateral_pool
+                .available_for_borrow()
+                .inspect_err(|e| error!(%e))
+                .ok()?
+                .0;
 
-        //     let (instantly_available_plain_collateral, instantly_available_withdrawable_deposit) = (
-        //         deposit_position.collateral.0,
-        //         all_liquidated_position_deposit.min(available_to_withdraw_without_scarcity_fees),
-        //     );
-        //     let instantly_available_collateral =
-        //         instantly_available_plain_collateral + instantly_available_withdrawable_deposit;
+            let (instantly_available_plain_collateral, instantly_available_withdrawable_deposit) = (
+                deposit_position.collateral.0,
+                all_liquidated_position_deposit.min(available_to_withdraw_without_scarcity_fees),
+            );
+            let instantly_available_collateral =
+                instantly_available_plain_collateral + instantly_available_withdrawable_deposit;
 
-        //     let updated_max_profitable_repay = profitability::compute_repay_cap_from_collateral(
-        //         !is_insolvent,
-        //         borrow_pool,
-        //         max_feasible_repay,
-        //         collateral_pool,
-        //         instantly_available_collateral, // must use instantly available collateral only
-        //         obligation_debt_value,
-        //         profit_margin_borrow,
-        //         obligation_collateral_value,
-        //     )?;
+            let updated_max_profitable_repay = profitability::compute_repay_cap_from_collateral(
+                !is_insolvent,
+                borrow_pool,
+                max_feasible_repay,
+                collateral_pool,
+                instantly_available_collateral, // must use instantly available collateral only
+                obligation_debt_value,
+                profit_margin_borrow,
+                obligation_collateral_value,
+            )
+            .inspect_err(|e| error!(%e))
+            .ok()?;
 
-        //     updated_max_profitable_repay.min(borrow_pool.total_available_adjusted.0)
-        // };
+            if updated_max_profitable_repay <= 0 {
+                warn!(
+                    updated_max_profitable_repay,
+                    "non-positive updated max profitable repay"
+                );
 
-        // if flash_repay.is_positive()
-        //     && let Some(plan) = self
-        //         .try_flash_plan(
-        //             is_insolvent,
-        //             flash_repay,
-        //             borrow_pool,
-        //             borrower_obligation,
-        //             market_data,
-        //             collateral_pool,
-        //             borrower_obligation_key,
-        //             min_profit_margin_value,
-        //             deposit_position,
-        //         )
-        //         .await
-        // {
-        //     candidates.push(plan);
-        // }
+                return None;
+            }
+
+            updated_max_profitable_repay.min(borrow_pool.total_available_adjusted.0)
+        };
+
+        if flash_repay.is_positive()
+            && let Some(plan) = self
+                .try_flash_plan(
+                    is_insolvent,
+                    flash_repay,
+                    borrow_pool,
+                    borrower_obligation,
+                    market_data,
+                    collateral_pool,
+                    borrower_obligation_key,
+                    min_profit_margin_value,
+                    deposit_position,
+                )
+                .await
+        {
+            candidates.push(plan);
+        }
 
         // -- PRESWAP LIQUIDATION --
 
@@ -941,9 +952,9 @@ impl Liquidator {
             .saturating_div(BPS_FACTOR);
 
         if amount_out_minus_slippage < flash_repay_amount {
-            debug!(
+            info!(
                 amount_out_minus_slippage,
-                flash_repay_amount, de_facto_seized_amount, "flash amount out flash_repay_amount"
+                flash_repay_amount, de_facto_seized_amount, "unprofitable post-liquidation swap"
             );
             counter!(
                 "liquidator_skip_total",

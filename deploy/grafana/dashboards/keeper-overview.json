@@ -1840,7 +1840,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "60 * rate(rebalancer_outcome_total[5m])",
+          "expr": "60 * rate(balancer_outcome_total[5m])",
           "legendFormat": "{{outcome}}"
         }
       ],

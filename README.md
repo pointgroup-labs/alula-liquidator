@@ -9,8 +9,8 @@ The bot tracks on-chain events from Alula's money-market contracts and runs seve
 The current strategies are:
 
 - `bad_debt_request_initiator` monitors liquidation events. If the borrower is left with residual debt and no viable collateral, it initiates bad-debt coverage through the insurance fund.
-- `liquidator` scans obligations for profitable liquidation opportunities and executes them, using pre-swaps when the keeper doesn't hold enough of the repayment asset.
-- `rebalancer` converts non-target assets in the keeper's wallet into the configured `assets_to_hold` via on-chain AMMs.
+- `liquidator` scans obligations for profitable liquidation opportunities and executes them, using pre-swaps or flash loans when the keeper doesn't hold enough of the repayment asset.
+- `rebalancer` (the `Balancer` strategy) converts non-target assets in the keeper's wallet into the configured `assets_to_hold` via on-chain AMMs.
 - The `withdrawer` pulls the keeper's deposits back out of pools when utilisation allows.
 
 See [`docs/`](./docs) for the full configuration reference and operations guide.
@@ -59,11 +59,11 @@ The `engine` crate contains the lending model, the reactor loop, and the trait d
 
 **`bad_debt_request_initiator`** listens for `Liquidate` events and inspects the borrower's residual obligation. When the obligation has no viable collateral left but still carries debt, it submits `issue_cover_bad_debt` so the insurance fund can socialize the loss. Stateless; no startup sync needed.
 
-**`liquidator`** models obligations and oracle prices per market, estimates net profit after gas, swap costs, and `min_profit_margin_cents`, and picks the most profitable (borrow, deposit) pair to liquidate. It chooses between two execution modes based on the keeper's on-hand liquidity: `Direct` (the keeper already holds enough of the repayment asset) or `PreSwap` (swap a held asset into the repayment asset first, then liquidate). Non-target collateral received from liquidations is later swapped by the rebalancer; assets in `assets_to_hold` are kept.
+**`liquidator`** models obligations and oracle prices per market, estimates net profit after gas, swap costs, and `liquidator_min_profit_margin_cents`, and picks the most profitable (borrow, deposit) pair to liquidate. It chooses between three execution modes based on the keeper's on-hand liquidity: `Direct` (the keeper already holds enough of the repayment asset), `PreSwap` (swap a held asset into the repayment asset first, then liquidate), or `Flash` (flash-borrow the repayment asset from the pool, seize the collateral, swap it back, and repay the flash loan atomically). Non-target collateral received from liquidations is later swapped by the rebalancer; assets in `assets_to_hold` are kept.
 
-**`rebalancer`** runs every `rebalancer_interval_blocks` ledgers. It walks the wallet and swaps each non-target asset whose dollar value exceeds `rebalancer_min_swap_amount_value_cents` into the rebalancer target (the first entry of `assets_to_hold`). Trade size is capped so on-chain price impact stays under `rebalancer_max_price_impact_bps`; `rebalancer_slippage_bps` is added on top when constructing `min_amount_out`. Retries up to 3 times on failure.
+**`rebalancer`** (the `Balancer` strategy, config prefix `balancer_*`) runs every `balancer_refresh_interval_blocks` ledgers. It walks the wallet and swaps each non-target asset whose dollar value exceeds `balancer_min_swap_amount_value_cents` into the rebalancer target (the first entry of `assets_to_hold`). Trade size is capped so on-chain price impact stays under `balancer_max_price_impact_bps`, probing progressively smaller sizes up to `balancer_max_swap_provider_probes` times per provider; `balancer_max_allowed_swap_slippage_bps` is applied on top when constructing `min_amount_out`. Retries up to `balancer_max_retries` times on failure.
 
-The **`withdrawer`** watches the keeper's own deposits and pulls idle supply out of pools once it can do so without pushing utilisation past a built-in safety margin. Withdrawals below `min_withdraw_value_cents` are skipped.
+The **`withdrawer`** watches the keeper's own deposits and pulls idle supply out of pools once it can do so without pushing utilisation past `withdrawer_utilization_safety_margin_bps`. Withdrawals below `withdrawer_min_withdraw_value_cents` are skipped.
 
 ## Development
 

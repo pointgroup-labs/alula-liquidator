@@ -88,7 +88,7 @@ pub struct CliConfig {
     pub withdrawer_max_retries: u32,
 
     #[validate(range(min = 1))]
-    pub withdrawrer_refresh_interval_blocks: u32,
+    pub withdrawer_refresh_interval_blocks: u32,
 
     #[validate(range(min = 0))]
     pub withdrawer_min_withdraw_value_cents: i128,

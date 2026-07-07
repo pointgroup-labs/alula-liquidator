@@ -9,11 +9,11 @@
     "default_simulation_fee": 10000,
     "network_passphrase": "Test SDF Network ; September 2015",
     "assets_to_hold": [
-        "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
+        "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+        "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
     ],
     "swap_providers": [
-        "CCQBZY6KF6CGL76D3MFYMPCHCI23BKYAN2KHPGJA2MV3QM3PDEXLO34Y",
-        "CDWL35O3H3NSM5JBUPWN5LEDAITWYNHRLCCWCYJFFXFRR6MGH6IVKIIU"
+        "CBU6NTBOV5FD6H4ERIF3X3YYUZI6W54DUUVE3ZBM33X5YVTSUKCELQ6L"
     ],
     "metrics_bind_addr": "0.0.0.0:9000",
     "event_collector_start_ledger": 3338084,
@@ -23,13 +23,13 @@
     "bad_debt_request_initiator_max_retries": 3,
     "bad_debt_request_initiator_refresh_interval_blocks": 5,
     "withdrawer_max_retries": 3,
-    "withdrawrer_refresh_interval_blocks": 5,
+    "withdrawer_refresh_interval_blocks": 5,
     "withdrawer_min_withdraw_value_cents": 500,
     "withdrawer_utilization_safety_margin_bps": 500,
     "liquidator_max_retries": 3,
     "liquidator_refresh_interval_blocks": 2,
     "liquidator_min_profit_margin_cents": 0,
-    "liquidator_max_allowed_swap_slippage_bps": 100,
+    "liquidator_max_allowed_swap_slippage_bps": 0,
     "balancer_max_retries": 3,
     "balancer_refresh_interval_blocks": 2,
     "balancer_max_allowed_swap_slippage_bps": 30,

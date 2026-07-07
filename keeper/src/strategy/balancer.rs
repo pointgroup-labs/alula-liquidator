@@ -1,4 +1,4 @@
-//! Rebalancer: swaps non-target assets back into the configured target asset if
+//! Balancer: swaps non-target assets back into the configured target asset if
 //! the swap doesn't exceed the predefined max price impact.
 
 use {
@@ -253,7 +253,7 @@ impl Balancer {
                 Ok(None) => {}
                 Err(e) => {
                     warn!(?e, %candidate, "candidate evaluation failed");
-                    counter!("rebalancer_outcome_total", "outcome" => "evaluation_error")
+                    counter!("balancer_outcome_total", "outcome" => "evaluation_error")
                         .increment(1);
                 }
             }
@@ -281,14 +281,14 @@ impl Balancer {
         };
         if !swappable_balance.is_positive() {
             debug!(%candidate, raw_balance, swappable_balance, "nothing to swap");
-            counter!("rebalancer_outcome_total", "outcome" => "nothing_to_swap").increment(1);
+            counter!("balancer_outcome_total", "outcome" => "nothing_to_swap").increment(1);
 
             return Ok(None);
         }
 
         if target_oracle_price <= 0 {
             error!(%target, target_oracle_price, "non-positive target oracle price; skipping candidate");
-            counter!("rebalancer_outcome_total", "outcome" => "bad_oracle_price").increment(1);
+            counter!("balancer_outcome_total", "outcome" => "bad_oracle_price").increment(1);
 
             return Ok(None);
         }
@@ -323,13 +323,13 @@ impl Balancer {
                 Ok(None) => debug!(%provider, %candidate, "provider unviable"),
                 Err(e) => {
                     warn!(?e, %candidate, "candidate evaluation failed");
-                    counter!("rebalancer_outcome_total", "outcome" => "evaluation_error")
+                    counter!("balancer_outcome_total", "outcome" => "evaluation_error")
                         .increment(1);
                 }
             }
         }
         let Some((provider, amount_in, amount_out)) = best_provider else {
-            counter!("rebalancer_outcome_total", "outcome" => "no_viable_provider").increment(1);
+            counter!("balancer_outcome_total", "outcome" => "no_viable_provider").increment(1);
 
             return Ok(None);
         };
@@ -341,7 +341,7 @@ impl Balancer {
         let swap_value_cents = compute_value_cents(amount_in, info);
         if swap_value_cents < self.config.min_swap_amount_value_cents {
             info!(%candidate, amount_in, swap_value_cents, "swap below dust threshold");
-            counter!("rebalancer_outcome_total", "outcome" => "below_dust").increment(1);
+            counter!("balancer_outcome_total", "outcome" => "below_dust").increment(1);
 
             return Ok(None);
         }
@@ -365,8 +365,8 @@ impl Balancer {
             Ok(id) => id,
             Err(e) => {
                 warn!(?e, %candidate, amount_in, swappable_balance,
-                    "rebalancer: reservation lost race; skipping submission");
-                counter!("rebalancer_outcome_total", "outcome" => "reservation_lost").increment(1);
+                    "balancer: reservation lost race; skipping submission");
+                counter!("balancer_outcome_total", "outcome" => "reservation_lost").increment(1);
 
                 return Ok(None);
             }
@@ -383,7 +383,7 @@ impl Balancer {
             .checked_div(amount_in)
             .unwrap_or(0);
         histogram!(
-            "rebalancer_realised_swap_price_scaled",
+            "balancer_realised_swap_price_scaled",
             "asset" => candidate.to_string(),
         )
         .record(realised_price_scaled as f64);
@@ -394,8 +394,8 @@ impl Balancer {
             realised_price_scaled, oracle_price_scaled = candidate_quoted_in_target,
             "submitting swap..."
         );
-        counter!("rebalancer_outcome_total", "outcome" => "dispatched").increment(1);
-        histogram!("rebalancer_dispatched_swap_value_cents").record(swap_value_cents.max(0) as f64);
+        counter!("balancer_outcome_total", "outcome" => "dispatched").increment(1);
+        histogram!("balancer_dispatched_swap_value_cents").record(swap_value_cents.max(0) as f64);
 
         Ok(Some(Action::SubmitTx(SubmitStellarTx {
             op,
@@ -443,7 +443,7 @@ impl Balancer {
             // `max_price_impact_bps` and spotting oracle/DEX divergence.
             let admitted = impact.bps <= self.config.max_price_impact_bps;
             histogram!(
-                "rebalancer_swap_price_impact_bps",
+                "balancer_swap_price_impact_bps",
                 "asset" => asset_in.to_string(),
                 "admitted" => if admitted { "true" } else { "false" },
             )
@@ -487,11 +487,11 @@ impl Balancer {
 
     fn is_swap_reasonable(&self) -> bool {
         if self.config.assets_to_hold.is_empty() {
-            warn!("Rebalancer: assets_to_hold is empty; skipping rebalance");
+            warn!("assets_to_hold is empty; skipping rebalance");
 
             false
         } else if self.config.swap_providers.is_empty() {
-            warn!("Rebalancer: swap_providers is empty; skipping rebalance");
+            warn!("swap_providers is empty; skipping rebalance");
 
             false
         } else {
