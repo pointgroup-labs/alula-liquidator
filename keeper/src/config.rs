@@ -58,6 +58,15 @@ pub struct CliConfig {
     pub swap_providers: Vec<String>,
 
     pub metrics_bind_addr: SocketAddr,
+
+    /// `/readyz` staleness budget: seconds without a completed scan before the
+    /// keeper reports not-ready. Set it above the slowest strategy refresh
+    /// cadence so an idle-but-healthy keeper doesn't flap. Optional; defaults
+    /// to 120.
+    #[serde(default = "default_readiness_staleness_budget_secs")]
+    #[validate(range(min = 1))]
+    pub readiness_staleness_budget_secs: u64,
+
     pub event_collector_start_ledger: u32,
 
     #[validate(range(min = 1, max = 10))]
@@ -145,6 +154,10 @@ pub struct CliConfig {
 
     #[validate(range(min = 0))]
     pub balancer_min_swap_amount_value_cents: i128,
+}
+
+fn default_readiness_staleness_budget_secs() -> u64 {
+    120
 }
 
 fn validate_stellar_address(addr: &str) -> Result<(), ValidationError> {

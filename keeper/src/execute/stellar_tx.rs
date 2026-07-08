@@ -3,6 +3,7 @@
 //!
 use {
     super::Action,
+    crate::metrics::{self, TxConfirmOutcome, TxSubmitOutcome},
     crate::{
         liquidator_capital::LiquidatorCapital,
         stellar::{
@@ -13,7 +14,6 @@ use {
     anyhow::Result,
     ed25519_dalek::{Signer, SigningKey},
     engine::reactor::{BoxFuture, Executor},
-    metrics::{counter, histogram},
     sha2::{Digest, Sha256},
     std::{sync::Arc, time::Duration},
     stellar_rpc_client::{AuthMode, Client},
@@ -152,7 +152,7 @@ impl Executor<Action> for SorobanExecutor {
 
                                     if is_bad_seq_error(&e) {
                                         warn!(%e, attempt, "tx_bad_seq");
-                                        counter!("keeper_tx_bad_seq_retries_total").increment(1);
+                                        metrics::record_tx_bad_seq_retry();
                                     }
 
                                     if is_last {
@@ -178,7 +178,7 @@ impl Executor<Action> for SorobanExecutor {
                     match outcome {
                         Outcome::Success(hash_hex) => {
                             info!(hash = %hash_hex, "tx submitted; polling in background");
-                            counter!("keeper_tx_submitted_total", "outcome" => "ok").increment(1);
+                            TxSubmitOutcome::Ok.record();
 
                             spawn_confirmation_poll(
                                 Arc::clone(&self.gateway),
@@ -189,15 +189,18 @@ impl Executor<Action> for SorobanExecutor {
                             Ok(())
                         }
                         other => {
-                            let (outcome_label, res) = match other {
-                                Outcome::SimEmpty => ("sim_empty", Ok(())),
-                                Outcome::SeqFetchFailed(e) => ("seq_fetch_failed", Err(e)),
-                                Outcome::RetryExhausted(e) => ("retry_exhausted", Err(e)),
+                            let (outcome, res) = match other {
+                                Outcome::SimEmpty => (TxSubmitOutcome::SimEmpty, Ok(())),
+                                Outcome::SeqFetchFailed(e) => {
+                                    (TxSubmitOutcome::SeqFetchFailed, Err(e))
+                                }
+                                Outcome::RetryExhausted(e) => {
+                                    (TxSubmitOutcome::RetryExhausted, Err(e))
+                                }
                                 Outcome::Success(_) => unreachable!(),
                             };
 
-                            counter!("keeper_tx_submitted_total", "outcome" => outcome_label)
-                                .increment(1);
+                            outcome.record();
 
                             if let Some(hook) = &tx.on_settle {
                                 hook.release();
@@ -226,11 +229,7 @@ fn spawn_confirmation_poll(
             }
             _ => {
                 warn!(hash = %hash_hex, "could not decode hash for polling");
-                counter!(
-                    "keeper_tx_confirmed_total",
-                    "outcome" => "hash_decode_failed",
-                )
-                .increment(1);
+                TxConfirmOutcome::HashDecodeFailed.record();
 
                 if let Some(hook) = &on_settle {
                     hook.release();
@@ -243,42 +242,24 @@ fn spawn_confirmation_poll(
         match gateway.rpc.get_transaction_polling(&hash_bytes, None).await {
             Ok(_) => {
                 info!(hash = %hash_hex, "tx confirmed");
-                counter!(
-                    "keeper_tx_confirmed_total",
-                    "outcome" => "confirmed",
-                )
-                .increment(1);
+                TxConfirmOutcome::Confirmed.record();
                 if let Some(hook) = &on_settle
                     && let Some(metric) = &hook.liquidation_outcome
                 {
-                    let net = metric.expected_net_value.max(0);
-                    counter!(
-                        "liquidator_plan_realised_net_profit_oracle_units_total",
-                        "market" => metric.market.clone(),
-                    )
-                    .increment(net as u64);
-                    histogram!(
-                        "liquidator_plan_realised_net_profit_oracle_units",
-                        "market" => metric.market.clone(),
-                    )
-                    .record(net as f64);
+                    metrics::record_realised_profit(&metric.market, metric.expected_net_value);
                 }
             }
             Err(e) => {
                 warn!(hash = %hash_hex, %e, "tx confirmation poll failed");
                 let outcome = match SorobanRpcError::classify(&e) {
                     SorobanRpcError::TxFailedOnChain | SorobanRpcError::Contract { .. } => {
-                        "failed_on_chain"
+                        TxConfirmOutcome::FailedOnChain
                     }
-                    SorobanRpcError::SubmissionTimeout => "submission_timeout",
-                    SorobanRpcError::UnexpectedStatus => "unexpected_status",
-                    _ => "transport_error",
+                    SorobanRpcError::SubmissionTimeout => TxConfirmOutcome::SubmissionTimeout,
+                    SorobanRpcError::UnexpectedStatus => TxConfirmOutcome::UnexpectedStatus,
+                    _ => TxConfirmOutcome::TransportError,
                 };
-                counter!(
-                    "keeper_tx_confirmed_total",
-                    "outcome" => outcome,
-                )
-                .increment(1);
+                outcome.record();
             }
         }
 

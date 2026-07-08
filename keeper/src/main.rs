@@ -17,7 +17,6 @@ use {
             Liquidator, LiquidatorConfig, Withdrawer, WithdrawerConfig,
         },
     },
-    ::metrics::gauge,
     clap::Parser,
     ed25519_dalek::SigningKey,
     engine::{ports::LedgerReader, reactor::Engine},
@@ -54,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
         swap_providers,
         assets_to_hold,
         metrics_bind_addr,
+        readiness_staleness_budget_secs,
         xlm_safety_margin,
         network_passphrase,
         default_simulation_fee,
@@ -91,10 +91,15 @@ async fn main() -> anyhow::Result<()> {
 
     let store = SqliteStore::open(&db_path)?;
     let metrics_handle = metrics::install_prometheus_recorder();
+    let start_unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    metrics::emit_build_info(start_unix_secs);
     let gateway = Arc::new(Gateway::new(&rpc_url, pkey.clone())?);
     let ledger_reader: Arc<dyn LedgerReader> = gateway.clone();
 
-    gauge!("liquidator_xlm_safety_margin_stroops").set(xlm_safety_margin as f64);
+    metrics::set_xlm_safety_margin(xlm_safety_margin);
 
     let liquidator_capital_config = LiquidatorCapitalConfig {
         xlm_address: xlm_address.clone(),
@@ -203,7 +208,7 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::select! {
         _ = run_engine(engine) => {},
-        res = metrics::serve(metrics_handle, metrics_bind_addr) => {
+        res = metrics::serve(metrics_handle, metrics_bind_addr, readiness_staleness_budget_secs) => {
             if let Err(e) = res {
                 error!(?e, "metrics server stopped");
             }

@@ -10,13 +10,13 @@ use {
             scval_to_i128,
         },
     },
+    crate::metrics::{self, SimulationCall, SimulationOutcome},
     anyhow::{Context, anyhow},
     engine::{
         lending_model::{MarketData, Obligation, ObligationKey, PoolData},
         ports::{BatchSimulator, LedgerReader},
         reactor::BoxFuture,
     },
-    metrics::counter,
     stellar_xdr::curr::ScVal,
     tracing::{debug, warn},
 };
@@ -178,12 +178,7 @@ impl LedgerReader for Gateway {
                 .await
             {
                 Ok(_) => {
-                    counter!(
-                        "keeper_simulation_total",
-                        "call" => "liquidate",
-                        "outcome" => "ok",
-                    )
-                    .increment(1);
+                    metrics::record_simulation(SimulationCall::Liquidate, SimulationOutcome::Ok);
                     Ok(true)
                 }
                 Err(e) => {
@@ -194,24 +189,20 @@ impl LedgerReader for Gateway {
                             borrower.user,
                             msg.chars().take(200).collect::<String>()
                         );
-                        counter!(
-                            "keeper_simulation_total",
-                            "call" => "liquidate",
-                            "outcome" => "not_liquidatable",
-                        )
-                        .increment(1);
+                        metrics::record_simulation(
+                            SimulationCall::Liquidate,
+                            SimulationOutcome::NotLiquidatable,
+                        );
                         Ok(false)
                     } else {
                         warn!(
                             "liquidation sim unexpected error: borrower={} err={:#}",
                             borrower.user, e,
                         );
-                        counter!(
-                            "keeper_simulation_total",
-                            "call" => "liquidate",
-                            "outcome" => "error",
-                        )
-                        .increment(1);
+                        metrics::record_simulation(
+                            SimulationCall::Liquidate,
+                            SimulationOutcome::Error,
+                        );
                         Err(e)
                     }
                 }
@@ -248,12 +239,7 @@ impl BatchSimulator for Gateway {
                 .await
             {
                 Ok(_) => {
-                    counter!(
-                        "keeper_simulation_total",
-                        "call" => "batch",
-                        "outcome" => "ok",
-                    )
-                    .increment(1);
+                    metrics::record_simulation(SimulationCall::Batch, SimulationOutcome::Ok);
                     Ok(true)
                 }
                 Err(e) => {
@@ -267,12 +253,7 @@ impl BatchSimulator for Gateway {
                     // precondition, RPC error, malformed args) into `Ok(false)`,
                     // so the metric uses a single `failed` bucket. If the
                     // taxonomy ever splits, mirror simulate_liquidate's enum.
-                    counter!(
-                        "keeper_simulation_total",
-                        "call" => "batch",
-                        "outcome" => "failed",
-                    )
-                    .increment(1);
+                    metrics::record_simulation(SimulationCall::Batch, SimulationOutcome::Failed);
                     Ok(false)
                 }
             }

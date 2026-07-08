@@ -9,6 +9,7 @@ use {
             stellar_tx::{SubmitStellarTx, TransactionSettleHook},
         },
         liquidator_capital::LiquidatorCapital,
+        metrics::{self, BalancerOutcome},
         stellar::client::Gateway,
     },
     ed25519_dalek::SigningKey,
@@ -17,7 +18,6 @@ use {
         ports::{EventCodec, LedgerReader, OperationBuilder, OperationEvent},
         reactor::{BoxFuture, Strategy},
     },
-    metrics::{counter, histogram},
     std::{collections::HashMap, sync::Arc},
     stellar_rpc_client::Event as SorobanEvent,
     tracing::{debug, error, info, warn},
@@ -253,8 +253,7 @@ impl Balancer {
                 Ok(None) => {}
                 Err(e) => {
                     warn!(?e, %candidate, "candidate evaluation failed");
-                    counter!("balancer_outcome_total", "outcome" => "evaluation_error")
-                        .increment(1);
+                    BalancerOutcome::EvaluationError.record();
                 }
             }
         }
@@ -281,14 +280,14 @@ impl Balancer {
         };
         if !swappable_balance.is_positive() {
             debug!(%candidate, raw_balance, swappable_balance, "nothing to swap");
-            counter!("balancer_outcome_total", "outcome" => "nothing_to_swap").increment(1);
+            BalancerOutcome::NothingToSwap.record();
 
             return Ok(None);
         }
 
         if target_oracle_price <= 0 {
             error!(%target, target_oracle_price, "non-positive target oracle price; skipping candidate");
-            counter!("balancer_outcome_total", "outcome" => "bad_oracle_price").increment(1);
+            BalancerOutcome::BadOraclePrice.record();
 
             return Ok(None);
         }
@@ -323,13 +322,12 @@ impl Balancer {
                 Ok(None) => debug!(%provider, %candidate, "provider unviable"),
                 Err(e) => {
                     warn!(?e, %candidate, "candidate evaluation failed");
-                    counter!("balancer_outcome_total", "outcome" => "evaluation_error")
-                        .increment(1);
+                    BalancerOutcome::EvaluationError.record();
                 }
             }
         }
         let Some((provider, amount_in, amount_out)) = best_provider else {
-            counter!("balancer_outcome_total", "outcome" => "no_viable_provider").increment(1);
+            BalancerOutcome::NoViableProvider.record();
 
             return Ok(None);
         };
@@ -341,7 +339,7 @@ impl Balancer {
         let swap_value_cents = compute_value_cents(amount_in, info);
         if swap_value_cents < self.config.min_swap_amount_value_cents {
             info!(%candidate, amount_in, swap_value_cents, "swap below dust threshold");
-            counter!("balancer_outcome_total", "outcome" => "below_dust").increment(1);
+            BalancerOutcome::BelowDust.record();
 
             return Ok(None);
         }
@@ -366,7 +364,7 @@ impl Balancer {
             Err(e) => {
                 warn!(?e, %candidate, amount_in, swappable_balance,
                     "balancer: reservation lost race; skipping submission");
-                counter!("balancer_outcome_total", "outcome" => "reservation_lost").increment(1);
+                BalancerOutcome::ReservationLost.record();
 
                 return Ok(None);
             }
@@ -382,11 +380,7 @@ impl Balancer {
             .saturating_mul(oracle_scale)
             .checked_div(amount_in)
             .unwrap_or(0);
-        histogram!(
-            "balancer_realised_swap_price_scaled",
-            "asset" => candidate.to_string(),
-        )
-        .record(realised_price_scaled as f64);
+        metrics::record_balancer_realised_price(candidate, realised_price_scaled);
 
         info!(
             %candidate, swap_value_cents, %target, %provider, amount_in, amount_out,
@@ -394,8 +388,8 @@ impl Balancer {
             realised_price_scaled, oracle_price_scaled = candidate_quoted_in_target,
             "submitting swap..."
         );
-        counter!("balancer_outcome_total", "outcome" => "dispatched").increment(1);
-        histogram!("balancer_dispatched_swap_value_cents").record(swap_value_cents.max(0) as f64);
+        BalancerOutcome::Dispatched.record();
+        metrics::record_balancer_dispatched_value(swap_value_cents);
 
         Ok(Some(Action::SubmitTx(SubmitStellarTx {
             op,
@@ -442,12 +436,7 @@ impl Balancer {
             // spread the balancer is gating on — useful for tuning
             // `max_price_impact_bps` and spotting oracle/DEX divergence.
             let admitted = impact.bps <= self.config.max_price_impact_bps;
-            histogram!(
-                "balancer_swap_price_impact_bps",
-                "asset" => asset_in.to_string(),
-                "admitted" => if admitted { "true" } else { "false" },
-            )
-            .record(impact.bps as f64);
+            metrics::record_balancer_price_impact(asset_in, admitted, impact.bps);
 
             if admitted {
                 debug!(

@@ -1,9 +1,8 @@
 //! Cross-strategy in-flight capital reservation.
 
 use {
-    crate::error::KeeperError,
+    crate::{error::KeeperError, metrics},
     engine::ports::LedgerReader,
-    metrics::gauge,
     parking_lot::Mutex,
     std::{
         collections::HashMap,
@@ -125,10 +124,9 @@ impl LiquidatorCapital {
         let amount = ledger_reader
             .read_token_balance(token_address, &self.pkey)
             .await?;
-        gauge!("liquidator_asset_balance", "token_address" => token_address.to_string())
-            .set(amount as f64);
+        metrics::set_asset_balance(token_address, amount);
         if token_address == self.config.xlm_address {
-            gauge!("liquidator_xlm_balance_stroops").set(amount as f64);
+            metrics::set_xlm_balance(amount);
         }
 
         let mut guard = self.inner.lock();

@@ -4,6 +4,7 @@ use {
     crate::{
         collect::{Event, stellar_ledger::NewLedger},
         execute::{Action, stellar_tx::SubmitStellarTx},
+        metrics::BadDebtOutcome,
         stellar::client::Gateway,
         storage::obligations::ObligationsRepo,
     },
@@ -15,7 +16,6 @@ use {
         ports::{EventCodec, LedgerReader, OperationEvent},
         reactor::{BoxFuture, Strategy},
     },
-    metrics::counter,
     std::sync::Arc,
     stellar_rpc_client::Event as SorobanEvent,
     tracing::{debug, error, info, warn},
@@ -111,15 +111,14 @@ impl BadDebtRequestInitiator {
                     )
                     .inspect_err(|e| {
                         warn!(?e, ?obligation_key, "bad debt eligibility check failed");
-                        counter!("bad_debt_outcome_total", "outcome" => "eligibility_error")
-                            .increment(1);
+                        BadDebtOutcome::EligibilityError.record();
                     })
                 else {
                     continue;
                 };
 
                 if !eligible {
-                    counter!("bad_debt_outcome_total", "outcome" => "ineligible").increment(1);
+                    BadDebtOutcome::Ineligible.record();
 
                     continue;
                 }
@@ -129,10 +128,10 @@ impl BadDebtRequestInitiator {
                 );
 
                 if let Ok(action) = self.build_issue_bad_debt(&market, obligation_key) {
-                    counter!("bad_debt_outcome_total", "outcome" => "dispatched").increment(1);
+                    BadDebtOutcome::Dispatched.record();
                     actions.push(action);
                 } else {
-                    counter!("bad_debt_outcome_total", "outcome" => "build_failed").increment(1);
+                    BadDebtOutcome::BuildFailed.record();
                 }
             }
         }
@@ -152,7 +151,7 @@ impl BadDebtRequestInitiator {
         let Ok(OperationEvent::Liquidate) =
             self.gateway.decode_operation(&event).inspect_err(|e| {
                 debug!(?e, "decode_operation failed");
-                counter!("bad_debt_outcome_total", "outcome" => "decode_op_error").increment(1);
+                BadDebtOutcome::DecodeOpError.record();
             })
         else {
             return vec![];
@@ -175,7 +174,7 @@ impl BadDebtRequestInitiator {
             .parse_obligation_key_from_topic(&event, 2)
             .inspect_err(|e| {
                 warn!(?e, "cannot parse borrower obligation key");
-                counter!("bad_debt_outcome_total", "outcome" => "parse_error").increment(1);
+                BadDebtOutcome::ParseError.record();
             })
         else {
             return vec![];
@@ -186,14 +185,14 @@ impl BadDebtRequestInitiator {
             .parse_obligation_from_event_value(&event.value, "borrower_obligation", &borrower_key)
             .inspect_err(|e| {
                 warn!(?e, ?borrower_key, "failed to parse borrower obligation");
-                counter!("bad_debt_outcome_total", "outcome" => "parse_error").increment(1);
+                BadDebtOutcome::ParseError.record();
             })
         else {
             return vec![];
         };
         let Some(borrower_obligation) = obligation_opt else {
             debug!(?borrower_key, "borrower obligation removed; nothing to do");
-            counter!("bad_debt_outcome_total", "outcome" => "obligation_cleared").increment(1);
+            BadDebtOutcome::ObligationCleared.record();
 
             return vec![];
         };
@@ -218,14 +217,14 @@ impl BadDebtRequestInitiator {
             )
             .inspect_err(|e| {
                 warn!(?e, ?borrower_key, "bad debt eligibility check failed");
-                counter!("bad_debt_outcome_total", "outcome" => "eligibility_error").increment(1);
+                BadDebtOutcome::EligibilityError.record();
             })
         else {
             return vec![];
         };
 
         if !eligible {
-            counter!("bad_debt_outcome_total", "outcome" => "ineligible").increment(1);
+            BadDebtOutcome::Ineligible.record();
 
             return vec![];
         }
@@ -236,10 +235,10 @@ impl BadDebtRequestInitiator {
         );
 
         if let Ok(action) = self.build_issue_bad_debt(&market, &borrower_key) {
-            counter!("bad_debt_outcome_total", "outcome" => "dispatched").increment(1);
+            BadDebtOutcome::Dispatched.record();
             vec![action]
         } else {
-            counter!("bad_debt_outcome_total", "outcome" => "build_failed").increment(1);
+            BadDebtOutcome::BuildFailed.record();
 
             vec![]
         }

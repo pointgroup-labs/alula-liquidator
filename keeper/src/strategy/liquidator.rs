@@ -10,6 +10,7 @@ use {
             stellar_tx::{LiquidationOutcomeMetric, SubmitStellarTx, TransactionSettleHook},
         },
         liquidator_capital::{LiquidatorCapital, random_id},
+        metrics::{self, LiquidationKind, ScanOutcome, SkipReason},
         stellar::client::Gateway,
         storage::{cursor::CursorRepo, obligations::ObligationsRepo},
     },
@@ -22,7 +23,6 @@ use {
         ports::{BatchSimulator, EventCodec, LedgerReader, OperationBuilder, OperationEvent},
         reactor::{BoxFuture, Strategy},
     },
-    metrics::{counter, gauge, histogram},
     std::{collections::HashMap, sync::Arc},
     stellar_rpc_client::Event as SorobanEvent,
     tracing::{debug, error, info, warn},
@@ -248,11 +248,7 @@ impl Liquidator {
 
         if let Err(e) = self.cursor_repo.set(&event.id, event.ledger) {
             warn!(?e, id = %event.id, "failed to save cursor");
-            counter!(
-                "keeper_cursor_save_failures_total",
-                "source" => "liquidator_event_cursor",
-            )
-            .increment(1);
+            metrics::CursorSource::LiquidatorEventCursor.record();
         }
 
         vec![]
@@ -343,34 +339,20 @@ impl Liquidator {
     async fn evaulate_market(&self, market: &str) -> Vec<Action> {
         let started = std::time::Instant::now();
         let Some(market_data) = self.market_data.get(market) else {
-            counter!(
-                "liquidator_scan_completed_total",
-                "market" => market.to_string(),
-                "outcome" => "no_market_data",
-            )
-            .increment(1);
-            histogram!(
-                "liquidator_market_scan_duration_seconds",
-                "market" => market.to_string(),
-                "outcome" => "no_market_data",
-            )
-            .record(started.elapsed().as_secs_f64());
+            metrics::record_scan(
+                market,
+                ScanOutcome::NoMarketData,
+                started.elapsed().as_secs_f64(),
+            );
 
             return vec![];
         };
         let Some(obligations) = self.obligations.get(market).filter(|m| !m.is_empty()) else {
-            counter!(
-                "liquidator_scan_completed_total",
-                "market" => market.to_string(),
-                "outcome" => "no_obligations",
-            )
-            .increment(1);
-            histogram!(
-                "liquidator_market_scan_duration_seconds",
-                "market" => market.to_string(),
-                "outcome" => "no_obligations",
-            )
-            .record(started.elapsed().as_secs_f64());
+            metrics::record_scan(
+                market,
+                ScanOutcome::NoObligations,
+                started.elapsed().as_secs_f64(),
+            );
 
             return vec![];
         };
@@ -421,29 +403,10 @@ impl Liquidator {
             }
         }
 
-        gauge!("liquidator_obligations_total", "market" => market.to_string()).set(checked as f64);
-        gauge!("liquidator_liquidatable_positions", "market" => market.to_string())
-            .set(liquidatable as f64);
-        counter!(
-            "liquidator_scan_completed_total",
-            "market" => market.to_string(),
-            "outcome" => "ok",
-        )
-        .increment(1);
-        histogram!(
-            "liquidator_market_scan_duration_seconds",
-            "market" => market.to_string(),
-            "outcome" => "ok",
-        )
-        .record(started.elapsed().as_secs_f64());
-        // Liveness gauge. Pair with `time() - …` alerts to detect stalled scans.
-        if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            gauge!(
-                "liquidator_last_successful_scan_timestamp_seconds",
-                "market" => market.to_string(),
-            )
-            .set(now.as_secs() as f64);
-        }
+        metrics::set_scan_counts(market, checked, liquidatable);
+        // On the ok path `record_scan` also advances the last-successful-scan
+        // liveness gauge and the readiness tick.
+        metrics::record_scan(market, ScanOutcome::Ok, started.elapsed().as_secs_f64());
 
         info!(%market, checked, liquidatable, "market evaluation complete");
 
@@ -536,18 +499,7 @@ impl Liquidator {
         }
 
         if let Some(plan) = best_liquidation_plan {
-            let net_value = plan.net_profit_value.max(0);
-
-            histogram!(
-                "liquidator_plan_expected_net_profit_value_units",
-                "market" => market.to_string(),
-            )
-            .record(net_value as f64);
-            counter!(
-                "liquidator_plan_expected_net_profit_value_units_total",
-                "market" => market.to_string(),
-            )
-            .increment(net_value as u64);
+            metrics::record_expected_profit(market, plan.net_profit_value);
             info!(?plan, "selected best (borrow, deposit) pair",);
 
             self.execute_liquidation_plan(market, plan, &liquidator_obl_key)
@@ -617,8 +569,7 @@ impl Liquidator {
                 min_collateral_threshold_value,
                 "position below minimum collateral threshold, skipping"
             );
-            counter!("liquidator_skip_total", "reason" => "below_collateral_threshold")
-                .increment(1);
+            SkipReason::BelowCollateralThreshold.record();
 
             return None;
         }
@@ -676,7 +627,7 @@ impl Liquidator {
             .await
             .inspect_err(|e| {
                 warn!(?e, %borrow_token, "balance query failed");
-                counter!("liquidator_skip_total", "reason" => "balance_query_failed").increment(1);
+                SkipReason::BalanceQueryFailed.record();
             })
             .unwrap_or(0);
 
@@ -938,11 +889,7 @@ impl Liquidator {
         {
             Some(q) => q,
             None => {
-                counter!(
-                    "liquidator_skip_total",
-                    "reason" => "flash_swap_shortfall"
-                )
-                .increment(1);
+                SkipReason::FlashSwapShortfall.record();
 
                 return None;
             }
@@ -956,11 +903,7 @@ impl Liquidator {
                 amount_out_minus_slippage,
                 flash_repay_amount, de_facto_seized_amount, "unprofitable post-liquidation swap"
             );
-            counter!(
-                "liquidator_skip_total",
-                "reason" => "flash_swap_shortfall"
-            )
-            .increment(1);
+            SkipReason::FlashSwapShortfall.record();
 
             return None;
         }
@@ -1277,7 +1220,7 @@ impl Liquidator {
 
         if !seized.is_positive() {
             warn!(repay_amount, "expected seized collateral is zero");
-            counter!("liquidator_skip_total", "reason" => "unprofitable_seize_zero").increment(1);
+            SkipReason::UnprofitableSeizeZero.record();
 
             None
         } else {
@@ -1306,13 +1249,13 @@ impl Liquidator {
             }
             Ok(false) => {
                 warn!(?plan.borrower_key, "batch simulation failed, dropping plan");
-                counter!("liquidator_skip_total", "reason" => "batch_sim_failed").increment(1);
+                SkipReason::BatchSimFailed.record();
 
                 return None;
             }
             Err(e) => {
                 warn!(?e, ?plan.borrower_key, "batch simulation error");
-                counter!("liquidator_skip_total", "reason" => "batch_sim_failed").increment(1);
+                SkipReason::BatchSimFailed.record();
 
                 return None;
             }
@@ -1359,8 +1302,7 @@ impl Liquidator {
                 Ok(b) => b,
                 Err(e) => {
                     warn!(?e, %reserve_token, "balance query failed at reservation time");
-                    counter!("liquidator_skip_total", "reason" => "balance_query_failed")
-                        .increment(1);
+                    SkipReason::BalanceQueryFailed.record();
 
                     return None;
                 }
@@ -1383,11 +1325,7 @@ impl Liquidator {
                         %reserve_token,
                         "skipping liquidation: insufficient available balance after pending reservations"
                     );
-                    counter!(
-                        "liquidator_skip_total",
-                        "reason" => "insufficient_balance_after_reservations",
-                    )
-                    .increment(1);
+                    SkipReason::InsufficientBalanceAfterReservations.record();
 
                     return None;
                 }
@@ -1402,17 +1340,12 @@ impl Liquidator {
                 // The tx may still fail, have bad_seq retry(though, unexpectedly) or confirmation
                 // poll; those outcomes are tracked separately by the executor's
                 // own counters.
-                let liq_type_label = match &plan.liquidation_type {
-                    LiquidationType::Direct => "direct",
-                    LiquidationType::PreSwap { .. } => "preswap",
-                    LiquidationType::Flash { .. } => "flash",
+                let kind = match &plan.liquidation_type {
+                    LiquidationType::Direct => LiquidationKind::Direct,
+                    LiquidationType::PreSwap { .. } => LiquidationKind::PreSwap,
+                    LiquidationType::Flash { .. } => LiquidationKind::Flash,
                 };
-                counter!(
-                    "liquidator_liquidation_plans_dispatched_total",
-                    "market" => market.to_string(),
-                    "type" => liq_type_label,
-                )
-                .increment(1);
+                metrics::record_plan_dispatched(market, kind);
                 Some(Action::SubmitTx(SubmitStellarTx {
                     op,
                     signing_key: self.skey.clone(),
@@ -1429,7 +1362,7 @@ impl Liquidator {
             }
             Err(e) => {
                 error!(?e, ?plan.borrower_key, "failed to build batch op");
-                counter!("liquidator_skip_total", "reason" => "op_build_failed").increment(1);
+                SkipReason::OpBuildFailed.record();
                 self.liquidator_capital.release(op_id);
 
                 None
@@ -1613,17 +1546,17 @@ fn emit_keeper_position_metrics(market: &str, obligation: &Obligation, market_da
 
             continue;
         };
-        let labels = [
-            ("market", market.to_string()),
-            ("pool_address", pool.pool_address.clone()),
-            ("token_symbol", pool.token_symbol.clone()),
-        ];
-        gauge!("liquidator_self_j_tokens", &labels).set(deposit.j_tokens.0 as f64);
-        gauge!("liquidator_self_plain_collateral", &labels).set(deposit.collateral.0 as f64);
-        gauge!("liquidator_self_j_tokens_underlying", &labels).set(
-            pool.j_tokens_to_tokens_floor(deposit.j_tokens)
-                .map(|u| u.0)
-                .unwrap_or(0) as f64,
+        let j_tokens_underlying = pool
+            .j_tokens_to_tokens_floor(deposit.j_tokens)
+            .map(|u| u.0)
+            .unwrap_or(0);
+        metrics::set_keeper_deposit(
+            market,
+            &pool.pool_address,
+            &pool.token_symbol,
+            deposit.j_tokens.0,
+            deposit.collateral.0,
+            j_tokens_underlying,
         );
     }
 
@@ -1637,16 +1570,16 @@ fn emit_keeper_position_metrics(market: &str, obligation: &Obligation, market_da
 
             continue;
         };
-        let labels = [
-            ("market", market.to_string()),
-            ("pool_address", pool.pool_address.clone()),
-            ("token_symbol", pool.token_symbol.clone()),
-        ];
-        gauge!("liquidator_self_d_tokens", &labels).set(borrow.d_tokens.0 as f64);
-        gauge!("liquidator_self_d_tokens_underlying", &labels).set(
-            pool.d_tokens_to_tokens_ceil(borrow.d_tokens)
-                .map(|u| u.0)
-                .unwrap_or(0) as f64,
+        let d_tokens_underlying = pool
+            .d_tokens_to_tokens_ceil(borrow.d_tokens)
+            .map(|u| u.0)
+            .unwrap_or(0);
+        metrics::set_keeper_borrow(
+            market,
+            &pool.pool_address,
+            &pool.token_symbol,
+            borrow.d_tokens.0,
+            d_tokens_underlying,
         );
     }
 }

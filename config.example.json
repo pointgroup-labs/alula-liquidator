@@ -16,6 +16,7 @@
         "CBU6NTBOV5FD6H4ERIF3X3YYUZI6W54DUUVE3ZBM33X5YVTSUKCELQ6L"
     ],
     "metrics_bind_addr": "0.0.0.0:9000",
+    "readiness_staleness_budget_secs": 120,
     "event_collector_start_ledger": 3338084,
     "ledger_collector_polling_interval_secs": 2,
     "keeper_capital_balance_ttl_secs": 10,

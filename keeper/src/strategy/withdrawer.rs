@@ -5,6 +5,7 @@ use {
     crate::{
         collect::{Event, stellar_ledger::NewLedger},
         execute::{Action, stellar_tx::SubmitStellarTx},
+        metrics::WithdrawerOutcome,
         stellar::client::Gateway,
     },
     ed25519_dalek::SigningKey,
@@ -14,7 +15,6 @@ use {
         ports::{EventCodec, LedgerReader, OperationBuilder},
         reactor::{BoxFuture, Strategy},
     },
-    metrics::counter,
     std::sync::Arc,
     stellar_rpc_client::Event as SorobanEvent,
     tracing::{debug, error, info, warn},
@@ -109,8 +109,7 @@ impl Withdrawer {
                 .await
                 .inspect_err(|err| {
                     warn!(?err, ?market, "failed to read market data");
-                    counter!("withdrawer_outcome_total", "outcome" => "failed_to_read_market_data")
-                        .increment(1);
+                    WithdrawerOutcome::NoMarketData.record();
                 })
             else {
                 continue;
@@ -164,8 +163,7 @@ impl Withdrawer {
             .await
             .inspect_err(|err| {
                 warn!(?err, ?market, "failed to read market data");
-                counter!("withdrawer_outcome_total", "outcome" => "failed_to_read_market_data")
-                    .increment(1);
+                WithdrawerOutcome::NoMarketData.record();
             })
         else {
             return vec![];
@@ -189,7 +187,7 @@ impl Withdrawer {
                 .find(|p| p.pool_address == deposit_pos.pool_address)
             else {
                 warn!(pool = deposit_pos.pool_address, "pool not found");
-                counter!("withdrawer_outcome_total", "outcome" => "pool_missing").increment(1);
+                WithdrawerOutcome::PoolMissing.record();
 
                 continue;
             };
@@ -198,14 +196,13 @@ impl Withdrawer {
                 .compute_max_safe_withdrawal(self.config.utilization_safety_margin_bps)
                 .inspect_err(|e| {
                     warn!(?e, pool = %pool.pool_address, "max_safe_withdrawal failed");
-                    counter!("withdrawer_outcome_total", "outcome" => "max_withdrawal_error")
-                        .increment(1);
+                    WithdrawerOutcome::MaxWithdrawalError.record();
                 })
             else {
                 continue;
             };
             if max_withdrawal == Underlying::ZERO {
-                counter!("withdrawer_outcome_total", "outcome" => "pool_at_capacity").increment(1);
+                WithdrawerOutcome::PoolAtCapacity.record();
 
                 continue;
             }
@@ -214,14 +211,13 @@ impl Withdrawer {
                 .j_tokens_to_tokens_floor(deposit_pos.j_tokens)
                 .inspect_err(|e| {
                     warn!(?e, pool = %pool.pool_address, "j_tokens_to_tokens_floor failed");
-                    counter!("withdrawer_outcome_total", "outcome" => "conversion_error")
-                        .increment(1);
+                    WithdrawerOutcome::ConversionError.record();
                 })
             else {
                 continue;
             };
             if liquidator_underlying == Underlying::ZERO {
-                counter!("withdrawer_outcome_total", "outcome" => "empty_position").increment(1);
+                WithdrawerOutcome::EmptyPosition.record();
 
                 continue;
             }
@@ -253,17 +249,15 @@ impl Withdrawer {
                 match self.build_withdrawal_action(market, &pool.pool_address, withdrawal_amount) {
                     Ok(action) => {
                         actions.push(action);
-                        counter!("withdrawer_outcome_total", "outcome" => "dispatched")
-                            .increment(1);
+                        WithdrawerOutcome::Dispatched.record();
                     }
                     Err(e) => {
                         error!(?e, "failed to build withdrawal action");
-                        counter!("withdrawer_outcome_total", "outcome" => "build_error")
-                            .increment(1);
+                        WithdrawerOutcome::BuildError.record();
                     }
                 };
             } else {
-                counter!("withdrawer_outcome_total", "outcome" => "below_threshold").increment(1);
+                WithdrawerOutcome::BelowThreshold.record();
             }
         }
 

@@ -3,9 +3,9 @@
 
 use {
     super::{Event, lag_counted_stream},
+    crate::metrics::CursorSource,
     crate::{stellar::errors::is_terminal_cursor_error, storage::cursor::CursorRepo},
     engine::reactor::{BoxFuture, Collector, CollectorStream},
-    metrics::counter,
     std::{sync::Arc, time::Duration},
     stellar_rpc_client::{Client, EventStart, EventType},
     tokio::sync::broadcast,
@@ -123,11 +123,7 @@ impl Collector<Event> for SorobanEventCollector {
 
                                 if let Err(e) = cursor_repo.set(&response.cursor, last_ledger) {
                                     warn!(?e, "failed to persist cursor");
-                                    counter!(
-                                        "keeper_cursor_save_failures_total",
-                                        "source" => "event_collector_cursor",
-                                    )
-                                    .increment(1);
+                                    CursorSource::EventCollectorCursor.record();
                                 }
                             }
 

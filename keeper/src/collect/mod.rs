@@ -2,7 +2,7 @@ pub mod stellar_event;
 pub mod stellar_ledger;
 
 use {
-    metrics::counter,
+    crate::metrics,
     stellar_ledger::NewLedger,
     stellar_rpc_client::Event as SorobanEvent,
     tokio::sync::broadcast::Receiver,
@@ -32,7 +32,7 @@ where
     BroadcastStream::new(receiver).filter_map(move |item| match item {
         Ok(v) => Some(v),
         Err(BroadcastStreamRecvError::Lagged(n)) => {
-            counter!("keeper_collector_lagged_events_total", "collector" => collector).increment(n);
+            metrics::record_collector_lag(collector, n);
 
             None
         }

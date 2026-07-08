@@ -26,6 +26,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
     cargo chef cook --release --locked --bin keeper --recipe-path recipe.json
+
+# Injected here (not before the cook above) so a new commit doesn't bust the
+# dependency cache; consumed by `option_env!("GIT_SHA")` for keeper_build_info.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=${GIT_SHA}
 COPY . .
 # Cache mounts don't persist into the layer; cp out within the RUN.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
