@@ -11,7 +11,7 @@ The current strategies are:
 - `bad_debt_request_initiator` monitors liquidation events. If the borrower is left with residual debt and no viable collateral, it initiates bad-debt coverage through the insurance fund.
 - `liquidator` scans obligations for profitable liquidation opportunities and executes them, using pre-swaps or flash loans when the keeper doesn't hold enough of the repayment asset.
 - `rebalancer` (the `Balancer` strategy) converts non-target assets in the keeper's wallet into the configured `assets_to_hold` via on-chain AMMs.
-- The `withdrawer` pulls the keeper's deposits back out of pools when utilisation allows.
+- `withdrawer` pulls the keeper's deposits back out of pools when utilisation allows.
 
 See [`docs/`](./docs) for the full configuration reference and operations guide.
 
@@ -19,7 +19,7 @@ See [`docs/`](./docs) for the full configuration reference and operations guide.
 
 ### With docker compose (recommended)
 
-Brings up the keeper, Prometheus, and a provisioned Grafana dashboard in one command.
+Brings up the keeper, Prometheus, and a provisioned Grafana dashboard with alert rules in one command.
 
 ```bash
 git clone https://github.com/pointgroup-labs/alula-liquidator.git
@@ -33,7 +33,7 @@ Then:
 
 - Grafana dashboard: <http://localhost:3000> (login `admin`/`admin`, change on first use)
 - Prometheus: <http://127.0.0.1:9090>
-- Keeper `/metrics`: scraped internally by Prometheus, not exposed on the host
+- Keeper `/metrics`, `/healthz`, and `/readyz`: scraped internally by Prometheus, not exposed on the host
 
 See [`docs/operations.md`](./docs/operations.md) for the dashboard tour, environment variables, and troubleshooting.
 
@@ -63,7 +63,7 @@ The `engine` crate contains the lending model, the reactor loop, and the trait d
 
 **`rebalancer`** (the `Balancer` strategy, config prefix `balancer_*`) runs every `balancer_refresh_interval_blocks` ledgers. It walks the wallet and swaps each non-target asset whose dollar value exceeds `balancer_min_swap_amount_value_cents` into the rebalancer target (the first entry of `assets_to_hold`). Trade size is capped so on-chain price impact stays under `balancer_max_price_impact_bps`, probing progressively smaller sizes up to `balancer_max_swap_provider_probes` times per provider; `balancer_max_allowed_swap_slippage_bps` is applied on top when constructing `min_amount_out`. Retries up to `balancer_max_retries` times on failure.
 
-The **`withdrawer`** watches the keeper's own deposits and pulls idle supply out of pools once it can do so without pushing utilisation past `withdrawer_utilization_safety_margin_bps`. Withdrawals below `withdrawer_min_withdraw_value_cents` are skipped.
+**`withdrawer`** watches the keeper's own deposits and pulls idle supply out of pools once it can do so without pushing utilisation past `withdrawer_utilization_safety_margin_bps`. Withdrawals below `withdrawer_min_withdraw_value_cents` are skipped.
 
 ## Development
 
@@ -73,7 +73,7 @@ Standard Rust workspace. The CI matrix enforces:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-cargo audit                   # honours .cargo/audit.toml ignore list
+cargo audit
 ```
 
 PR titles must follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `chore:`, …). Dependabot opens weekly bumps for cargo and github-actions; see `.github/dependabot.yml`.
