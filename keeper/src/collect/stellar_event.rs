@@ -157,14 +157,14 @@ impl Collector<Event> for SorobanEventCollector {
                                 error!(
                                     err = %e,
                                     ledger = last_ledger,
-                                    "SorobanEventCollector: TERMINAL ERROR on first poll! Your configured `start_ledger` is likely too old and has been pruned by the RPC. Shutting down collector."
+                                    "TERMINAL ERROR on first poll! Your configured `start_ledger` is likely too old and has been pruned by the RPC. Shutting down collector."
                                 );
 
                                 return;
                             } else {
                                 warn!(
                                     err = %e,
-                                    "SorobanEventCollector: transient get_events error, \
+                                    "transient get_events error, \
                                      retrying from same cursor"
                                 );
                             }

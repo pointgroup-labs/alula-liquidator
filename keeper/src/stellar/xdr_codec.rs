@@ -199,11 +199,11 @@ pub(super) fn obligation_key_to_scval(obl: &ObligationKey) -> anyhow::Result<ScV
 
     let entries = vec![
         ScMapEntry {
-            key: ScVal::Symbol(ScSymbol("seed".try_into().unwrap())),
+            key: ScVal::Symbol(ScSymbol("seed".try_into().expect("valid constant symbol"))),
             val: seed_val,
         },
         ScMapEntry {
-            key: ScVal::Symbol(ScSymbol("user".try_into().unwrap())),
+            key: ScVal::Symbol(ScSymbol("user".try_into().expect("valid constant symbol"))),
             val: address_to_scval(&obl.user)?,
         },
     ];

@@ -94,7 +94,11 @@ impl Withdrawer {
                 .read_user_obligation(&market, &self.liquidator_key)
                 .await
                 .inspect_err(|e| {
-                    info!(?e, %market, "no liquidator obligation");
+                    debug!(%e);
+                    info!(
+                        market,
+                        "no liquidator obligation on the market when handling new ledger"
+                    );
                 })
             else {
                 continue;
@@ -148,7 +152,8 @@ impl Withdrawer {
             .read_user_obligation(&market, &self.liquidator_key)
             .await
             .inspect_err(|e| {
-                info!(?e, %market, "no liquidator obligation");
+                debug!(%e);
+                info!(%market, "no liquidator obligation on the market when handling new event");
             })
         else {
             return vec![];
@@ -183,7 +188,7 @@ impl Withdrawer {
                 .iter()
                 .find(|p| p.pool_address == deposit_pos.pool_address)
             else {
-                warn!(pool = deposit_pos.pool_address, "Pool not found");
+                warn!(pool = deposit_pos.pool_address, "pool not found");
                 counter!("withdrawer_outcome_total", "outcome" => "pool_missing").increment(1);
 
                 continue;
@@ -221,10 +226,14 @@ impl Withdrawer {
                 continue;
             }
 
-            // Blanket impl, by the way here
             let mut withdrawal_amount: Underlying = liquidator_underlying.min(max_withdrawal);
-            let withdrawal_value_cents =
-                self.compute_withdrawal_value_cents(&market_data, pool, withdrawal_amount);
+            let Some(withdrawal_value_cents) =
+                self.compute_withdrawal_value_cents(pool, &market_data, withdrawal_amount)
+            else {
+                error!("failed to compute withdrawal value cents");
+
+                return vec![];
+            };
 
             if withdrawal_amount == liquidator_underlying {
                 withdrawal_amount = Underlying(i128::MAX);
@@ -248,7 +257,7 @@ impl Withdrawer {
                             .increment(1);
                     }
                     Err(e) => {
-                        error!(?e, "Failed to build withdrawal action");
+                        error!(?e, "failed to build withdrawal action");
                         counter!("withdrawer_outcome_total", "outcome" => "build_error")
                             .increment(1);
                     }
@@ -280,16 +289,17 @@ impl Withdrawer {
 
     fn compute_withdrawal_value_cents(
         &self,
-        market_data: &MarketData,
         pool: &PoolData,
+        market_data: &MarketData,
         token_amount: Underlying,
-    ) -> i128 {
+    ) -> Option<i128> {
         let price_with_decimals = pool.oracle_asset_price;
         if price_with_decimals <= 0 {
             warn!(price_with_decimals, "negative oracle price");
 
-            return 0;
+            return None;
         }
+
         let oracle_decimals = market_data.oracle_price_decimals;
         let token_decimals = pool.token_decimals;
         let pow = token_decimals + oracle_decimals;
@@ -299,12 +309,12 @@ impl Withdrawer {
                 pow, token_decimals, oracle_decimals, "unexpected asset/oracle decimals"
             );
 
-            return 0;
+            return None;
         }
 
-        // TODO: Fix saturating_mul here
-        let numerator = token_amount.checked_mul(price_with_decimals).unwrap();
+        let numerator = token_amount.checked_mul(price_with_decimals).ok()?;
         let value_raw = numerator / 10_i128.pow(pow - 2);
-        value_raw.max(0)
+
+        Some(value_raw.max(0))
     }
 }
