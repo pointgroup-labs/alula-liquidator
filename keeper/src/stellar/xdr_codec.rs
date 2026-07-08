@@ -10,7 +10,7 @@ use {
         BorrowPosition, DTokens, DepositPosition, JTokens, MarketData, Obligation, ObligationKey,
         PoolData, Underlying,
     },
-    stellar_xdr::curr::{
+    stellar_xdr::{
         AccountId, ContractId, Hash, Int128Parts, MuxedAccount, PublicKey, ScAddress, ScMap,
         ScMapEntry, ScSymbol, ScVal, ScVec, Uint256, VecM,
     },

@@ -17,7 +17,7 @@ use {
     sha2::{Digest, Sha256},
     std::{sync::Arc, time::Duration},
     stellar_rpc_client::{AuthMode, Client},
-    stellar_xdr::curr::{
+    stellar_xdr::{
         DecoratedSignature, Hash, Limits, Memo, MuxedAccount, Operation, OperationBody,
         Preconditions, ReadXdr, SequenceNumber, Signature, SignatureHint,
         SorobanAuthorizationEntry, Transaction, TransactionEnvelope, TransactionExt,
@@ -314,7 +314,7 @@ async fn build_and_send(
 
     let mut assembled_tx = tx.clone();
     if !sim_response.transaction_data.is_empty() {
-        let transaction_data = stellar_xdr::curr::SorobanTransactionData::from_xdr_base64(
+        let transaction_data = stellar_xdr::SorobanTransactionData::from_xdr_base64(
             &sim_response.transaction_data,
             Limits::none(),
         )?;

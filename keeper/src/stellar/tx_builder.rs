@@ -13,7 +13,7 @@ use {
         lending_model::{ObligationKey, amount::Underlying},
         ports::OperationBuilder,
     },
-    stellar_xdr::curr::{
+    stellar_xdr::{
         ContractId, Hash, HostFunction, InvokeContractArgs, Operation, OperationBody, ScAddress,
         ScMap, ScMapEntry, ScSymbol, ScVal, ScVec, VecM,
     },
@@ -275,7 +275,7 @@ fn build_withdraw_op(
 
     Ok(Operation {
         source_account: None,
-        body: OperationBody::InvokeHostFunction(stellar_xdr::curr::InvokeHostFunctionOp {
+        body: OperationBody::InvokeHostFunction(stellar_xdr::InvokeHostFunctionOp {
             host_function: HostFunction::InvokeContract(invoke),
             auth: VecM::default(),
         }),
@@ -304,7 +304,7 @@ fn build_issue_cover_bad_debt_op(
 
     Ok(Operation {
         source_account: None,
-        body: OperationBody::InvokeHostFunction(stellar_xdr::curr::InvokeHostFunctionOp {
+        body: OperationBody::InvokeHostFunction(stellar_xdr::InvokeHostFunctionOp {
             host_function: HostFunction::InvokeContract(invoke),
             auth: VecM::default(),
         }),
@@ -340,7 +340,7 @@ fn build_batch_op(
 
     Ok(Operation {
         source_account: None,
-        body: OperationBody::InvokeHostFunction(stellar_xdr::curr::InvokeHostFunctionOp {
+        body: OperationBody::InvokeHostFunction(stellar_xdr::InvokeHostFunctionOp {
             host_function: HostFunction::InvokeContract(invoke),
             auth: VecM::default(),
         }),

@@ -10,7 +10,7 @@ mod tx_builder;
 
 use {
     ed25519_dalek::SigningKey,
-    stellar_xdr::curr::{AccountId, PublicKey, ScAddress, Uint256},
+    stellar_xdr::{AccountId, PublicKey, ScAddress, Uint256},
 };
 
 /// Encode an ed25519 signing key as a Stellar `G…` strkey.

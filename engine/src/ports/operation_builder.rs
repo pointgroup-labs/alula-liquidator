@@ -13,7 +13,7 @@ use {
 /// submit. Sync because building an op is a pure computation; nothing in
 /// here touches the network.
 pub trait OperationBuilder: Send + Sync {
-    /// Opaque operation type (e.g. `stellar_xdr::curr::Operation`).
+    /// Opaque operation type (e.g. `stellar_xdr::Operation`).
     type Op: Send + Clone + std::fmt::Debug + 'static;
 
     /// Opaque per-request payload (e.g. `ScVal` for a `Request` map).

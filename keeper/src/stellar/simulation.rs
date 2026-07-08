@@ -17,7 +17,7 @@ use {
         ports::{BatchSimulator, LedgerReader},
         reactor::BoxFuture,
     },
-    stellar_xdr::curr::ScVal,
+    stellar_xdr::ScVal,
     tracing::{debug, warn},
 };
 
@@ -164,8 +164,8 @@ impl LedgerReader for Gateway {
                 obligation_key_to_scval(borrower)?,
                 address_to_scval(borrow_pool)?,
                 address_to_scval(collateral_pool)?,
-                ScVal::I128(stellar_xdr::curr::Int128Parts { hi: 0, lo: 1000 }),
-                ScVal::I128(stellar_xdr::curr::Int128Parts { hi: 0, lo: 0 }),
+                ScVal::I128(stellar_xdr::Int128Parts { hi: 0, lo: 1000 }),
+                ScVal::I128(stellar_xdr::Int128Parts { hi: 0, lo: 0 }),
             ];
 
             debug!(

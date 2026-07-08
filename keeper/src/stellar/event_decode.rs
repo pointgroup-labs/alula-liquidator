@@ -13,7 +13,7 @@ use {
         lending_model::{LiquidationResult, Obligation, ObligationKey},
         ports::{EventCodec, OperationEvent},
     },
-    stellar_xdr::curr::{Limits, ReadXdr as _, ScMap, ScVal},
+    stellar_xdr::{Limits, ReadXdr as _, ScMap, ScVal},
 };
 
 fn parse_obligation_from_event_value_inner(

@@ -7,7 +7,7 @@ use {
     crate::metrics::{self, SimulateFailureKind, SimulateOutcome},
     anyhow::anyhow,
     stellar_rpc_client::{AuthMode, Client},
-    stellar_xdr::curr::{
+    stellar_xdr::{
         ContractId, Hash, HostFunction, InvokeContractArgs, Memo, Operation, OperationBody,
         Preconditions, ScAddress, ScSymbol, ScVal, SequenceNumber, Transaction,
         TransactionEnvelope, TransactionExt, TransactionV1Envelope, VecM,
@@ -53,7 +53,7 @@ impl Gateway {
             memo: Memo::None,
             operations: vec![Operation {
                 source_account: None,
-                body: OperationBody::InvokeHostFunction(stellar_xdr::curr::InvokeHostFunctionOp {
+                body: OperationBody::InvokeHostFunction(stellar_xdr::InvokeHostFunctionOp {
                     host_function: HostFunction::InvokeContract(invoke_args),
                     auth: VecM::default(),
                 }),
