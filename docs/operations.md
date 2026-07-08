@@ -4,14 +4,13 @@ Running, observing, and debugging a deployed keeper.
 
 ## Deployment with docker compose
 
-The included [`docker-compose.yml`](../docker-compose.yml) stands up four services on a private `obs` network:
+The included [`docker-compose.yml`](../docker-compose.yml) stands up three services on a private `obs` network:
 
 | Service | Purpose | Host port |
 |---|---|---|
-| `keeper` | The bot itself. Builds from [`Dockerfile`](../Dockerfile). | `127.0.0.1:9000` (metrics scraped internally) |
-| `prometheus` | Scrapes the keeper's `/metrics` every 10 s. | `127.0.0.1:9090` |
-| `alertmanager` | Routes Prometheus alerts to the configured webhook. | `127.0.0.1:9093` |
-| `grafana` | Renders the provisioned dashboard. | `3000` |
+| `keeper` | The bot itself. Builds from [`Dockerfile`](../Dockerfile). Serves `/metrics`, `/healthz` (liveness), and `/readyz` (readiness). | `127.0.0.1:9000` (scraped internally) |
+| `prometheus` | Scrapes the keeper's `/metrics` every 10 s. Pure TSDB — alerting lives in Grafana. | `127.0.0.1:9090` |
+| `grafana` | Renders the provisioned dashboard and evaluates the provisioned alert rules. | `3000` |
 
 ```bash
 cp .env.example .env          # fill STELLAR_SKEY
@@ -21,6 +20,8 @@ docker compose logs -f keeper
 ```
 
 Grafana is reachable at <http://localhost:3000> (initial login `admin`/`admin`, change on first use). Prometheus is intentionally bound to `127.0.0.1` so it is not exposed to other hosts; tunnel to it if you need raw query access.
+
+The keeper distinguishes **liveness** from **readiness**: `/healthz` returns `200` whenever the process is up (used by the Docker `HEALTHCHECK`), while `/readyz` returns `200` only once the scan loop has completed a tick and stays within a 120 s staleness budget — it reports `503` while warming up or if scanning stalls. Point an orchestrator's readiness probe at `/readyz` and its liveness probe at `/healthz`.
 
 ### Environment
 
@@ -32,7 +33,7 @@ Grafana is reachable at <http://localhost:3000> (initial login `admin`/`admin`, 
 | `RUST_LOG` | no | `tracing-subscriber` directive. Defaults to `info,alula_keeper=info,alula_engine=info`. |
 | `GF_ADMIN_USER` / `GF_ADMIN_PASSWORD` | no | Grafana bootstrap credentials. |
 
-Both `GIT_SHA` and `BUILD_DATE` are recognised as optional build-args (used to populate the OCI image labels) and fall back to `dev` / `unknown` when unset.
+Both `GIT_SHA` and `BUILD_DATE` are recognised as optional build-args populating the OCI image labels, falling back to `dev` / `unknown` when unset. `GIT_SHA` is additionally injected into the builder stage so the running commit surfaces in the `keeper_build_info` metric and the dashboard's *Running build* tile; a local `cargo build` (no `GIT_SHA` in the environment) reports `unknown`.
 
 ### Production image
 
@@ -45,7 +46,9 @@ The published image is `ghcr.io/pointgroup-labs/alula-keeper`. Tag matrix:
 
 ## Dashboard tour
 
-The provisioned dashboard `Alula Liquidator` is organised into rows by what question you'd ask it.
+The provisioned dashboard `Alula Liquidator` is organised into rows by what question you'd ask it. Every metric it reads is defined once in the keeper's metric catalog ([`keeper/src/metrics/catalog.rs`](../keeper/src/metrics/catalog.rs)) and now carries `# HELP`/`# TYPE` metadata, so `curl -s localhost:9000/metrics` is self-describing.
+
+**Release & SLOs.** The top row is the on-call's first glance. *Running build* and *Uptime* read `keeper_build_info` and `keeper_start_time_seconds` — the running version/commit and time since the last restart — so you can line a metric shift up against a deploy. The three SLI tiles give the service-level view: *Tx confirm rate (15m)* is confirmed ÷ submitted (the `KeeperTxConfirmationRateLow` page fires below 50 %; green ≥ 90 %), *Profit capture (1h)* is realised ÷ expected net profit (the realisation tax as a single number), and *Scan freshness (worst)* is the oldest last-successful-scan across markets against the 300 s `KeeperScanStalled` budget. The two ratio tiles read *No data* — deliberately, not red — when the keeper is idle (nothing submitted / no plans), so a quiet market doesn't look like an outage.
 
 **Is the bot alive?** Look at *Keeper reachable* and *Time since last scan*. Both should be green within 30 s of startup; both go red on a fresh deploy if you forgot to mount the config, used the wrong RPC URL, or the network is unreachable. (Fresh-deploy panels use `or on() vector(0)` so the absence of data shows as red rather than grey.)
 
@@ -61,7 +64,7 @@ The provisioned dashboard `Alula Liquidator` is organised into rows by what ques
 
 **Is the rebalancer working?** *Rebalancer outcomes* stacks every per-candidate decision (`dispatched`, `nothing_to_swap`, `below_dust`, `no_viable_provider`, `reservation_lost`, `evaluation_error`, `bad_oracle_price`). A silent panel means the rebalancer isn't being invoked at all — check the soroban-event topic filter and `balancer_refresh_interval_blocks`. *Rebalancer swap size* shows the p50/p95 USD value of actually-emitted swaps against the `balancer_min_swap_amount_value_cents` floor; p50 hugging the floor means dust-only activity and the threshold may want tuning.
 
-**Are the side strategies working?** *Withdrawer outcomes* stacks the per-deposit verdict (`dispatched`, `below_threshold`, `pool_at_capacity`, `empty_position`, `pool_missing`, `failed_to_read_market_data`, `max_withdrawal_error`, `conversion_error`, `build_error`). A panel dominated by `pool_at_capacity` means the configured `withdrawer_utilization_safety_margin_bps` is too tight for the current pool state — the keeper is preserving headroom rather than yanking liquidity. `below_threshold` dominance is the same diagnosis as the rebalancer's `below_dust`: `withdrawer_min_withdraw_value_cents` is too high for the deposit sizes you're actually holding. *Bad-debt initiator outcomes* stacks the post-`Liquidate`-event verdict (`dispatched`, `ineligible`, `obligation_cleared`, `parse_error`, `decode_op_error`, `eligibility_error`, `build_failed`). The expected steady-state is `ineligible` plus the occasional `obligation_cleared` (the liquidator already cleaned it up first); `parse_error` or `decode_op_error` climbing means an event schema drift against the contract version — re-check the gateway codec.
+**Are the side strategies working?** *Withdrawer outcomes* stacks the per-deposit verdict (`dispatched`, `below_threshold`, `pool_at_capacity`, `empty_position`, `pool_missing`, `no_market_data`, `max_withdrawal_error`, `conversion_error`, `build_error`). A panel dominated by `pool_at_capacity` means the configured `withdrawer_utilization_safety_margin_bps` is too tight for the current pool state — the keeper is preserving headroom rather than yanking liquidity. `below_threshold` dominance is the same diagnosis as the rebalancer's `below_dust`: `withdrawer_min_withdraw_value_cents` is too high for the deposit sizes you're actually holding. *Bad-debt initiator outcomes* stacks the post-`Liquidate`-event verdict (`dispatched`, `ineligible`, `obligation_cleared`, `parse_error`, `decode_op_error`, `eligibility_error`, `build_failed`). The expected steady-state is `ineligible` plus the occasional `obligation_cleared` (the liquidator already cleaned it up first); `parse_error` or `decode_op_error` climbing means an event schema drift against the contract version — re-check the gateway codec.
 
 ## Troubleshooting
 
@@ -77,7 +80,7 @@ The provisioned dashboard `Alula Liquidator` is organised into rows by what ques
 
 ## Alert reference
 
-Source of truth is [`deploy/prometheus/rules.yml`](../deploy/prometheus/rules.yml). The table below is the on-call shortcut from page → first action; the rules file itself carries the long-form `description:` annotation.
+Alerting is **Grafana-managed**: Grafana evaluates the rules provisioned in [`deploy/grafana/provisioning/alerting/`](../deploy/grafana/provisioning/alerting/) against the Prometheus datasource and notifies through its built-in Alertmanager. Wire a real integration into [`contactpoints.yaml`](../deploy/grafana/provisioning/alerting/contactpoints.yaml) (it ships a no-op placeholder webhook) before relying on delivery. The table below is the on-call shortcut from page → first action; each rule carries the long-form `description:` annotation.
 
 | Alert | Severity | What it means | First move |
 |---|---|---|---|
@@ -94,6 +97,7 @@ Source of truth is [`deploy/prometheus/rules.yml`](../deploy/prometheus/rules.ym
 | `KeeperBadDebtSchemaDrift` | warning | Bad-debt strategy failing to decode events. | Contract event topology likely drifted — re-check gateway codec. |
 | `KeeperWithdrawerErrors` | warning | Withdrawer red-path outcomes climbing. | `no_market_data`/`pool_missing`/`build_error` — RPC or gateway, not config. |
 | `KeeperCursorSaveFailing` | critical | SQLite cursor writes failing. | Check `db_path` mount and disk space. |
+| `KeeperProfitCaptureLow` | warning | Realised profit <50% of expected over 1h. | Realisation tax — check TX confirmation outcomes and skip reasons. |
 
 ## Security advisories
 
