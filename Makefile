@@ -1,4 +1,7 @@
-.PHONY: help fmt fmt-check clippy test audit ci clean
+
+.DEFAULT_GOAL := help
+
+.PHONY: $(shell awk -F: '/^[a-zA-Z_-]+:.*## / {print $$1}' $(MAKEFILE_LIST))
 
 help:
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
