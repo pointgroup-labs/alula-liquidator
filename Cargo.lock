@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "alula-engine"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "metrics",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "alula-keeper"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "alula-engine",
  "anyhow",
