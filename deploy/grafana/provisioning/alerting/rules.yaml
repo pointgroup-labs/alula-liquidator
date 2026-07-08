@@ -1,0 +1,714 @@
+# Grafana-managed alert rules — GENERATED, translated 1:1 from the former
+# Prometheus rules.yml. Grafana evaluates these against the Prometheus
+# datasource and notifies via its built-in Alertmanager (see contactpoints/
+# policies). Each rule: refId A[/B] Prometheus instant query, final refId a
+# __expr__ math condition.
+apiVersion: 1
+groups:
+- orgId: 1
+  name: alula_keeper
+  folder: Alula
+  interval: 1m
+  rules:
+  - uid: keeper_down
+    title: KeeperDown
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: up{job="alula-keeper"}
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A < 1
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      summary: Keeper scrape is down
+      description: Prometheus has been unable to scrape the keeper for >1m — crashed, deadlocked, or unreachable. Check `docker compose logs keeper` first.
+  - uid: keeper_scan_stalled
+    title: KeeperScanStalled
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: time() - liquidator_last_successful_scan_timestamp_seconds
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A > 300
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: Keeper has not completed a scan in >5m
+      description: The last-successful-scan timestamp has not advanced. The process is alive but the scan loop is stuck — usually RPC timeouts or a blocked SQLite write.
+  - uid: keeper_scan_slow
+    title: KeeperScanSlow
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: histogram_quantile(0.95, sum by (le, market) (rate(liquidator_market_scan_duration_seconds_bucket{outcome="ok"}[5m])))
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A > 5
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: Market scan p95 >5s
+      description: The 95th-percentile latency of a full market scan has exceeded 5s for >10m. Usually upstream RPC degradation. Fires before KeeperScanStalled so you can switch providers in time.
+  - uid: keeper_rpc_simulate_transport_failing
+    title: KeeperRpcSimulateTransportFailing
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: 60 * rate(keeper_rpc_simulate_failures_total{kind="transport"}[5m])
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A > 1
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: RPC simulate transport errors >1/min
+      description: simulate_transaction has been failing at the network layer for >10m. Sustained transport errors mean the RPC endpoint is degraded — switch providers. Distinct from sim_error (contract-level).
+  - uid: keeper_events_dropped
+    title: KeeperEventsDropped
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: rate(engine_strategy_lagged_events_total[5m])
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A > 0
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 10m
+    labels:
+      severity: critical
+    annotations:
+      summary: Strategy stage is dropping events
+      description: The reactor's broadcast channel to the strategy stage has lagged — events were silently dropped and liquidation opportunities may have been missed. Raise channel capacity or speed up the strategy.
+  - uid: keeper_actions_dropped
+    title: KeeperActionsDropped
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: rate(engine_executor_lagged_actions_total[5m])
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A > 0
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 10m
+    labels:
+      severity: critical
+    annotations:
+      summary: Executor stage is dropping actions
+      description: Actions produced by strategies are being dropped before submission. Capital may be committed in the ledger but the tx never built. Investigate executor throughput.
+  - uid: keeper_collector_lagging
+    title: KeeperCollectorLagging
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: rate(keeper_collector_lagged_events_total[5m])
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A > 0
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: A collector is lagging
+      description: A collector's outbound channel is dropping events to the reactor — upstream of the strategy/executor lag alerts.
+  - uid: keeper_opportunities_not_dispatched
+    title: KeeperOpportunitiesNotDispatched
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: liquidator_liquidatable_positions
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: sum(rate(liquidator_liquidation_plans_dispatched_total[10m]))
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: B
+    - refId: C
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A > 0 && $B == 0
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: C
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 10m
+    labels:
+      severity: critical
+    annotations:
+      summary: Liquidatable positions exist but nothing is dispatched
+      description: The strategy is observing actionable opportunities but no plans have been dispatched in 10m. Either every opportunity is being skipped (check liquidator_skip_total by reason) or a downstream stage is wedged. This is the money-leaving alert — page.
+  - uid: keeper_tx_confirmation_rate_low
+    title: KeeperTxConfirmationRateLow
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: sum(rate(keeper_tx_confirmed_total{outcome="confirmed"}[15m]))
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: sum(rate(keeper_tx_submitted_total{outcome="ok"}[15m]))
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: B
+    - refId: C
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $B > 0 && ($A / $B) < 0.5
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: C
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 15m
+    labels:
+      severity: critical
+    annotations:
+      summary: <50% of submitted txs confirmed (15m)
+      description: The keeper is submitting transactions the network is not confirming. Likely fee underpayment, sequence contention, or simulation/runtime drift. Check XLM balance vs xlm_safety_margin and keeper_tx_bad_seq_retries_total.
+  - uid: keeper_bad_seq_retries_elevated
+    title: KeeperBadSeqRetriesElevated
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: rate(keeper_tx_bad_seq_retries_total[5m])
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A > 0.1
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: Frequent tx_bad_seq retries
+      description: The local sequence-number cursor is repeatedly racing the RPC's view. >6 retries/min sustained suggests parallel submitters against the same source account or a stuck in-flight tx.
+  - uid: keeper_xlm_funding_low
+    title: KeeperXlmFundingLow
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: liquidator_xlm_balance_stroops / (liquidator_xlm_safety_margin_stroops * 2)
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A < 1
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: XLM balance within 2x of safety margin
+      description: The keeper's XLM balance is approaching the configured xlm_safety_margin. Below the margin the rebalancer and liquidator refuse to spend XLM, so opportunities start being skipped. Refill the keeper account.
+  - uid: keeper_xlm_funding_critical
+    title: KeeperXlmFundingCritical
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: liquidator_xlm_balance_stroops / (liquidator_xlm_safety_margin_stroops * 1.1)
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A < 1
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: XLM balance at safety margin — keeper is freezing
+      description: The keeper's XLM balance is within 10% of the configured xlm_safety_margin. The next opportunity will be skipped with insufficient_capital. Refill immediately.
+  - uid: keeper_bad_debt_schema_drift
+    title: KeeperBadDebtSchemaDrift
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: 60 * sum(rate(bad_debt_outcome_total{outcome=~"decode_op_error|parse_error"}[10m]))
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A > 1
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 15m
+    labels:
+      severity: warning
+    annotations:
+      summary: Bad-debt initiator failing to decode liquidation events
+      description: decode_op_error/parse_error is incrementing >1/min sustained. Either the contract event topology changed under a deploy and the gateway codec is out of sync, or upstream is producing malformed values.
+  - uid: keeper_withdrawer_errors
+    title: KeeperWithdrawerErrors
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: 60 * sum(rate(withdrawer_outcome_total{outcome=~"no_market_data|pool_missing|build_error"}[10m]))
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A > 1
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 15m
+    labels:
+      severity: warning
+    annotations:
+      summary: Withdrawer hitting unexpected errors
+      description: Withdrawer red-path outcomes are firing sustained. no_market_data points at RPC degradation; pool_missing means config/contract drift; build_error is a gateway op-build failure. Distinct from the healthy pool_at_capacity / below_threshold verdicts.
+  - uid: keeper_cursor_save_failing
+    title: KeeperCursorSaveFailing
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: rate(keeper_cursor_save_failures_total[10m])
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A > 0
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 15m
+    labels:
+      severity: critical
+    annotations:
+      summary: Event cursor not being persisted
+      description: Soroban event cursor writes to SQLite are failing. On restart the keeper will replay from the last successful save (or head), potentially missing or duplicating work. Check db_path mount and disk space.
+  - uid: prometheus_target_down
+    title: PrometheusTargetDown
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: up
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $A < 1
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: A scrape target is down
+      description: A scrape target has been unreachable for >5m. If this is alula-keeper, KeeperDown should also be firing.
+  - uid: keeper_profit_capture_low
+    title: KeeperProfitCaptureLow
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: sum(increase(liquidator_plan_realised_net_profit_oracle_units_total[1h]))
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        editorMode: code
+        expr: sum(increase(liquidator_plan_expected_net_profit_oracle_units_total[1h]))
+        instant: true
+        intervalMs: 1000
+        maxDataPoints: 43200
+        range: false
+        refId: B
+    - refId: C
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        type: math
+        expression: $B > 0 && ($A / $B) < 0.5
+        intervalMs: 1000
+        maxDataPoints: 43200
+        refId: C
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Alerting
+    for: 30m
+    labels:
+      severity: warning
+    annotations:
+      summary: Realised profit <50% of expected (1h)
+      description: The realisation tax is eating over half the modelled profit — submission failures, simulation drift, or retries exhausted. Cross-check the TX confirmation outcomes and skip reasons.

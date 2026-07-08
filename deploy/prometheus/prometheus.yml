@@ -6,13 +6,8 @@ global:
   external_labels:
     stack: alula-liquidator
 
-rule_files:
-  - /etc/prometheus/rules.yml
-
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets: ['alertmanager:9093']
+# Alerting is owned by Grafana (Grafana-managed rules provisioned under
+# deploy/grafana/provisioning/alerting/). Prometheus is a pure TSDB here.
 
 scrape_configs:
   - job_name: alula-keeper
@@ -25,7 +20,3 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ['localhost:9090']
-
-  - job_name: alertmanager
-    static_configs:
-      - targets: ['alertmanager:9093']

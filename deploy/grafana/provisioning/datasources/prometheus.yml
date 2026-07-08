@@ -11,14 +11,3 @@ datasources:
     editable: false
     jsonData:
       timeInterval: 10s
-
-  - name: Alertmanager
-    type: alertmanager
-    uid: alertmanager
-    access: proxy
-    url: http://alertmanager:9093
-    editable: false
-    jsonData:
-      # Speaks the same /api/v2 contract the prom/alertmanager image serves.
-      implementation: prometheus
-      handleGrafanaManagedAlerts: false

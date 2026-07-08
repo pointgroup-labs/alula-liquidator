@@ -7,7 +7,6 @@ networks:
 volumes:
   keeper-data:
   prom-data:
-  alertmanager-data:
   grafana-data:
   traefik-acme:
 
@@ -43,7 +42,6 @@ services:
     restart: unless-stopped
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
       - prom-data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -52,20 +50,6 @@ services:
       - --web.enable-lifecycle
     ports:
       - "127.0.0.1:9090:9090"
-    networks:
-      - obs
-
-  alertmanager:
-    image: prom/alertmanager:v0.32.1
-    restart: unless-stopped
-    command:
-      - --config.file=/etc/alertmanager/alertmanager.yml
-      - --storage.path=/alertmanager
-    volumes:
-      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - alertmanager-data:/alertmanager
-    ports:
-      - "127.0.0.1:9093:9093"
     networks:
       - obs
 
