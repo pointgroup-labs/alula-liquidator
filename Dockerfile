@@ -66,7 +66,7 @@ COPY --link --from=builder /usr/local/bin/keeper /usr/local/bin/keeper
 
 USER keeper
 # WORKDIR matches the keeper-data volume mount so `db_path: "./data.db"`
-# in config.example.json lands on the persistent volume.
+# in config.example.toml lands on the persistent volume.
 WORKDIR /var/lib/keeper
 
 ENV RUST_BACKTRACE=1 \

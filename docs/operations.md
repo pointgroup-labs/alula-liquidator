@@ -14,7 +14,7 @@ The included [`docker-compose.yml`](../docker-compose.yml) stands up three servi
 
 ```bash
 cp .env.example .env          # fill STELLAR_SKEY
-cp config.example.json config.json
+cp config.example.toml config.toml
 docker compose up -d
 docker compose logs -f keeper
 ```
@@ -68,7 +68,7 @@ The provisioned dashboard `Alula Liquidator` is organised into rows by what ques
 
 ## Troubleshooting
 
-**"Keeper reachable is 0."** Prometheus cannot reach `keeper:9000`. Confirm `metrics_bind_addr` in the config matches the address Prometheus targets (`keeper:9000` for the docker-compose stack — note the `keeper` here is the *service* name, not the `container_name`). If you bound to `127.0.0.1`, change it to `0.0.0.0`. A frequent footgun on upgraded deploys: a stale `config/keeper.json` from before the port unification still binds `:9090` — re-sync it from `config.example.json` if the panels stay empty after a clean restart.
+**"Keeper reachable is 0."** Prometheus cannot reach `keeper:9000`. Confirm `metrics_bind_addr` in the config matches the address Prometheus targets (`keeper:9000` for the docker-compose stack — note the `keeper` here is the *service* name, not the `container_name`). If you bound to `127.0.0.1`, change it to `0.0.0.0`. A frequent footgun on upgraded deploys: a stale `config/keeper.toml` from before the port unification still binds `:9090` — re-sync it from `config.example.toml` if the panels stay empty after a clean restart.
 
 **"Time since last scan keeps growing."** The collector is stuck. Inspect `docker compose logs keeper` for repeated RPC errors. The most common cause is a stale event cursor in the SQLite db (`db_path`) after switching networks — delete the db file and restart; the keeper re-derives from head.
 
@@ -76,7 +76,7 @@ The provisioned dashboard `Alula Liquidator` is organised into rows by what ques
 
 **"Skip reason `dust` dominates everything."** The configured thresholds (`liquidator_min_profit_margin_cents`, `balancer_min_swap_amount_value_cents`, `withdrawer_min_withdraw_value_cents`) are too high for the current pool sizes. Tune them down.
 
-**"`config.example.json` doesn't load."** The keeper enforces `deny_unknown_fields`. A typo in any key fails the entire load. The error message names the offending field — copy it verbatim or remove it.
+**"`config.example.toml` doesn't load."** The keeper enforces `deny_unknown_fields`. A typo in any key fails the entire load. The error message names the offending field — copy it verbatim or remove it.
 
 ## Alert reference
 

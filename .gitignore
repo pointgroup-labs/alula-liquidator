@@ -49,3 +49,4 @@ tmp
 /data*
 
 config.json
+config.toml

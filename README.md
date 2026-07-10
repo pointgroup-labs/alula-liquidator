@@ -25,7 +25,7 @@ Brings up the keeper, Prometheus, and a provisioned Grafana dashboard with alert
 git clone https://github.com/pointgroup-labs/alula-liquidator.git
 cd alula-liquidator
 cp .env.example .env          # fill STELLAR_SKEY
-cp config.example.json config.json
+cp config.example.toml config.toml
 docker compose up -d
 ```
 
@@ -40,10 +40,10 @@ See [`docs/operations.md`](./docs/operations.md) for the dashboard tour, environ
 ### From source
 
 ```bash
-cargo run --release -- --config config.json --skey "S..."
+cargo run --release -- --config config.toml --skey "S..."
 ```
 
-The keeper binary expects a `--config` JSON path and a `--skey` Stellar secret key (`S...`, 56 chars). Everything else lives in the config file; see [`docs/configuration.md`](./docs/configuration.md).
+The keeper binary expects a `--config` path (JSON or TOML, picked by extension) and a `--skey` Stellar secret key (`S...`, 56 chars). Everything else lives in the config file; see [`docs/configuration.md`](./docs/configuration.md).
 
 ## How it works
 

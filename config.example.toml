@@ -1,0 +1,118 @@
+# Alula keeper configuration — testnet, in TOML.
+#
+# The loader picks its parser from the file extension (.toml or .json); any
+# field may be overridden by a KEEPER_-prefixed env var (e.g. KEEPER_RPC_URL).
+# Unknown keys — in the file or the environment — fail startup loudly.
+
+# --- General ---
+
+# Soroban RPC endpoint. Every on-chain read and write goes here, so RPC
+# latency directly caps how fast the bot reacts. Use one you trust.
+rpc_url = "https://soroban-testnet.stellar.org"
+
+# Local SQLite file: event cursor + obligation cache. Deleting it forces a
+# full event re-sync from `event_collector_start_ledger` on next start.
+db_path = "./data.db"
+
+# Alula pool (money-market) contract IDs to watch. Each a 56-char C…/G…
+# address. (Currently a single market is supported.)
+markets = ["CCUDRNK5K5UR6NLYKAQROCBUQJBVY66DF62NDMKVH7CQ7W46ASJAJPBI"]
+
+# SAC contract for native XLM. Identifies the fee asset that
+# `xlm_safety_margin` applies to.
+xlm_address = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+
+# Min XLM (stroops) held back for inclusion fees and reserves. 1 XLM =
+# 10_000_000 stroops, so 2000000000 = 200 XLM. Usable XLM = balance − margin.
+xlm_safety_margin = 2000000000
+
+# Starting fee (stroops) on every built tx, and a floor on the final fee. ≥ 100.
+default_simulation_fee = 10000
+
+# Must match the network `rpc_url` serves or every submission is rejected.
+# Mainnet: "Public Global Stellar Network ; September 2015".
+network_passphrase = "Test SDF Network ; September 2015"
+
+# Assets the keeper keeps on its balance. The FIRST entry is the Balancer's
+# swap target — anything not in this list is rebalanced into assets_to_hold[0].
+assets_to_hold = [
+    "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+    "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+]
+
+# DEX-adapter contract IDs the keeper may route swaps through. More providers
+# = better fills but more RPC calls per evaluation.
+swap_providers = ["CBU6NTBOV5FD6H4ERIF3X3YYUZI6W54DUUVE3ZBM33X5YVTSUKCELQ6L"]
+
+# Prometheus /metrics bind (also serves /healthz and /readyz). Use
+# 0.0.0.0:9000 in docker compose so the prometheus container can scrape it.
+metrics_bind_addr = "0.0.0.0:9000"
+
+# Seconds without a completed scan before /readyz returns 503. Optional
+# (default 120). Set above the slowest *_refresh_interval_blocks cadence.
+readiness_staleness_budget_secs = 120
+
+# Ledger to start event collection from when there's no saved cursor (first
+# run or after deleting db_path). Once a cursor exists this is ignored. Don't
+# set it older than the RPC's ~7-day retention or the collector shuts down.
+event_collector_start_ledger = 3338084
+
+# Token-balance cache TTL, seconds (1–10). Shorter = fresher, more RPC load.
+keeper_capital_balance_ttl_secs = 10
+
+# Safety ceiling on an in-flight capital reservation, seconds (1–30). Keep it
+# longer than a typical submit-and-confirm cycle.
+keeper_capital_reservation_ttl_secs = 30
+
+# Sleep between "latest ledger?" polls, seconds (≥ 1). Ledgers close ~5s, so
+# 2 polls a bit faster than block time. Paces every strategy's refresh.
+ledger_collector_polling_interval_secs = 2
+
+# --- Bad Debt Request Initiator ---
+# Submits `cover_bad_debt` when a borrower has debt but no viable collateral.
+
+# Max submission attempts before giving up (1–50).
+bad_debt_request_initiator_max_retries = 3
+# Belt-and-braces re-scan cadence in ledgers (≥ 1); also reacts to Liquidate events.
+bad_debt_request_initiator_refresh_interval_blocks = 5
+
+# --- Withdrawer ---
+# Pulls the keeper's own deposits back out when it won't incur a scarcity fee.
+
+# Max submission attempts (1–50).
+withdrawer_max_retries = 3
+# Re-scan cadence in ledgers (≥ 1).
+withdrawer_refresh_interval_blocks = 5
+# Skip withdrawals whose oracle value is below this (USD cents, ≥ 0) — no dust.
+withdrawer_min_withdraw_value_cents = 500
+# Utilization headroom to leave when withdrawing (bps, 0–10000).
+withdrawer_utilization_safety_margin_bps = 500
+
+# --- Liquidator ---
+# Liquidates unhealthy positions, pre-swapping held assets into the repay asset.
+
+# Max submission attempts (1–50).
+liquidator_max_retries = 3
+# Re-scan cadence in ledgers (≥ 1).
+liquidator_refresh_interval_blocks = 2
+# Min acceptable profit (USD cents, ≥ -1000). Negative = run for protocol
+# safety over profit (e.g. the Alula team's own keeper).
+liquidator_min_profit_margin_cents = 0
+# Max swap slippage tolerated on the liquidation swap leg (bps, 0–10000).
+liquidator_max_allowed_swap_slippage_bps = 0
+
+# --- Balancer ---
+# Rebalances stray assets into assets_to_hold[0].
+
+# Max submission attempts (1–50).
+balancer_max_retries = 3
+# Re-scan cadence in ledgers (≥ 1).
+balancer_refresh_interval_blocks = 2
+# Max swap slippage tolerated on a rebalance (bps, 0–10000).
+balancer_max_allowed_swap_slippage_bps = 30
+# Max price impact tolerated on a rebalance (bps, 0–10000).
+balancer_max_price_impact_bps = 1200
+# How many swap providers to probe when pricing a rebalance (≥ 1).
+balancer_max_swap_provider_probes = 3
+# Skip rebalances below this value (USD cents, ≥ 0).
+balancer_min_swap_amount_value_cents = 100

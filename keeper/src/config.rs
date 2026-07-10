@@ -1,9 +1,10 @@
-//! CLI args + JSON config schema for the keeper binary.
+//! CLI args + config schema for the keeper binary.
 
 use {
+    ::config::{Config, Environment, File},
     clap::Parser,
-    serde::Deserialize,
-    std::{fs::File, net::SocketAddr, path::Path, path::PathBuf},
+    serde::{Deserialize, Deserializer},
+    std::{net::SocketAddr, path::Path, path::PathBuf},
     url::Url,
     validator::{Validate, ValidationError},
 };
@@ -38,6 +39,7 @@ pub struct CliConfig {
     pub xlm_address: String,
 
     #[validate(range(min = 1, message = "XLM safety margin must be positive"))]
+    #[serde(deserialize_with = "de_i128")]
     pub xlm_safety_margin: i128,
 
     #[validate(range(
@@ -100,9 +102,11 @@ pub struct CliConfig {
     pub withdrawer_refresh_interval_blocks: u32,
 
     #[validate(range(min = 0))]
+    #[serde(deserialize_with = "de_i128")]
     pub withdrawer_min_withdraw_value_cents: i128,
 
     #[validate(range(min = 0, max = 10000))]
+    #[serde(deserialize_with = "de_i128")]
     pub withdrawer_utilization_safety_margin_bps: i128,
 
     // -------------------------------------------------------------------------
@@ -117,6 +121,7 @@ pub struct CliConfig {
     // Negative assumes the liquidator is run by the entity prioritizing the protocol safety over
     // profitability(like Alula team)
     #[validate(range(min = -10_00))]
+    #[serde(deserialize_with = "de_i128")]
     pub liquidator_min_profit_margin_cents: i128,
 
     #[validate(range(
@@ -124,6 +129,7 @@ pub struct CliConfig {
         max = 10000,
         message = "Slippage BPS must be between 0 and 10000"
     ))]
+    #[serde(deserialize_with = "de_i128")]
     pub liquidator_max_allowed_swap_slippage_bps: i128,
 
     // -------------------------------------------------------------------------
@@ -140,6 +146,7 @@ pub struct CliConfig {
         max = 10000,
         message = "Slippage BPS must be between 0 and 10000"
     ))]
+    #[serde(deserialize_with = "de_i128")]
     pub balancer_max_allowed_swap_slippage_bps: i128,
 
     #[validate(range(
@@ -147,17 +154,23 @@ pub struct CliConfig {
         max = 10000,
         message = "Price impact BPS must be between 0 and 10000"
     ))]
+    #[serde(deserialize_with = "de_i128")]
     pub balancer_max_price_impact_bps: i128,
 
     #[validate(range(min = 1))]
     pub balancer_max_swap_provider_probes: u32,
 
     #[validate(range(min = 0))]
+    #[serde(deserialize_with = "de_i128")]
     pub balancer_min_swap_amount_value_cents: i128,
 }
 
 fn default_readiness_staleness_budget_secs() -> u64 {
     120
+}
+
+fn de_i128<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i128, D::Error> {
+    Ok(i64::deserialize(deserializer)? as i128)
 }
 
 fn validate_stellar_address(addr: &str) -> Result<(), ValidationError> {
@@ -178,7 +191,11 @@ fn validate_stellar_addresses(addresses: &[String]) -> Result<(), ValidationErro
 
 impl CliConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let config: Self = serde_json::from_reader(File::open(path)?)?;
+        let config: Self = Config::builder()
+            .add_source(File::from(path))
+            .add_source(Environment::with_prefix("KEEPER").try_parsing(true))
+            .build()?
+            .try_deserialize()?;
         config.validate()?;
 
         Ok(config)

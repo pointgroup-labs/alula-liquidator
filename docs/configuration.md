@@ -1,6 +1,6 @@
 # Configuration
 
-The keeper reads a single JSON config file passed via `--config`. The schema is the `CliConfig` struct in [`keeper/src/config.rs`](../keeper/src/config.rs); [`config.example.json`](../config.example.json) is a working testnet starting point.
+The keeper reads a single config file passed via `--config`; the parser is chosen by the file extension — JSON or TOML. [`config.example.toml`](../config.example.toml) is a working testnet starting point. The schema is the `CliConfig` struct in [`keeper/src/config.rs`](../keeper/src/config.rs). Any field can also be overridden by a `KEEPER_`-prefixed environment variable (e.g. `KEEPER_RPC_URL`), subject to the same strict unknown-field check. Integer values load through an `i64`→`i128` shim, so they cap at `i64` — far above any real config value.
 
 Two rules govern the whole file and are worth internalising before you touch anything:
 
@@ -109,7 +109,7 @@ The `--skey` secret is deliberately **not** in the config file — it's the only
 
 | Flag | Env fallback | Description |
 |---|---|---|
-| `--config <path>` | — | Path to the JSON config file. |
+| `--config <path>` | — | Path to the config file (JSON or TOML by extension). |
 | `--skey <S…>` | `STELLAR_SKEY` | Stellar secret key, 56 chars, `S…` strkey form. The CLI flag wins if both are set. |
 
 ---

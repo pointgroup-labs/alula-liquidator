@@ -28,6 +28,7 @@ tracing-subscriber = { workspace = true }
 # Serialization, errors, CLI
 serde = { workspace = true }
 serde_json = { workspace = true }
+config = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 clap = { workspace = true }
