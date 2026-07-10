@@ -48,6 +48,10 @@ impl BadDebtRequestInitiator {
 }
 
 impl Strategy<Event, Action> for BadDebtRequestInitiator {
+    fn sync_state(&mut self) -> BoxFuture<'_, anyhow::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn process_event(&mut self, event: Event) -> BoxFuture<'_, Vec<Action>> {
         Box::pin(async move {
             match event {
@@ -55,10 +59,6 @@ impl Strategy<Event, Action> for BadDebtRequestInitiator {
                 Event::NewLedger(nl) => self.handle_new_ledger(nl).await,
             }
         })
-    }
-
-    fn sync_state(&mut self) -> BoxFuture<'_, anyhow::Result<()>> {
-        Box::pin(async { Ok(()) })
     }
 }
 

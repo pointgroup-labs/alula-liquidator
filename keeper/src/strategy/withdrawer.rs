@@ -50,6 +50,10 @@ impl Withdrawer {
 }
 
 impl Strategy<Event, Action> for Withdrawer {
+    fn sync_state(&mut self) -> BoxFuture<'_, anyhow::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn process_event(&mut self, event: Event) -> BoxFuture<'_, Vec<Action>> {
         Box::pin(async move {
             match event {
@@ -57,10 +61,6 @@ impl Strategy<Event, Action> for Withdrawer {
                 Event::NewLedger(b) => self.handle_new_ledger(b).await,
             }
         })
-    }
-
-    fn sync_state(&mut self) -> BoxFuture<'_, anyhow::Result<()>> {
-        Box::pin(async { Ok(()) })
     }
 }
 
