@@ -23,7 +23,7 @@ services:
     environment:
       RUST_LOG: info
     volumes:
-      - ./config/keeper.toml:/etc/keeper/config.toml:ro
+      - ./config/keeper/config.toml:/etc/keeper/config.toml:ro
       - keeper-data:/var/lib/keeper
     ports:
       - "127.0.0.1:9000:9000"
