@@ -1,31 +1,31 @@
 //! Liquidator bot for Alula lending pools on Soroban.
 
-use {
-    crate::{
-        collect::{
-            Event,
-            stellar_event::{EventFilter, SorobanEventCollector},
-            stellar_ledger::LedgerCollector,
-        },
-        config::{Args, CliConfig},
-        execute::{Action, stellar_tx::SorobanExecutor},
-        liquidator_capital::{LiquidatorCapital, LiquidatorCapitalConfig},
-        stellar::{client::Gateway, pubkey_to_strkey},
-        storage::SqliteStore,
-        strategy::{
-            BadDebtRequestInitiator, BadDebtRequestInitiatorConfig, Balancer, BalancerConfig,
-            Liquidator, LiquidatorConfig, Withdrawer, WithdrawerConfig,
-        },
+use std::{sync::Arc, time::Duration};
+
+use clap::Parser;
+use ed25519_dalek::SigningKey;
+use engine::{ports::LedgerReader, reactor::Engine};
+use stellar_rpc_client::EventType;
+use stellar_strkey::ed25519::PrivateKey;
+use tokio::signal;
+use tracing::{error, info};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+
+use crate::{
+    collect::{
+        Event,
+        stellar_event::{EventFilter, SorobanEventCollector},
+        stellar_ledger::LedgerCollector,
     },
-    clap::Parser,
-    ed25519_dalek::SigningKey,
-    engine::{ports::LedgerReader, reactor::Engine},
-    std::{sync::Arc, time::Duration},
-    stellar_rpc_client::EventType,
-    stellar_strkey::ed25519::PrivateKey,
-    tokio::signal,
-    tracing::{error, info},
-    tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt},
+    config::{Args, CliConfig},
+    execute::{Action, stellar_tx::SorobanExecutor},
+    liquidator_capital::{LiquidatorCapital, LiquidatorCapitalConfig},
+    stellar::{client::Gateway, pubkey_to_strkey},
+    storage::SqliteStore,
+    strategy::{
+        BadDebtRequestInitiator, BadDebtRequestInitiatorConfig, Balancer, BalancerConfig,
+        Liquidator, LiquidatorConfig, Withdrawer, WithdrawerConfig,
+    },
 };
 
 mod collect;
@@ -187,11 +187,7 @@ async fn main() -> anyhow::Result<()> {
     engine.add_collector(Box::new(SorobanEventCollector::try_new(
         &rpc_url,
         event_collector_start_ledger,
-        EventFilter {
-            topics: vec![],
-            contract_ids: markets,
-            event_type: EventType::Contract,
-        },
+        EventFilter { topics: vec![], contract_ids: markets, event_type: EventType::Contract },
         cursor_repo,
     )?));
     engine.add_collector(Box::new(LedgerCollector::new(
@@ -259,8 +255,5 @@ async fn shutdown_future() {
 fn setup_tracing() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("warn,keeper=info,engine=info"));
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    tracing_subscriber::registry().with(filter).with(tracing_subscriber::fmt::layer()).init();
 }

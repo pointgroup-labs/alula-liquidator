@@ -1,11 +1,12 @@
 //! Profitability and flash-loan helpers.
 
+use tracing::error;
+
 use crate::lending_model::{
     BPS_FACTOR, Underlying,
     error::{LMError, MapArithmeticError},
     pool::PoolData,
 };
-use tracing::error;
 
 pub fn compute_flash_fee(
     amount: Underlying,
@@ -77,15 +78,10 @@ pub fn compute_repay_cap_from_collateral(
 
         return Err(LMError::InternalError);
     }
-    let (borrow_asset_price, collateral_asset_price) = (
-        borrow_pool.oracle_asset_price,
-        collateral_pool.oracle_asset_price,
-    );
+    let (borrow_asset_price, collateral_asset_price) =
+        (borrow_pool.oracle_asset_price, collateral_pool.oracle_asset_price);
     if borrow_asset_price <= 0 || collateral_asset_price <= 0 {
-        error!(
-            borrow_asset_price,
-            collateral_asset_price, "non-positive price(s)"
-        );
+        error!(borrow_asset_price, collateral_asset_price, "non-positive price(s)");
 
         return Err(LMError::InternalError);
     }
@@ -115,10 +111,8 @@ pub fn compute_repay_cap_from_collateral(
         return Err(LMError::InternalError);
     }
 
-    let (borrow_decimals_pow, collateral_decimals_pow) = (
-        10_i128.pow(borrow_pool.token_decimals),
-        10_i128.pow(collateral_pool.token_decimals),
-    );
+    let (borrow_decimals_pow, collateral_decimals_pow) =
+        (10_i128.pow(borrow_pool.token_decimals), 10_i128.pow(collateral_pool.token_decimals));
 
     let all_collateral_value = available_collateral
         .checked_mul(collateral_asset_price)
@@ -126,9 +120,7 @@ pub fn compute_repay_cap_from_collateral(
         .checked_div(collateral_decimals_pow)
         .m_ou()?;
 
-    let numerator = all_collateral_value
-        .checked_mul(borrow_decimals_pow)
-        .m_ou()?;
+    let numerator = all_collateral_value.checked_mul(borrow_decimals_pow).m_ou()?;
     let denominator = borrow_asset_price
         .checked_mul(incentive_bps_factor)
         .m_ou()?
@@ -177,13 +169,7 @@ pub fn cents_to_oracle_value_ceil(
 
     let multiplier = 10_i128.checked_pow(oracle_price_decimals).m_ou()?;
 
-    cents
-        .checked_mul(multiplier)
-        .m_ou()?
-        .checked_add(99)
-        .m_ou()?
-        .checked_div(100)
-        .m_ou()
+    cents.checked_mul(multiplier).m_ou()?.checked_add(99).m_ou()?.checked_div(100).m_ou()
 }
 
 pub fn value_to_underlying_asset_amount_ceil(
@@ -203,11 +189,8 @@ pub fn value_to_underlying_asset_amount_ceil(
     }
 
     let multiplier = 10_i128.checked_pow(token_decimals).m_ou()?;
-    let numerator = value
-        .checked_mul(multiplier)
-        .m_ou()?
-        .checked_add(oracle_asset_price - 1)
-        .m_ou()?;
+    let numerator =
+        value.checked_mul(multiplier).m_ou()?.checked_add(oracle_asset_price - 1).m_ou()?;
     let denominator = oracle_asset_price;
 
     Ok(Underlying(numerator.checked_div(denominator).m_ou()?))

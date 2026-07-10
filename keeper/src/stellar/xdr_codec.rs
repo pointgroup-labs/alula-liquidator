@@ -3,20 +3,17 @@
 //! Internal to the `stellar` adapter — `pub(super)` is the rule, except for
 //! display helpers and a few items that `event_decode` and `simulation` share.
 
-use {
-    anyhow::{Context, anyhow},
-    engine::lending_model::LiquidationResult,
-    engine::lending_model::{
-        BorrowPosition, DTokens, DepositPosition, JTokens, MarketData, Obligation, ObligationKey,
-        PoolData, Underlying,
-    },
-    stellar_xdr::{
-        AccountId, ContractId, Hash, Int128Parts, MuxedAccount, PublicKey, ScAddress, ScMap,
-        ScMapEntry, ScSymbol, ScVal, ScVec, Uint256, VecM,
-    },
-    thiserror::Error,
-    tracing::warn,
+use anyhow::{Context, anyhow};
+use engine::lending_model::{
+    BorrowPosition, DTokens, DepositPosition, JTokens, LiquidationResult, MarketData, Obligation,
+    ObligationKey, PoolData, Underlying,
 };
+use stellar_xdr::{
+    AccountId, ContractId, Hash, Int128Parts, MuxedAccount, PublicKey, ScAddress, ScMap,
+    ScMapEntry, ScSymbol, ScVal, ScVec, Uint256, VecM,
+};
+use thiserror::Error;
+use tracing::warn;
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -38,10 +35,7 @@ pub(super) fn i128_from_parts(parts: &Int128Parts) -> i128 {
 }
 
 pub(super) fn i128_to_scval(v: i128) -> ScVal {
-    ScVal::I128(Int128Parts {
-        hi: (v >> 64) as i64,
-        lo: v as u64,
-    })
+    ScVal::I128(Int128Parts { hi: (v >> 64) as i64, lo: v as u64 })
 }
 
 pub(super) fn contract_strkey_to_hash(strkey: &str) -> anyhow::Result<[u8; 32]> {
@@ -54,9 +48,7 @@ pub(super) fn account_strkey_to_muxed(strkey: &str) -> anyhow::Result<MuxedAccou
     if let Ok(pk) = stellar_strkey::ed25519::PublicKey::from_string(strkey) {
         return Ok(MuxedAccount::Ed25519(Uint256(pk.0)));
     }
-    Err(anyhow!(
-        "source_account must be a G... address, got: {strkey}"
-    ))
+    Err(anyhow!("source_account must be a G... address, got: {strkey}"))
 }
 
 pub fn scval_type_name(val: &ScVal) -> &'static str {
@@ -148,9 +140,7 @@ fn map_get_address(entries: &[ScMapEntry], key: &str) -> anyhow::Result<String> 
 fn map_get_string_optional(entries: &[ScMapEntry], key: &str) -> Option<String> {
     match map_get(entries, key) {
         Some(ScVal::String(s)) => Some(s.0.to_string()),
-        Some(ScVal::Symbol(s)) => std::str::from_utf8(s.0.as_ref())
-            .map(|s| s.to_string())
-            .ok(),
+        Some(ScVal::Symbol(s)) => std::str::from_utf8(s.0.as_ref()).map(|s| s.to_string()).ok(),
         _ => None,
     }
 }
@@ -170,15 +160,13 @@ pub(super) fn address_to_scval(address: &str) -> anyhow::Result<ScVal> {
     if address.starts_with('G') {
         let pk = stellar_strkey::ed25519::PublicKey::from_string(address)
             .map_err(|e| anyhow!("invalid G-address '{address}': {e}"))?;
-        Ok(ScVal::Address(ScAddress::Account(AccountId(
-            PublicKey::PublicKeyTypeEd25519(Uint256(pk.0)),
-        ))))
+        Ok(ScVal::Address(ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+            pk.0,
+        ))))))
     } else if address.starts_with('C') {
         let contract = stellar_strkey::Contract::from_string(address)
             .map_err(|e| anyhow!("invalid C-address '{address}': {e}"))?;
-        Ok(ScVal::Address(ScAddress::Contract(ContractId(Hash(
-            contract.0,
-        )))))
+        Ok(ScVal::Address(ScAddress::Contract(ContractId(Hash(contract.0)))))
     } else {
         Err(anyhow!("unknown address format: {address}"))
     }
@@ -188,11 +176,7 @@ pub(super) fn obligation_key_to_scval(obl: &ObligationKey) -> anyhow::Result<ScV
     let seed_val = match &obl.seed {
         Some(hex_seed) => {
             let bytes = hex::decode(hex_seed)?;
-            ScVal::Bytes(
-                bytes
-                    .try_into()
-                    .map_err(|_| anyhow!("seed must be 32 bytes"))?,
-            )
+            ScVal::Bytes(bytes.try_into().map_err(|_| anyhow!("seed must be 32 bytes"))?)
         }
         None => ScVal::Void,
     };
@@ -208,9 +192,7 @@ pub(super) fn obligation_key_to_scval(obl: &ObligationKey) -> anyhow::Result<ScV
         },
     ];
 
-    Ok(ScVal::Map(Some(ScMap(
-        entries.try_into().map_err(|_| anyhow!("map conversion"))?,
-    ))))
+    Ok(ScVal::Map(Some(ScMap(entries.try_into().map_err(|_| anyhow!("map conversion"))?))))
 }
 
 pub(super) fn parse_obligation_key(val: &ScVal) -> anyhow::Result<ObligationKey> {
@@ -283,10 +265,7 @@ fn parse_borrow_positions(val: &ScVal) -> anyhow::Result<Vec<BorrowPosition>> {
                 continue;
             }
         };
-        positions.push(BorrowPosition {
-            d_tokens: DTokens(d_tokens),
-            pool_address,
-        });
+        positions.push(BorrowPosition { d_tokens: DTokens(d_tokens), pool_address });
     }
     Ok(positions)
 }
@@ -305,10 +284,7 @@ pub(super) fn parse_obligation(val: &ScVal, _key: &ObligationKey) -> anyhow::Res
 }
 
 pub(super) fn parse_obligation_keys(val: &ScVal) -> anyhow::Result<Vec<ObligationKey>> {
-    scval_as_vec(val)?
-        .iter()
-        .map(parse_obligation_key)
-        .collect()
+    scval_as_vec(val)?.iter().map(parse_obligation_key).collect()
 }
 
 fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
@@ -422,17 +398,13 @@ pub(super) fn build_address_vec_scval(addresses: &[&str]) -> anyhow::Result<ScVa
     for addr in addresses {
         items.push(address_to_scval(addr)?);
     }
-    let vec_m: VecM<ScVal> = items
-        .try_into()
-        .map_err(|_| anyhow!("address vec conversion"))?;
+    let vec_m: VecM<ScVal> = items.try_into().map_err(|_| anyhow!("address vec conversion"))?;
     Ok(ScVal::Vec(Some(ScVec(vec_m))))
 }
 
 pub(super) fn build_requests_vec_scval(requests: &[ScVal]) -> anyhow::Result<ScVal> {
-    let vec_m: VecM<ScVal> = requests
-        .to_vec()
-        .try_into()
-        .map_err(|_| anyhow!("requests vec conversion"))?;
+    let vec_m: VecM<ScVal> =
+        requests.to_vec().try_into().map_err(|_| anyhow!("requests vec conversion"))?;
     Ok(ScVal::Vec(Some(ScVec(vec_m))))
 }
 

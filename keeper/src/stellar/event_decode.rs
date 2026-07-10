@@ -1,20 +1,19 @@
 //! `EventCodec` impl for `Gateway` plus event-payload XDR parsers.
 
-use {
-    super::{
-        client::Gateway,
-        xdr_codec::{
-            ParseError, map_get, parse_obligation, scval_as_map, scval_display, scval_type_name,
-        },
-    },
-    crate::stellar::xdr_codec::parse_liquidation_result,
-    anyhow::{Context, anyhow},
-    engine::{
-        lending_model::{LiquidationResult, Obligation, ObligationKey},
-        ports::{EventCodec, OperationEvent},
-    },
-    stellar_xdr::{Limits, ReadXdr as _, ScMap, ScVal},
+use anyhow::{Context, anyhow};
+use engine::{
+    lending_model::{LiquidationResult, Obligation, ObligationKey},
+    ports::{EventCodec, OperationEvent},
 };
+use stellar_xdr::{Limits, ReadXdr as _, ScMap, ScVal};
+
+use super::{
+    client::Gateway,
+    xdr_codec::{
+        ParseError, map_get, parse_obligation, scval_as_map, scval_display, scval_type_name,
+    },
+};
+use crate::stellar::xdr_codec::parse_liquidation_result;
 
 fn parse_obligation_from_event_value_inner(
     value_xdr_base64: &str, // event value
@@ -61,17 +60,12 @@ impl EventCodec for Gateway {
 
     fn decode_operation(&self, event: &Self::RawEvent) -> anyhow::Result<OperationEvent> {
         if event.topic.is_empty() {
-            return Err(ParseError::InvalidXdr {
-                reason: "Event has no topics".to_string(),
-            }
-            .into());
+            return Err(ParseError::InvalidXdr { reason: "Event has no topics".to_string() }.into());
         }
 
         let val =
             ScVal::from_xdr_base64(event.topic[0].as_bytes(), Limits::none()).map_err(|e| {
-                ParseError::InvalidXdr {
-                    reason: format!("Failed to decode XDR: {}", e),
-                }
+                ParseError::InvalidXdr { reason: format!("Failed to decode XDR: {}", e) }
             })?;
 
         match val {

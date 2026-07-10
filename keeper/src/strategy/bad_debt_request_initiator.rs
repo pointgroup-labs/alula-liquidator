@@ -1,24 +1,24 @@
 //! Bad-debt request initiator strategy. Initiates the bad debt request if needed.
 
-use {
-    crate::{
-        collect::{Event, stellar_ledger::NewLedger},
-        execute::{Action, stellar_tx::SubmitStellarTx},
-        metrics::BadDebtOutcome,
-        stellar::client::Gateway,
-        storage::obligations::ObligationsRepo,
+use std::sync::Arc;
+
+use ed25519_dalek::SigningKey;
+use engine::{
+    lending_model::{
+        MarketData, Obligation, ObligationKey, profitability::cents_to_oracle_value_ceil,
     },
-    ed25519_dalek::SigningKey,
-    engine::{
-        lending_model::{
-            MarketData, Obligation, ObligationKey, profitability::cents_to_oracle_value_ceil,
-        },
-        ports::{EventCodec, LedgerReader, OperationEvent},
-        reactor::{BoxFuture, Strategy},
-    },
-    std::sync::Arc,
-    stellar_rpc_client::Event as SorobanEvent,
-    tracing::{debug, error, info, warn},
+    ports::{EventCodec, LedgerReader, OperationEvent},
+    reactor::{BoxFuture, Strategy},
+};
+use stellar_rpc_client::Event as SorobanEvent;
+use tracing::{debug, error, info, warn};
+
+use crate::{
+    collect::{Event, stellar_ledger::NewLedger},
+    execute::{Action, stellar_tx::SubmitStellarTx},
+    metrics::BadDebtOutcome,
+    stellar::client::Gateway,
+    storage::obligations::ObligationsRepo,
 };
 
 pub struct BadDebtRequestInitiatorConfig {
@@ -43,13 +43,7 @@ impl BadDebtRequestInitiator {
         ledger_reader: Arc<dyn LedgerReader>,
         config: BadDebtRequestInitiatorConfig,
     ) -> Self {
-        Self {
-            skey,
-            config,
-            gateway,
-            ledger_reader,
-            obligations_repo,
-        }
+        Self { skey, config, gateway, ledger_reader, obligations_repo }
     }
 }
 
@@ -70,10 +64,7 @@ impl Strategy<Event, Action> for BadDebtRequestInitiator {
 
 impl BadDebtRequestInitiator {
     async fn handle_new_ledger(&mut self, ledger: NewLedger) -> Vec<Action> {
-        if !ledger
-            .seq_num
-            .is_multiple_of(self.config.refresh_interval_blocks)
-        {
+        if !ledger.seq_num.is_multiple_of(self.config.refresh_interval_blocks) {
             return vec![];
         }
 
@@ -89,11 +80,8 @@ impl BadDebtRequestInitiator {
                 continue;
             };
 
-            let Ok(market_data) = self
-                .ledger_reader
-                .read_market_data(&market)
-                .await
-                .inspect_err(|e| {
+            let Ok(market_data) =
+                self.ledger_reader.read_market_data(&market).await.inspect_err(|e| {
                     warn!(?e, %market, "failed to fetch market data");
                 })
             else {
@@ -122,10 +110,7 @@ impl BadDebtRequestInitiator {
 
                     continue;
                 }
-                info!(
-                    ?obligation_key,
-                    "obligation eligible for bad debt request issuance"
-                );
+                info!(?obligation_key, "obligation eligible for bad debt request issuance");
 
                 if let Ok(action) = self.build_issue_bad_debt(&market, obligation_key) {
                     BadDebtOutcome::Dispatched.record();
@@ -169,10 +154,8 @@ impl BadDebtRequestInitiator {
             "liquidation event detected"
         );
 
-        let Ok(borrower_key) = self
-            .gateway
-            .parse_obligation_key_from_topic(&event, 2)
-            .inspect_err(|e| {
+        let Ok(borrower_key) =
+            self.gateway.parse_obligation_key_from_topic(&event, 2).inspect_err(|e| {
                 warn!(?e, "cannot parse borrower obligation key");
                 BadDebtOutcome::ParseError.record();
             })
@@ -199,14 +182,9 @@ impl BadDebtRequestInitiator {
 
         // - Check eligibility -
 
-        let Ok(market_data) = self
-            .ledger_reader
-            .read_market_data(&market)
-            .await
-            .inspect_err(|e| {
-                warn!(?e, %market, "failed to fetch market data");
-            })
-        else {
+        let Ok(market_data) = self.ledger_reader.read_market_data(&market).await.inspect_err(|e| {
+            warn!(?e, %market, "failed to fetch market data");
+        }) else {
             return vec![];
         };
         let Ok(eligible) = self
@@ -229,10 +207,7 @@ impl BadDebtRequestInitiator {
             return vec![];
         }
 
-        info!(
-            ?borrower_key,
-            "obligation eligible for bad debt request issuance"
-        );
+        info!(?borrower_key, "obligation eligible for bad debt request issuance");
 
         if let Ok(action) = self.build_issue_bad_debt(&market, &borrower_key) {
             BadDebtOutcome::Dispatched.record();
@@ -268,10 +243,8 @@ impl BadDebtRequestInitiator {
         )?;
 
         for deposit_pos in &obligation.deposits {
-            let Some(pool) = market_data
-                .pools_data
-                .iter()
-                .find(|p| p.pool_address == deposit_pos.pool_address)
+            let Some(pool) =
+                market_data.pools_data.iter().find(|p| p.pool_address == deposit_pos.pool_address)
             else {
                 warn!(
                     ?obl_key,
@@ -298,10 +271,7 @@ impl BadDebtRequestInitiator {
             }
         }
 
-        info!(
-            ?obl_key,
-            "obligation eligible: all deposits below dust threshold"
-        );
+        info!(?obl_key, "obligation eligible: all deposits below dust threshold");
 
         Ok(true)
     }
@@ -312,12 +282,9 @@ impl BadDebtRequestInitiator {
         market: &str,
         obl_key: &ObligationKey,
     ) -> anyhow::Result<Action> {
-        let op = self
-            .gateway
-            .cover_bad_debt_op(market, obl_key)
-            .inspect_err(|e| {
-                error!(?e, ?obl_key, %market, "failed to build cover_bad_debt op");
-            })?;
+        let op = self.gateway.cover_bad_debt_op(market, obl_key).inspect_err(|e| {
+            error!(?e, ?obl_key, %market, "failed to build cover_bad_debt op");
+        })?;
 
         Ok(Action::SubmitTx(SubmitStellarTx {
             op,

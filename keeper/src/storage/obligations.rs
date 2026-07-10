@@ -5,12 +5,11 @@
 //! domain type does not need to know about sqlite — we just round-trip via
 //! `serde_json` here.
 
-use {
-    engine::lending_model::{Obligation, ObligationKey},
-    parking_lot::Mutex,
-    rusqlite::{Connection, params},
-    std::{collections::HashMap, sync::Arc},
-};
+use std::{collections::HashMap, sync::Arc};
+
+use engine::lending_model::{Obligation, ObligationKey};
+use parking_lot::Mutex;
+use rusqlite::{Connection, params};
 
 /// Private DTO mirroring a single sqlite row.
 struct ObligationRow {
@@ -35,11 +34,7 @@ impl ObligationsRepo {
             .prepare("SELECT user_address, seed, data_json FROM obligations WHERE market = ?1")?;
 
         let rows = stmt.query_map(params![market], |row| {
-            Ok(ObligationRow {
-                user: row.get(0)?,
-                seed: row.get(1)?,
-                data_json: row.get(2)?,
-            })
+            Ok(ObligationRow { user: row.get(0)?, seed: row.get(1)?, data_json: row.get(2)? })
         })?;
 
         let mut out = HashMap::new();

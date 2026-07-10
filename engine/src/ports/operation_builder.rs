@@ -1,12 +1,11 @@
 //! `OpBuilder` and `BatchSimulator` — sync operation construction and async batch
 //! dry-run.
 
-use {
-    crate::{
-        lending_model::{ObligationKey, Underlying},
-        reactor::BoxFuture,
-    },
-    anyhow::Result,
+use anyhow::Result;
+
+use crate::{
+    lending_model::{ObligationKey, Underlying},
+    reactor::BoxFuture,
 };
 
 /// Construct the raw chain operations and request payloads strategies need to

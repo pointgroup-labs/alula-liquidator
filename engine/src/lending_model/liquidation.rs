@@ -2,6 +2,9 @@
 
 use core::cmp::Ord;
 
+use serde::{Deserialize, Serialize};
+use tracing::error;
+
 use crate::lending_model::{
     amount::{BPS_FACTOR, bps_fixed_div_ceil},
     error::{LMError, LendingModelError, MapArithmeticError},
@@ -9,8 +12,6 @@ use crate::lending_model::{
     obligation::{DepositPosition, Obligation},
     pool::PoolData,
 };
-use serde::{Deserialize, Serialize};
-use tracing::error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiquidationResult {
@@ -29,10 +30,7 @@ fn fixed_mul_floor(amount: i128, bps: i128) -> i128 {
 
 /// `ceil(amount * bps / BPS_FACTOR)` with saturating intermediates.
 fn fixed_mul_ceil(amount: i128, bps: i128) -> i128 {
-    amount
-        .saturating_mul(bps)
-        .saturating_add(BPS_FACTOR - 1)
-        .saturating_div(BPS_FACTOR)
+    amount.saturating_mul(bps).saturating_add(BPS_FACTOR - 1).saturating_div(BPS_FACTOR)
 }
 
 /// Determine whether an obligation is liquidatable using only cached local data.
@@ -79,10 +77,7 @@ pub fn compute_is_liquidatable(
 
     let mut collateral_value: i128 = 0;
     for deposit in &obligation.deposits {
-        let pool = match pools
-            .iter()
-            .find(|p| p.pool_address == deposit.pool_address)
-        {
+        let pool = match pools.iter().find(|p| p.pool_address == deposit.pool_address) {
             Some(p) => p,
             None => {
                 error!(?deposit, "missing deposit pool");
@@ -104,11 +99,7 @@ pub fn compute_is_liquidatable(
 
     let min_collateral_value_cents = market_data.min_collateral_value_cents;
     let min_collateral_value_per_deposit_position = min_collateral_value_cents
-        .checked_mul(
-            10_i128
-                .checked_pow(market_data.oracle_price_decimals)
-                .m_ou()?,
-        )
+        .checked_mul(10_i128.checked_pow(market_data.oracle_price_decimals).m_ou()?)
         .m_ou()?
         .checked_div(100)
         .m_ou()?;
@@ -272,11 +263,8 @@ pub fn compute_expected_seized_collateral(
             .checked_div(obligation_debt_value)
             .m_ou()?;
 
-        let strict_max_value_recv = max_value_recv
-            .checked_mul(999)
-            .m_ou()?
-            .checked_div(1000)
-            .m_ou()?;
+        let strict_max_value_recv =
+            max_value_recv.checked_mul(999).m_ou()?.checked_div(1000).m_ou()?;
 
         let ltv_collateral = strict_max_value_recv
             .checked_mul(collateral_token_factor)

@@ -1,13 +1,15 @@
 //! CLI args + config schema for the keeper binary.
 
-use {
-    ::config::{Config, Environment, File},
-    clap::Parser,
-    serde::{Deserialize, Deserializer},
-    std::{net::SocketAddr, path::Path, path::PathBuf},
-    url::Url,
-    validator::{Validate, ValidationError},
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
 };
+
+use ::config::{Config, Environment, File};
+use clap::Parser;
+use serde::{Deserialize, Deserializer};
+use url::Url;
+use validator::{Validate, ValidationError};
 
 #[derive(Parser, Debug)]
 pub struct Args {
@@ -124,11 +126,7 @@ pub struct CliConfig {
     #[serde(deserialize_with = "de_i128")]
     pub liquidator_min_profit_margin_cents: i128,
 
-    #[validate(range(
-        min = 0,
-        max = 10000,
-        message = "Slippage BPS must be between 0 and 10000"
-    ))]
+    #[validate(range(min = 0, max = 10000, message = "Slippage BPS must be between 0 and 10000"))]
     #[serde(deserialize_with = "de_i128")]
     pub liquidator_max_allowed_swap_slippage_bps: i128,
 
@@ -141,11 +139,7 @@ pub struct CliConfig {
     #[validate(range(min = 1))]
     pub balancer_refresh_interval_blocks: u32,
 
-    #[validate(range(
-        min = 0,
-        max = 10000,
-        message = "Slippage BPS must be between 0 and 10000"
-    ))]
+    #[validate(range(min = 0, max = 10000, message = "Slippage BPS must be between 0 and 10000"))]
     #[serde(deserialize_with = "de_i128")]
     pub balancer_max_allowed_swap_slippage_bps: i128,
 

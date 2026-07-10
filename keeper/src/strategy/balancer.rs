@@ -1,26 +1,26 @@
 //! Balancer: swaps non-target assets back into the configured target asset if
 //! the swap doesn't exceed the predefined max price impact.
 
-use {
-    crate::{
-        collect::{Event, stellar_ledger::NewLedger},
-        execute::{
-            Action,
-            stellar_tx::{SubmitStellarTx, TransactionSettleHook},
-        },
-        liquidator_capital::LiquidatorCapital,
-        metrics::{self, BalancerOutcome},
-        stellar::client::Gateway,
+use std::{collections::HashMap, sync::Arc};
+
+use ed25519_dalek::SigningKey;
+use engine::{
+    lending_model::{MarketData, ObligationKey},
+    ports::{EventCodec, LedgerReader, OperationBuilder, OperationEvent},
+    reactor::{BoxFuture, Strategy},
+};
+use stellar_rpc_client::Event as SorobanEvent;
+use tracing::{debug, error, info, warn};
+
+use crate::{
+    collect::{Event, stellar_ledger::NewLedger},
+    execute::{
+        Action,
+        stellar_tx::{SubmitStellarTx, TransactionSettleHook},
     },
-    ed25519_dalek::SigningKey,
-    engine::{
-        lending_model::{MarketData, ObligationKey},
-        ports::{EventCodec, LedgerReader, OperationBuilder, OperationEvent},
-        reactor::{BoxFuture, Strategy},
-    },
-    std::{collections::HashMap, sync::Arc},
-    stellar_rpc_client::Event as SorobanEvent,
-    tracing::{debug, error, info, warn},
+    liquidator_capital::LiquidatorCapital,
+    metrics::{self, BalancerOutcome},
+    stellar::client::Gateway,
 };
 
 const BPS_FACTOR: i128 = 10_000;
@@ -97,23 +97,16 @@ impl Balancer {
     }
 
     async fn handle_new_ledger(&mut self, ledger: NewLedger) -> Vec<Action> {
-        if !ledger
-            .seq_num
-            .is_multiple_of(self.config.refresh_interval_blocks)
+        if !ledger.seq_num.is_multiple_of(self.config.refresh_interval_blocks)
             || !self.is_swap_reasonable()
         {
             return vec![];
         }
 
         let market = &self.config.market;
-        let Ok(market_data) = self
-            .ledger_reader
-            .read_market_data(market)
-            .await
-            .inspect_err(|e| {
-                warn!(?e, %market, "failed to fetch market data");
-            })
-        else {
+        let Ok(market_data) = self.ledger_reader.read_market_data(market).await.inspect_err(|e| {
+            warn!(?e, %market, "failed to fetch market data");
+        }) else {
             return vec![];
         };
 
@@ -140,11 +133,8 @@ impl Balancer {
 
         let market = self.config.market.clone();
         if asset_to_swap.is_some() {
-            let Ok(market_data) = self
-                .ledger_reader
-                .read_market_data(&market)
-                .await
-                .inspect_err(|e| {
+            let Ok(market_data) =
+                self.ledger_reader.read_market_data(&market).await.inspect_err(|e| {
                     warn!(?e, %market, "failed to fetch market data");
                 })
             else {
@@ -158,17 +148,14 @@ impl Balancer {
     }
 
     fn try_parse_asset_from_liquidate_event(&self, event: &SorobanEvent) -> Option<String> {
-        let (liquidator, collateral_pool) = (
-            self.gateway.decode_topic(event, 1),
-            self.gateway.decode_topic(event, 4),
-        );
+        let (liquidator, collateral_pool) =
+            (self.gateway.decode_topic(event, 1), self.gateway.decode_topic(event, 4));
         if liquidator != self.pkey || self.config.assets_to_hold.contains(&collateral_pool) {
             return None;
         }
 
-        let Ok(Some(liquidation_result)) = self
-            .gateway
-            .parse_liquidation_result_from_liquidation_event_value(&event.value)
+        let Ok(Some(liquidation_result)) =
+            self.gateway.parse_liquidation_result_from_liquidation_event_value(&event.value)
         else {
             error!("couldn't parse liquidation_result from the liquidation event");
 
@@ -210,17 +197,12 @@ impl Balancer {
             return vec![];
         };
         if !target_oracle_price.is_positive() {
-            error!(
-                target_asset,
-                target_oracle_price, "non-positive target's oracle price"
-            );
+            error!(target_asset, target_oracle_price, "non-positive target's oracle price");
         }
 
         let mut actions = vec![];
-        for candidate in self
-            .asset_index
-            .keys()
-            .filter(|addr| !self.config.assets_to_hold.contains(*addr))
+        for candidate in
+            self.asset_index.keys().filter(|addr| !self.config.assets_to_hold.contains(*addr))
         {
             let Some(candidate_oracle_price) = market_data
                 .pools_data
@@ -233,10 +215,7 @@ impl Balancer {
                 continue;
             };
             if !candidate_oracle_price.is_positive() {
-                error!(
-                    candidate,
-                    candidate_oracle_price, "non-positive candidate's oracle price"
-                );
+                error!(candidate, candidate_oracle_price, "non-positive candidate's oracle price");
             }
 
             match self
@@ -269,10 +248,8 @@ impl Balancer {
         target_oracle_price: i128,
         candidate_oracle_price: i128,
     ) -> anyhow::Result<Option<Action>> {
-        let raw_balance = self
-            .liquidator_capital
-            .try_get_balance(candidate, &*self.ledger_reader)
-            .await?;
+        let raw_balance =
+            self.liquidator_capital.try_get_balance(candidate, &*self.ledger_reader).await?;
         let swappable_balance = if candidate == self.config.xlm_address {
             raw_balance.saturating_sub(self.config.xlm_safety_margin)
         } else {
@@ -332,10 +309,7 @@ impl Balancer {
             return Ok(None);
         };
 
-        let info = self
-            .asset_index
-            .get(candidate)
-            .expect("candidate sourced from asset_index");
+        let info = self.asset_index.get(candidate).expect("candidate sourced from asset_index");
         let swap_value_cents = compute_value_cents(amount_in, info);
         if swap_value_cents < self.config.min_swap_amount_value_cents {
             info!(%candidate, amount_in, swap_value_cents, "swap below dust threshold");
@@ -350,16 +324,10 @@ impl Balancer {
 
         let path = [candidate, target];
         let request =
-            self.gateway
-                .swap_exact_tokens_request(&provider, amount_in, min_amount_out, &path)?;
+            self.gateway.swap_exact_tokens_request(&provider, amount_in, min_amount_out, &path)?;
 
-        let op = self
-            .gateway
-            .batch_op(&self.config.market, &self.liquidator_key, &[request])?;
-        let op_id = match self
-            .liquidator_capital
-            .reserve(amount_in, swappable_balance, candidate)
-        {
+        let op = self.gateway.batch_op(&self.config.market, &self.liquidator_key, &[request])?;
+        let op_id = match self.liquidator_capital.reserve(amount_in, swappable_balance, candidate) {
             Ok(id) => id,
             Err(e) => {
                 warn!(?e, %candidate, amount_in, swappable_balance,
@@ -376,10 +344,8 @@ impl Balancer {
         // metric so we have the actual price we transacted at, not just the
         // spread. `amount_in` is positive here (checked above), so this can't
         // divide by zero.
-        let realised_price_scaled = amount_out
-            .saturating_mul(oracle_scale)
-            .checked_div(amount_in)
-            .unwrap_or(0);
+        let realised_price_scaled =
+            amount_out.saturating_mul(oracle_scale).checked_div(amount_in).unwrap_or(0);
         metrics::record_balancer_realised_price(candidate, realised_price_scaled);
 
         info!(
@@ -415,10 +381,8 @@ impl Balancer {
         let mut amount_in = swappable_balance;
 
         for _ in 0..self.config.max_swap_provider_probes {
-            let amount_out = self
-                .ledger_reader
-                .get_amount_out(amount_in, asset_in, asset_out, provider)
-                .await?;
+            let amount_out =
+                self.ledger_reader.get_amount_out(amount_in, asset_in, asset_out, provider).await?;
 
             let Some(impact) =
                 compute_swap_price_impact(oracle_price, amount_in, amount_out, oracle_decimals)
@@ -539,14 +503,9 @@ fn compute_swap_price_impact(
     // execution < oracle → positive impact (received less than oracle value)
     // execution > oracle → negative impact (did better than oracle)
     let price_diff = oracle_price.checked_sub(execution_price_scaled)?;
-    let bps = price_diff
-        .checked_mul(BPS_FACTOR)?
-        .checked_div(oracle_price)?;
+    let bps = price_diff.checked_mul(BPS_FACTOR)?.checked_div(oracle_price)?;
 
-    Some(SwapPriceImpact {
-        bps,
-        execution_price_scaled,
-    })
+    Some(SwapPriceImpact { bps, execution_price_scaled })
 }
 
 fn compute_value_cents(token_amount: i128, info: &AssetInfo) -> i128 {

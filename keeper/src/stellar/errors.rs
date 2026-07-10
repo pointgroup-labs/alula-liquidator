@@ -122,10 +122,7 @@ impl SorobanRpcError {
 fn extract_contract_code(s: &str) -> Option<u32> {
     const MARKER: &str = "Error(Contract, #";
     let start = s.find(MARKER)? + MARKER.len();
-    let digits: String = s[start..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
+    let digits: String = s[start..].chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().ok()
 }
 
@@ -151,9 +148,7 @@ pub fn is_expected_liquidation_failure(err: &anyhow::Error) -> bool {
         return true;
     }
     let rendered = format!("{err:#}");
-    EXPECTED_LIQUIDATION_FAILURE_NAMES
-        .iter()
-        .any(|n| rendered.contains(n))
+    EXPECTED_LIQUIDATION_FAILURE_NAMES.iter().any(|n| rendered.contains(n))
 }
 
 pub fn is_bad_seq_error(err: &anyhow::Error) -> bool {
@@ -161,15 +156,9 @@ pub fn is_bad_seq_error(err: &anyhow::Error) -> bool {
 }
 
 pub fn is_no_simulation_results_error(err: &anyhow::Error) -> bool {
-    matches!(
-        SorobanRpcError::classify(err),
-        SorobanRpcError::NoSimulationResults
-    )
+    matches!(SorobanRpcError::classify(err), SorobanRpcError::NoSimulationResults)
 }
 
 pub fn is_terminal_cursor_error<E: std::fmt::Display>(err: &E) -> bool {
-    matches!(
-        SorobanRpcError::classify(err),
-        SorobanRpcError::TerminalCursor
-    )
+    matches!(SorobanRpcError::classify(err), SorobanRpcError::TerminalCursor)
 }

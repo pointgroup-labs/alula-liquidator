@@ -1,7 +1,8 @@
 //! Obligation, deposit, and borrow position model.
 
-use crate::lending_model::{DTokens, JTokens, Underlying};
 use serde::{Deserialize, Serialize};
+
+use crate::lending_model::{DTokens, JTokens, Underlying};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ObligationKey {
@@ -15,10 +16,7 @@ impl ObligationKey {
     }
 
     pub fn new_with_seed(user: String, seed: String) -> Self {
-        Self {
-            user,
-            seed: Some(seed),
-        }
+        Self { user, seed: Some(seed) }
     }
 
     pub fn seed_as_str(&self) -> &str {

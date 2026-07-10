@@ -1,16 +1,15 @@
 pub mod stellar_event;
 pub mod stellar_ledger;
 
-use {
-    crate::metrics,
-    stellar_ledger::NewLedger,
-    stellar_rpc_client::Event as SorobanEvent,
-    tokio::sync::broadcast::Receiver,
-    tokio_stream::{
-        Stream, StreamExt,
-        wrappers::{BroadcastStream, errors::BroadcastStreamRecvError},
-    },
+use stellar_ledger::NewLedger;
+use stellar_rpc_client::Event as SorobanEvent;
+use tokio::sync::broadcast::Receiver;
+use tokio_stream::{
+    Stream, StreamExt,
+    wrappers::{BroadcastStream, errors::BroadcastStreamRecvError},
 };
+
+use crate::metrics;
 
 /// Top-level event flowing from collectors → engine → strategies.
 #[derive(Debug, Clone)]

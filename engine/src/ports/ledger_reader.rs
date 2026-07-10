@@ -1,11 +1,10 @@
 //! `LedgerReader` — async port for reading lending protocol state.
 
-use {
-    crate::{
-        lending_model::{MarketData, Obligation, ObligationKey, PoolData},
-        reactor::BoxFuture,
-    },
-    anyhow::Result,
+use anyhow::Result;
+
+use crate::{
+    lending_model::{MarketData, Obligation, ObligationKey, PoolData},
+    reactor::BoxFuture,
 };
 
 pub trait LedgerReader: Send + Sync {

@@ -1,30 +1,29 @@
 //! Submits Soroban transactions. Fire-and-forget: `execute` returns once the
 //! tx is sent; a detached task polls for the receipt.
-//!
-use {
-    super::Action,
-    crate::metrics::{self, TxConfirmOutcome, TxSubmitOutcome},
-    crate::{
-        liquidator_capital::LiquidatorCapital,
-        stellar::{
-            client::Gateway,
-            errors::{SorobanRpcError, is_bad_seq_error, is_no_simulation_results_error},
-        },
+use std::{sync::Arc, time::Duration};
+
+use anyhow::Result;
+use ed25519_dalek::{Signer, SigningKey};
+use engine::reactor::{BoxFuture, Executor};
+use sha2::{Digest, Sha256};
+use stellar_rpc_client::{AuthMode, Client};
+use stellar_xdr::{
+    DecoratedSignature, Hash, Limits, Memo, MuxedAccount, Operation, OperationBody, Preconditions,
+    ReadXdr, SequenceNumber, Signature, SignatureHint, SorobanAuthorizationEntry, Transaction,
+    TransactionEnvelope, TransactionExt, TransactionSignaturePayload,
+    TransactionSignaturePayloadTaggedTransaction, TransactionV1Envelope, Uint256, VecM,
+    WriteXdr as _,
+};
+use tracing::{error, info, warn};
+
+use super::Action;
+use crate::{
+    liquidator_capital::LiquidatorCapital,
+    metrics::{self, TxConfirmOutcome, TxSubmitOutcome},
+    stellar::{
+        client::Gateway,
+        errors::{SorobanRpcError, is_bad_seq_error, is_no_simulation_results_error},
     },
-    anyhow::Result,
-    ed25519_dalek::{Signer, SigningKey},
-    engine::reactor::{BoxFuture, Executor},
-    sha2::{Digest, Sha256},
-    std::{sync::Arc, time::Duration},
-    stellar_rpc_client::{AuthMode, Client},
-    stellar_xdr::{
-        DecoratedSignature, Hash, Limits, Memo, MuxedAccount, Operation, OperationBody,
-        Preconditions, ReadXdr, SequenceNumber, Signature, SignatureHint,
-        SorobanAuthorizationEntry, Transaction, TransactionEnvelope, TransactionExt,
-        TransactionSignaturePayload, TransactionSignaturePayloadTaggedTransaction,
-        TransactionV1Envelope, Uint256, VecM, WriteXdr as _,
-    },
-    tracing::{error, info, warn},
 };
 
 #[derive(Debug, Clone)]
@@ -299,14 +298,14 @@ async fn build_and_send(
         signatures: vec![].try_into()?,
     });
 
-    let sim_response = rpc
-        .simulate_transaction_envelope(&temp_envelope, Some(AuthMode::Record))
-        .await?;
+    let sim_response =
+        rpc.simulate_transaction_envelope(&temp_envelope, Some(AuthMode::Record)).await?;
 
     if sim_response.results.is_empty() {
         error!(
             ?sim_response,
-            "simulation returned no results — contract execution likely failed, skipping submission"
+            "simulation returned no results — contract execution likely failed, skipping \
+             submission"
         );
 
         return Err(anyhow::anyhow!("simulation returned no results"));

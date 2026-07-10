@@ -3,11 +3,10 @@
 //! These traits are intentionally generic over the event type `E` and action
 //! type `A`. The concrete enums live in the `keeper` binary as `keeper::wire`.
 
-use {
-    anyhow::Result,
-    std::{future::Future, pin::Pin},
-    tokio_stream::Stream,
-};
+use std::{future::Future, pin::Pin};
+
+use anyhow::Result;
+use tokio_stream::Stream;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type CollectorStream<'a, E> = Pin<Box<dyn Stream<Item = E> + Send + 'a>>;

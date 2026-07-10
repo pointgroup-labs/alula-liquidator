@@ -1,17 +1,14 @@
 //! Generic Artemis-style reactor.
 
 mod traits;
-pub use traits::{BoxFuture, Collector, CollectorStream, Executor, Strategy};
-
-use {
-    metrics::counter,
-    tokio::{
-        sync::broadcast::{self, Sender, error::RecvError},
-        task::JoinSet,
-    },
-    tokio_stream::StreamExt,
-    tracing::{error, info, warn},
+use metrics::counter;
+use tokio::{
+    sync::broadcast::{self, Sender, error::RecvError},
+    task::JoinSet,
 };
+use tokio_stream::StreamExt;
+use tracing::{error, info, warn};
+pub use traits::{BoxFuture, Collector, CollectorStream, Executor, Strategy};
 
 const DEFAULT_CHANNEL_CAPACITY: usize = 1024;
 

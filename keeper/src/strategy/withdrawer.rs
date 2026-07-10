@@ -1,23 +1,22 @@
 //! Withdrawer strategy: opportunistically pulls the liquidator's liquidity out of pools
 //! if such a withdrawal doesn't yield a scarcity fee
 
-use {
-    crate::{
-        collect::{Event, stellar_ledger::NewLedger},
-        execute::{Action, stellar_tx::SubmitStellarTx},
-        metrics::WithdrawerOutcome,
-        stellar::client::Gateway,
-    },
-    ed25519_dalek::SigningKey,
-    engine::{
-        lending_model::{MarketData, Obligation, ObligationKey, PoolData, Underlying},
-        ports::OperationEvent,
-        ports::{EventCodec, LedgerReader, OperationBuilder},
-        reactor::{BoxFuture, Strategy},
-    },
-    std::sync::Arc,
-    stellar_rpc_client::Event as SorobanEvent,
-    tracing::{debug, error, info, warn},
+use std::sync::Arc;
+
+use ed25519_dalek::SigningKey;
+use engine::{
+    lending_model::{MarketData, Obligation, ObligationKey, PoolData, Underlying},
+    ports::{EventCodec, LedgerReader, OperationBuilder, OperationEvent},
+    reactor::{BoxFuture, Strategy},
+};
+use stellar_rpc_client::Event as SorobanEvent;
+use tracing::{debug, error, info, warn};
+
+use crate::{
+    collect::{Event, stellar_ledger::NewLedger},
+    execute::{Action, stellar_tx::SubmitStellarTx},
+    metrics::WithdrawerOutcome,
+    stellar::client::Gateway,
 };
 
 pub struct WithdrawerConfig {
@@ -46,13 +45,7 @@ impl Withdrawer {
     ) -> Self {
         let liquidator_key = ObligationKey::new(pkey.clone());
 
-        Self {
-            skey,
-            config,
-            gateway,
-            ledger_reader,
-            liquidator_key,
-        }
+        Self { skey, config, gateway, ledger_reader, liquidator_key }
     }
 }
 
@@ -72,16 +65,11 @@ impl Strategy<Event, Action> for Withdrawer {
 }
 
 impl Withdrawer {
-    /*
-        TODO: Logically speaking, this can be omitted in the future since only events
-        that increase available liquidity or a liquidation event for this liquidator
-        are reasonable causes for withdrawal. Acts as a safety measure for now
-    */
+    // TODO: Logically speaking, this can be omitted in the future since only events
+    // that increase available liquidity or a liquidation event for this liquidator
+    // are reasonable causes for withdrawal. Acts as a safety measure for now
     async fn handle_new_ledger(&mut self, ledger: NewLedger) -> Vec<Action> {
-        if !ledger
-            .seq_num
-            .is_multiple_of(self.config.refresh_interval_blocks)
-        {
+        if !ledger.seq_num.is_multiple_of(self.config.refresh_interval_blocks) {
             return vec![];
         }
 
@@ -103,11 +91,8 @@ impl Withdrawer {
             else {
                 continue;
             };
-            let Ok(market_data) = self
-                .ledger_reader
-                .read_market_data(&market)
-                .await
-                .inspect_err(|err| {
+            let Ok(market_data) =
+                self.ledger_reader.read_market_data(&market).await.inspect_err(|err| {
                     warn!(?err, ?market, "failed to read market data");
                     WithdrawerOutcome::NoMarketData.record();
                 })
@@ -157,11 +142,8 @@ impl Withdrawer {
         else {
             return vec![];
         };
-        let Ok(market_data) = self
-            .ledger_reader
-            .read_market_data(&market)
-            .await
-            .inspect_err(|err| {
+        let Ok(market_data) =
+            self.ledger_reader.read_market_data(&market).await.inspect_err(|err| {
                 warn!(?err, ?market, "failed to read market data");
                 WithdrawerOutcome::NoMarketData.record();
             })
@@ -181,10 +163,8 @@ impl Withdrawer {
         let mut actions = vec![];
 
         for deposit_pos in &liquidator_obligation.deposits {
-            let Some(pool) = market_data
-                .pools_data
-                .iter()
-                .find(|p| p.pool_address == deposit_pos.pool_address)
+            let Some(pool) =
+                market_data.pools_data.iter().find(|p| p.pool_address == deposit_pos.pool_address)
             else {
                 warn!(pool = deposit_pos.pool_address, "pool not found");
                 WithdrawerOutcome::PoolMissing.record();
@@ -207,9 +187,8 @@ impl Withdrawer {
                 continue;
             }
 
-            let Ok(liquidator_underlying) = pool
-                .j_tokens_to_tokens_floor(deposit_pos.j_tokens)
-                .inspect_err(|e| {
+            let Ok(liquidator_underlying) =
+                pool.j_tokens_to_tokens_floor(deposit_pos.j_tokens).inspect_err(|e| {
                     warn!(?e, pool = %pool.pool_address, "j_tokens_to_tokens_floor failed");
                     WithdrawerOutcome::ConversionError.record();
                 })
@@ -270,9 +249,7 @@ impl Withdrawer {
         pool_address: &str,
         amount: Underlying,
     ) -> anyhow::Result<Action> {
-        let op = self
-            .gateway
-            .withdraw_op(market, &self.liquidator_key, pool_address, amount)?;
+        let op = self.gateway.withdraw_op(market, &self.liquidator_key, pool_address, amount)?;
         Ok(Action::SubmitTx(SubmitStellarTx {
             op,
             on_settle: None,
@@ -298,10 +275,7 @@ impl Withdrawer {
         let token_decimals = pool.token_decimals;
         let pow = token_decimals + oracle_decimals;
         if pow < 2 {
-            warn!(
-                ?pool,
-                pow, token_decimals, oracle_decimals, "unexpected asset/oracle decimals"
-            );
+            warn!(?pool, pow, token_decimals, oracle_decimals, "unexpected asset/oracle decimals");
 
             return None;
         }

@@ -1,25 +1,24 @@
 //! `LedgerReader` and `BatchSimulator` impls for `Gateway`.
 
-use {
-    super::{
-        client::Gateway,
-        errors::is_expected_liquidation_failure,
-        xdr_codec::{
-            address_to_scval, build_address_vec_scval, build_requests_vec_scval, i128_to_scval,
-            obligation_key_to_scval, parse_market_data, parse_obligation, parse_obligation_keys,
-            scval_to_i128,
-        },
-    },
-    crate::metrics::{self, SimulationCall, SimulationOutcome},
-    anyhow::{Context, anyhow},
-    engine::{
-        lending_model::{MarketData, Obligation, ObligationKey, PoolData},
-        ports::{BatchSimulator, LedgerReader},
-        reactor::BoxFuture,
-    },
-    stellar_xdr::ScVal,
-    tracing::{debug, warn},
+use anyhow::{Context, anyhow};
+use engine::{
+    lending_model::{MarketData, Obligation, ObligationKey, PoolData},
+    ports::{BatchSimulator, LedgerReader},
+    reactor::BoxFuture,
 };
+use stellar_xdr::ScVal;
+use tracing::{debug, warn};
+
+use super::{
+    client::Gateway,
+    errors::is_expected_liquidation_failure,
+    xdr_codec::{
+        address_to_scval, build_address_vec_scval, build_requests_vec_scval, i128_to_scval,
+        obligation_key_to_scval, parse_market_data, parse_obligation, parse_obligation_keys,
+        scval_to_i128,
+    },
+};
+use crate::metrics::{self, SimulationCall, SimulationOutcome};
 
 impl LedgerReader for Gateway {
     fn read_market_data<'a>(
@@ -93,9 +92,7 @@ impl LedgerReader for Gateway {
     ) -> BoxFuture<'a, anyhow::Result<i128>> {
         Box::pin(async move {
             let args = vec![address_to_scval(account)?];
-            let result = self
-                .simulate_contract_call(token_address, "balance", &args)
-                .await?;
+            let result = self.simulate_contract_call(token_address, "balance", &args).await?;
             scval_to_i128(&result).context("parse balance result")
         })
     }
@@ -169,14 +166,12 @@ impl LedgerReader for Gateway {
             ];
 
             debug!(
-                "liquidate sim: liquidator={} borrower={} seed={:?} borrow_pool={} collateral_pool={}",
+                "liquidate sim: liquidator={} borrower={} seed={:?} borrow_pool={} \
+                 collateral_pool={}",
                 liquidator_address, borrower.user, borrower.seed, borrow_pool, collateral_pool,
             );
 
-            match self
-                .simulate_contract_call(market, "liquidate", &args)
-                .await
-            {
+            match self.simulate_contract_call(market, "liquidate", &args).await {
                 Ok(_) => {
                     metrics::record_simulation(SimulationCall::Liquidate, SimulationOutcome::Ok);
                     Ok(true)
@@ -228,16 +223,9 @@ impl BatchSimulator for Gateway {
                 ScVal::Void, // referrer: None
             ];
 
-            debug!(
-                "batch sim: liquidator={} num_requests={}",
-                liquidator.user,
-                requests.len(),
-            );
+            debug!("batch sim: liquidator={} num_requests={}", liquidator.user, requests.len(),);
 
-            match self
-                .simulate_contract_call(market, "submit_requests_batch", &args)
-                .await
-            {
+            match self.simulate_contract_call(market, "submit_requests_batch", &args).await {
                 Ok(_) => {
                     metrics::record_simulation(SimulationCall::Batch, SimulationOutcome::Ok);
                     Ok(true)

@@ -1,48 +1,40 @@
 //! `OperationBuilder` impl for `Gateway` plus the request-/operation-builder helpers.
 
-use {
-    super::{
-        client::Gateway,
-        xdr_codec::{
-            address_to_scval, build_address_vec_scval, build_requests_vec_scval,
-            contract_strkey_to_hash, i128_to_scval, obligation_key_to_scval,
-        },
-    },
-    anyhow::anyhow,
-    engine::{
-        lending_model::{ObligationKey, amount::Underlying},
-        ports::OperationBuilder,
-    },
-    stellar_xdr::{
-        ContractId, Hash, HostFunction, InvokeContractArgs, Operation, OperationBody, ScAddress,
-        ScMap, ScMapEntry, ScSymbol, ScVal, ScVec, VecM,
+use anyhow::anyhow;
+use engine::{
+    lending_model::{ObligationKey, amount::Underlying},
+    ports::OperationBuilder,
+};
+use stellar_xdr::{
+    ContractId, Hash, HostFunction, InvokeContractArgs, Operation, OperationBody, ScAddress, ScMap,
+    ScMapEntry, ScSymbol, ScVal, ScVec, VecM,
+};
+
+use super::{
+    client::Gateway,
+    xdr_codec::{
+        address_to_scval, build_address_vec_scval, build_requests_vec_scval,
+        contract_strkey_to_hash, i128_to_scval, obligation_key_to_scval,
     },
 };
 
 fn build_flash_borrow_request_scval(pool_address: &str, amount: i128) -> anyhow::Result<ScVal> {
     let entries = vec![
         ScMapEntry {
-            key: ScVal::Symbol(ScSymbol(
-                "amount".try_into().map_err(|_| anyhow!("symbol"))?,
-            )),
+            key: ScVal::Symbol(ScSymbol("amount".try_into().map_err(|_| anyhow!("symbol"))?)),
             val: i128_to_scval(amount),
         },
         ScMapEntry {
-            key: ScVal::Symbol(ScSymbol(
-                "pool_address".try_into().map_err(|_| anyhow!("symbol"))?,
-            )),
+            key: ScVal::Symbol(ScSymbol("pool_address".try_into().map_err(|_| anyhow!("symbol"))?)),
             val: address_to_scval(pool_address)?,
         },
     ];
 
-    let variant_data = ScVal::Map(Some(ScMap(
-        entries.try_into().map_err(|_| anyhow!("map conversion"))?,
-    )));
+    let variant_data =
+        ScVal::Map(Some(ScMap(entries.try_into().map_err(|_| anyhow!("map conversion"))?)));
 
     let vec_items: VecM<ScVal> = vec![
-        ScVal::Symbol(ScSymbol(
-            "FlashBorrow".try_into().map_err(|_| anyhow!("symbol"))?,
-        )),
+        ScVal::Symbol(ScSymbol("FlashBorrow".try_into().map_err(|_| anyhow!("symbol"))?)),
         variant_data,
     ]
     .try_into()
@@ -54,27 +46,20 @@ fn build_flash_borrow_request_scval(pool_address: &str, amount: i128) -> anyhow:
 fn build_withdraw_request_scval(pool_address: &str, amount: i128) -> anyhow::Result<ScVal> {
     let entries = vec![
         ScMapEntry {
-            key: ScVal::Symbol(ScSymbol(
-                "amount".try_into().map_err(|_| anyhow!("symbol"))?,
-            )),
+            key: ScVal::Symbol(ScSymbol("amount".try_into().map_err(|_| anyhow!("symbol"))?)),
             val: i128_to_scval(amount),
         },
         ScMapEntry {
-            key: ScVal::Symbol(ScSymbol(
-                "pool_address".try_into().map_err(|_| anyhow!("symbol"))?,
-            )),
+            key: ScVal::Symbol(ScSymbol("pool_address".try_into().map_err(|_| anyhow!("symbol"))?)),
             val: address_to_scval(pool_address)?,
         },
     ];
 
-    let variant_data = ScVal::Map(Some(ScMap(
-        entries.try_into().map_err(|_| anyhow!("map conversion"))?,
-    )));
+    let variant_data =
+        ScVal::Map(Some(ScMap(entries.try_into().map_err(|_| anyhow!("map conversion"))?)));
 
     let vec_items: VecM<ScVal> = vec![
-        ScVal::Symbol(ScSymbol(
-            "Withdraw".try_into().map_err(|_| anyhow!("symbol"))?,
-        )),
+        ScVal::Symbol(ScSymbol("Withdraw".try_into().map_err(|_| anyhow!("symbol"))?)),
         variant_data,
     ]
     .try_into()
@@ -93,52 +78,39 @@ fn build_liquidate_request_scval(
     let entries = vec![
         ScMapEntry {
             key: ScVal::Symbol(ScSymbol(
-                "borrow_pool_address"
-                    .try_into()
-                    .map_err(|_| anyhow!("symbol"))?,
+                "borrow_pool_address".try_into().map_err(|_| anyhow!("symbol"))?,
             )),
             val: address_to_scval(borrow_pool)?,
         },
         ScMapEntry {
             key: ScVal::Symbol(ScSymbol(
-                "borrower_obligation_key"
-                    .try_into()
-                    .map_err(|_| anyhow!("symbol"))?,
+                "borrower_obligation_key".try_into().map_err(|_| anyhow!("symbol"))?,
             )),
             val: obligation_key_to_scval(borrower_key)?,
         },
         ScMapEntry {
             key: ScVal::Symbol(ScSymbol(
-                "collateral_pool_address"
-                    .try_into()
-                    .map_err(|_| anyhow!("symbol"))?,
+                "collateral_pool_address".try_into().map_err(|_| anyhow!("symbol"))?,
             )),
             val: address_to_scval(collateral_pool)?,
         },
         ScMapEntry {
             key: ScVal::Symbol(ScSymbol(
-                "min_demanded_collateral_amount"
-                    .try_into()
-                    .map_err(|_| anyhow!("symbol"))?,
+                "min_demanded_collateral_amount".try_into().map_err(|_| anyhow!("symbol"))?,
             )),
             val: i128_to_scval(min_collateral),
         },
         ScMapEntry {
-            key: ScVal::Symbol(ScSymbol(
-                "repay_amount".try_into().map_err(|_| anyhow!("symbol"))?,
-            )),
+            key: ScVal::Symbol(ScSymbol("repay_amount".try_into().map_err(|_| anyhow!("symbol"))?)),
             val: i128_to_scval(repay_amount),
         },
     ];
 
-    let variant_data = ScVal::Map(Some(ScMap(
-        entries.try_into().map_err(|_| anyhow!("map conversion"))?,
-    )));
+    let variant_data =
+        ScVal::Map(Some(ScMap(entries.try_into().map_err(|_| anyhow!("map conversion"))?)));
 
     let vec_items: VecM<ScVal> = vec![
-        ScVal::Symbol(ScSymbol(
-            "Liquidate".try_into().map_err(|_| anyhow!("symbol"))?,
-        )),
+        ScVal::Symbol(ScSymbol("Liquidate".try_into().map_err(|_| anyhow!("symbol"))?)),
         variant_data,
     ]
     .try_into()
@@ -155,9 +127,7 @@ fn build_swap_exact_tokens_request_scval(
 ) -> anyhow::Result<ScVal> {
     let entries = vec![
         ScMapEntry {
-            key: ScVal::Symbol(ScSymbol(
-                "amount_in".try_into().map_err(|_| anyhow!("symbol"))?,
-            )),
+            key: ScVal::Symbol(ScSymbol("amount_in".try_into().map_err(|_| anyhow!("symbol"))?)),
             val: i128_to_scval(amount_in),
         },
         ScMapEntry {
@@ -178,16 +148,11 @@ fn build_swap_exact_tokens_request_scval(
         },
     ];
 
-    let variant_data = ScVal::Map(Some(ScMap(
-        entries.try_into().map_err(|_| anyhow!("map conversion"))?,
-    )));
+    let variant_data =
+        ScVal::Map(Some(ScMap(entries.try_into().map_err(|_| anyhow!("map conversion"))?)));
 
     let vec_items: VecM<ScVal> = vec![
-        ScVal::Symbol(ScSymbol(
-            "SwapExactTokens"
-                .try_into()
-                .map_err(|_| anyhow!("symbol"))?,
-        )),
+        ScVal::Symbol(ScSymbol("SwapExactTokens".try_into().map_err(|_| anyhow!("symbol"))?)),
         variant_data,
     ]
     .try_into()
@@ -204,9 +169,7 @@ fn build_swap_for_exact_tokens_request_scval(
 ) -> anyhow::Result<ScVal> {
     let entries = vec![
         ScMapEntry {
-            key: ScVal::Symbol(ScSymbol(
-                "amount_out".try_into().map_err(|_| anyhow!("symbol"))?,
-            )),
+            key: ScVal::Symbol(ScSymbol("amount_out".try_into().map_err(|_| anyhow!("symbol"))?)),
             val: i128_to_scval(amount_out),
         },
         ScMapEntry {
@@ -227,16 +190,11 @@ fn build_swap_for_exact_tokens_request_scval(
         },
     ];
 
-    let variant_data = ScVal::Map(Some(ScMap(
-        entries.try_into().map_err(|_| anyhow!("map conversion"))?,
-    )));
+    let variant_data =
+        ScVal::Map(Some(ScMap(entries.try_into().map_err(|_| anyhow!("map conversion"))?)));
 
     let vec_items: VecM<ScVal> = vec![
-        ScVal::Symbol(ScSymbol(
-            "SwapForExactTokens"
-                .try_into()
-                .map_err(|_| anyhow!("symbol"))?,
-        )),
+        ScVal::Symbol(ScSymbol("SwapForExactTokens".try_into().map_err(|_| anyhow!("symbol"))?)),
         variant_data,
     ]
     .try_into()
@@ -266,9 +224,7 @@ fn build_withdraw_op(
     let invoke = InvokeContractArgs {
         contract_address: ScAddress::Contract(ContractId(Hash(contract_hash))),
         function_name: ScSymbol(
-            "withdraw"
-                .try_into()
-                .map_err(|_| anyhow!("function name too long"))?,
+            "withdraw".try_into().map_err(|_| anyhow!("function name too long"))?,
         ),
         args,
     };
@@ -295,9 +251,7 @@ fn build_issue_cover_bad_debt_op(
     let invoke = InvokeContractArgs {
         contract_address: ScAddress::Contract(ContractId(Hash(contract_hash))),
         function_name: ScSymbol(
-            "issue_cover_bad_debt"
-                .try_into()
-                .map_err(|_| anyhow!("function name too long"))?,
+            "issue_cover_bad_debt".try_into().map_err(|_| anyhow!("function name too long"))?,
         ),
         args,
     };
@@ -331,9 +285,7 @@ fn build_batch_op(
     let invoke = InvokeContractArgs {
         contract_address: ScAddress::Contract(ContractId(Hash(contract_hash))),
         function_name: ScSymbol(
-            "submit_requests_batch"
-                .try_into()
-                .map_err(|_| anyhow!("function name too long"))?,
+            "submit_requests_batch".try_into().map_err(|_| anyhow!("function name too long"))?,
         ),
         args,
     };

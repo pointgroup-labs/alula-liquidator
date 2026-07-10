@@ -1,15 +1,15 @@
 //! Cross-strategy in-flight capital reservation.
 
-use {
-    crate::{error::KeeperError, metrics},
-    engine::ports::LedgerReader,
-    parking_lot::Mutex,
-    std::{
-        collections::HashMap,
-        time::{Duration, Instant},
-    },
-    tracing::{error, info},
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
 };
+
+use engine::ports::LedgerReader;
+use parking_lot::Mutex;
+use tracing::{error, info};
+
+use crate::{error::KeeperError, metrics};
 
 #[derive(Debug)]
 struct Reservation {
@@ -34,8 +34,7 @@ struct CapitalInner {
 
 impl CapitalInner {
     fn unlock_expired(&mut self, reservation_ttl: Duration) {
-        self.reservations
-            .retain(|_, r| r.created_at.elapsed() < reservation_ttl);
+        self.reservations.retain(|_, r| r.created_at.elapsed() < reservation_ttl);
     }
 }
 
@@ -121,9 +120,7 @@ impl LiquidatorCapital {
         }
         // NB: No freshly cached balance exists, so read it directly
 
-        let amount = ledger_reader
-            .read_token_balance(token_address, &self.pkey)
-            .await?;
+        let amount = ledger_reader.read_token_balance(token_address, &self.pkey).await?;
         metrics::set_asset_balance(token_address, amount);
         if token_address == self.config.xlm_address {
             metrics::set_xlm_balance(amount);
@@ -132,10 +129,7 @@ impl LiquidatorCapital {
         let mut guard = self.inner.lock();
         guard.balances.insert(
             token_address.to_string(),
-            CachedBalance {
-                amount,
-                fetched_at: Instant::now(),
-            },
+            CachedBalance { amount, fetched_at: Instant::now() },
         );
 
         Ok(amount)

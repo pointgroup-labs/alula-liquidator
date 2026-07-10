@@ -192,9 +192,8 @@ impl PoolData {
         safety_margin_bps: i128,
     ) -> Result<Underlying, LMError> {
         let current_utilization_bps = self.utilization_ratio_bps()?;
-        let utilization_considered_safe = self
-            .utilization_ratio_limit_bps
-            .saturating_sub(safety_margin_bps);
+        let utilization_considered_safe =
+            self.utilization_ratio_limit_bps.saturating_sub(safety_margin_bps);
 
         if utilization_considered_safe <= 0 {
             return Ok(Underlying::ZERO);
@@ -203,9 +202,8 @@ impl PoolData {
             return Ok(Underlying::ZERO);
         }
 
-        let min_allowed_total_supply = self
-            .total_borrowed
-            .bps_fixed_div_ceil(utilization_considered_safe)?;
+        let min_allowed_total_supply =
+            self.total_borrowed.bps_fixed_div_ceil(utilization_considered_safe)?;
 
         if min_allowed_total_supply >= self.total_supply.0 {
             Ok(Underlying::ZERO)
@@ -404,10 +402,7 @@ mod tests {
         let safe = pool.utilization_ratio_limit_bps - margin;
 
         let w = pool.compute_max_safe_withdrawal(margin)?;
-        assert!(
-            w.0 > 0,
-            "20% utilization must allow a withdrawal, got {w:?}"
-        );
+        assert!(w.0 > 0, "20% utilization must allow a withdrawal, got {w:?}");
         assert!(w.0 < pool.total_supply.0);
 
         // Post-withdrawal utilization — recomputed with the contract's ceil
@@ -419,10 +414,7 @@ mod tests {
         // …and withdrawing a single extra token would breach it (the cap is
         // tight, not just safe).
         let util_breach = bps_fixed_div_ceil(pool.total_borrowed.0, supply_after - 1).unwrap();
-        assert!(
-            util_breach > safe,
-            "cap is not tight: {util_breach} <= {safe}"
-        );
+        assert!(util_breach > safe, "cap is not tight: {util_breach} <= {safe}");
 
         Ok(())
     }

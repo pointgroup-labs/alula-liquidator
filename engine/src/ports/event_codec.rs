@@ -2,12 +2,11 @@
 //! `OperationEvent` vocabulary, plus extracting obligation keys and embedded
 //! XDR-encoded payloads.
 
-use {
-    crate::{
-        lending_model::{LiquidationResult, Obligation, ObligationKey},
-        ports::operation_event::OperationEvent,
-    },
-    anyhow::Result,
+use anyhow::Result;
+
+use crate::{
+    lending_model::{LiquidationResult, Obligation, ObligationKey},
+    ports::operation_event::OperationEvent,
 };
 
 pub trait EventCodec: Send + Sync {

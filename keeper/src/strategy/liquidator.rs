@@ -1,31 +1,31 @@
 //! Liquidator strategy: scans cached obligations after every refresh interval,
 //! picks profitable (borrow, deposit) pairs, and submits liquidations.
 
-use {
-    crate::{
-        collect::{Event, stellar_ledger::NewLedger},
-        constants::BPS_FACTOR,
-        execute::{
-            Action,
-            stellar_tx::{LiquidationOutcomeMetric, SubmitStellarTx, TransactionSettleHook},
-        },
-        liquidator_capital::{LiquidatorCapital, random_id},
-        metrics::{self, LiquidationKind, ScanOutcome, SkipReason},
-        stellar::client::Gateway,
-        storage::{cursor::CursorRepo, obligations::ObligationsRepo},
+use std::{collections::HashMap, sync::Arc};
+
+use ed25519_dalek::SigningKey;
+use engine::{
+    lending_model::{
+        DepositPosition, MarketData, Obligation, ObligationKey, PoolData, Underlying, liquidation,
+        profitability,
     },
-    ed25519_dalek::SigningKey,
-    engine::{
-        lending_model::{
-            DepositPosition, MarketData, Obligation, ObligationKey, PoolData, Underlying,
-            liquidation, profitability,
-        },
-        ports::{BatchSimulator, EventCodec, LedgerReader, OperationBuilder, OperationEvent},
-        reactor::{BoxFuture, Strategy},
+    ports::{BatchSimulator, EventCodec, LedgerReader, OperationBuilder, OperationEvent},
+    reactor::{BoxFuture, Strategy},
+};
+use stellar_rpc_client::Event as SorobanEvent;
+use tracing::{debug, error, info, warn};
+
+use crate::{
+    collect::{Event, stellar_ledger::NewLedger},
+    constants::BPS_FACTOR,
+    execute::{
+        Action,
+        stellar_tx::{LiquidationOutcomeMetric, SubmitStellarTx, TransactionSettleHook},
     },
-    std::{collections::HashMap, sync::Arc},
-    stellar_rpc_client::Event as SorobanEvent,
-    tracing::{debug, error, info, warn},
+    liquidator_capital::{LiquidatorCapital, random_id},
+    metrics::{self, LiquidationKind, ScanOutcome, SkipReason},
+    stellar::client::Gateway,
+    storage::{cursor::CursorRepo, obligations::ObligationsRepo},
 };
 
 pub struct LiquidatorConfig {
@@ -215,10 +215,8 @@ impl Liquidator {
 
                 info!(ledger = event.ledger, %market, %liquidator, %borrower, %borrow_pool, %collateral_pool, "liquidation event");
 
-                let Ok(borrower_key) = self
-                    .gateway
-                    .parse_obligation_key_from_topic(&event, 2)
-                    .inspect_err(|e| {
+                let Ok(borrower_key) =
+                    self.gateway.parse_obligation_key_from_topic(&event, 2).inspect_err(|e| {
                         warn!(?e, "cannot parse borrower obligation key");
                     })
                 else {
@@ -232,10 +230,7 @@ impl Liquidator {
                     &event.value,
                 );
 
-                let liquidator_key = ObligationKey {
-                    user: liquidator,
-                    seed: None,
-                };
+                let liquidator_key = ObligationKey { user: liquidator, seed: None };
                 self.apply_obligation_snapshot(
                     &market,
                     "liquidator_obligation",
@@ -262,10 +257,7 @@ impl Liquidator {
         key: &ObligationKey,
         value_xdr_base64: &str,
     ) {
-        match self
-            .gateway
-            .parse_obligation_from_event_value(value_xdr_base64, field_name, key)
-        {
+        match self.gateway.parse_obligation_from_event_value(value_xdr_base64, field_name, key) {
             Ok(Some(obligation)) => {
                 debug!(?key, ?obligation, %event_name, %market, "obligation snapshot");
                 if let Err(e) = self.obligations_repo.put(market, key, &obligation) {
@@ -389,13 +381,7 @@ impl Liquidator {
             info!(?obligation_key, ?obligation, is_insolvent, "LIQUIDATABLE");
 
             if let Some(action) = self
-                .try_liquidate(
-                    market,
-                    is_insolvent,
-                    market_data,
-                    obligation,
-                    obligation_key,
-                )
+                .try_liquidate(market, is_insolvent, market_data, obligation, obligation_key)
                 .await
             {
                 info!(?action, "LIQUIDATION ACTION");
@@ -458,10 +444,7 @@ impl Liquidator {
                     .iter()
                     .find(|p| p.pool_address == deposit_position.pool_address)
                 else {
-                    error!(
-                        ?deposit_position,
-                        "collateral pool missing from market data"
-                    );
+                    error!(?deposit_position, "collateral pool missing from market data");
 
                     continue;
                 };
@@ -502,8 +485,7 @@ impl Liquidator {
             metrics::record_expected_profit(market, plan.net_profit_value);
             info!(?plan, "selected best (borrow, deposit) pair",);
 
-            self.execute_liquidation_plan(market, plan, &liquidator_obl_key)
-                .await
+            self.execute_liquidation_plan(market, plan, &liquidator_obl_key).await
         } else {
             warn!("failed to come up with a liquidation plan");
             // TODO: Add metric?
@@ -683,11 +665,8 @@ impl Liquidator {
                 .0;
             // NB: all that's available for borrowing is available
             // to be withdrawn without applying scarcity fees
-            let available_to_withdraw_without_scarcity_fees = collateral_pool
-                .available_for_borrow()
-                .inspect_err(|e| error!(%e))
-                .ok()?
-                .0;
+            let available_to_withdraw_without_scarcity_fees =
+                collateral_pool.available_for_borrow().inspect_err(|e| error!(%e)).ok()?.0;
 
             let (instantly_available_plain_collateral, instantly_available_withdrawable_deposit) = (
                 deposit_position.collateral.0,
@@ -710,10 +689,7 @@ impl Liquidator {
             .ok()?;
 
             if updated_max_profitable_repay <= 0 {
-                warn!(
-                    updated_max_profitable_repay,
-                    "non-positive updated max profitable repay"
-                );
+                warn!(updated_max_profitable_repay, "non-positive updated max profitable repay");
 
                 return None;
             }
@@ -801,10 +777,7 @@ impl Liquidator {
         .inspect_err(|e| error!(%e))
         .ok()?;
         if !profitability.is_acceptable {
-            info!(
-                ?profitability,
-                "DIRECT liquidation's profitability is not acceptable"
-            );
+            info!(?profitability, "DIRECT liquidation's profitability is not acceptable");
 
             return None;
         }
@@ -878,10 +851,8 @@ impl Liquidator {
         .0;
         let flash_repay_amount = repay_amount.saturating_add(flash_fee);
 
-        let (collateral_token, borrow_token) = (
-            collateral_pool.token_address.as_str(),
-            borrow_pool.token_address.as_str(),
-        );
+        let (collateral_token, borrow_token) =
+            (collateral_pool.token_address.as_str(), borrow_pool.token_address.as_str());
 
         let (best_provider, amount_out) = match self
             .best_swap_quote(de_facto_seized_amount, collateral_token, borrow_token)
@@ -924,10 +895,7 @@ impl Liquidator {
         .inspect_err(|e| error!(%e))
         .ok()?;
         if !profitability.is_acceptable {
-            info!(
-                ?profitability,
-                "FLASH liquidation's profitability is not acceptable"
-            );
+            info!(?profitability, "FLASH liquidation's profitability is not acceptable");
 
             return None;
         }
@@ -1008,9 +976,8 @@ impl Liquidator {
                 continue;
             }
 
-            let Some((best_provider, max_amount_in)) = self
-                .best_swap_base(max_profitable_repay, source_asset, borrow_token)
-                .await
+            let Some((best_provider, max_amount_in)) =
+                self.best_swap_base(max_profitable_repay, source_asset, borrow_token).await
             else {
                 error!(%source_asset, "no swap base");
 
@@ -1023,16 +990,11 @@ impl Liquidator {
             let (best_provider, amount_in, amount_out) =
                 if max_amount_in_plus_slippage <= swappable_balance {
                     // NB: The best provider promised these conditions, and we can afford them
-                    (
-                        best_provider,
-                        max_amount_in_plus_slippage,
-                        max_profitable_repay,
-                    )
+                    (best_provider, max_amount_in_plus_slippage, max_profitable_repay)
                 } else {
                     // NB: We can't afford to repay the full debt with our own liquidity
-                    let Some((new_best_provider, min_amount_out)) = self
-                        .best_swap_quote(swappable_balance, source_asset, borrow_token)
-                        .await
+                    let Some((new_best_provider, min_amount_out)) =
+                        self.best_swap_quote(swappable_balance, source_asset, borrow_token).await
                     else {
                         error!(%source_asset, "no swap quote");
 
@@ -1042,11 +1004,7 @@ impl Liquidator {
                         .saturating_mul(BPS_FACTOR - self.config.max_allowed_swap_slippage_bps)
                         / BPS_FACTOR;
 
-                    (
-                        new_best_provider,
-                        swappable_balance,
-                        min_amount_in_minus_slippage,
-                    )
+                    (new_best_provider, swappable_balance, min_amount_in_minus_slippage)
                 };
             let repay_amount = amount_out;
 
@@ -1060,10 +1018,8 @@ impl Liquidator {
                 deposit_position,
             )?;
 
-            let Some(source_pool) = market_data
-                .pools_data
-                .iter()
-                .find(|p| p.token_address == *source_asset)
+            let Some(source_pool) =
+                market_data.pools_data.iter().find(|p| p.token_address == *source_asset)
             else {
                 error!(%source_asset, "source asset pool not in market data");
 
@@ -1106,10 +1062,7 @@ impl Liquidator {
                 "considering PRESWAP liquidation plan..."
             );
 
-            if best_plan
-                .as_ref()
-                .is_none_or(|bp| bp.repay_amount < repay_amount)
-            {
+            if best_plan.as_ref().is_none_or(|bp| bp.repay_amount < repay_amount) {
                 best_plan = Some(LiquidationPlan {
                     repay_amount,
                     liquidation_type: LiquidationType::PreSwap {
@@ -1138,10 +1091,7 @@ impl Liquidator {
     ) -> Option<(String, i128)> {
         let mut best: Option<(String, i128)> = None;
         for provider in &self.config.swap_providers {
-            match self
-                .ledger_reader
-                .get_amount_out(amount_in, asset_in, asset_out, provider)
-                .await
+            match self.ledger_reader.get_amount_out(amount_in, asset_in, asset_out, provider).await
             {
                 Ok(out) if out > 0 => {
                     let is_better = best.as_ref().is_none_or(|(_, prev)| out > *prev);
@@ -1165,10 +1115,7 @@ impl Liquidator {
     ) -> Option<(String, i128)> {
         let mut best: Option<(String, i128)> = None;
         for provider in &self.config.swap_providers {
-            match self
-                .ledger_reader
-                .get_amount_in(amount_out, asset_in, asset_out, provider)
-                .await
+            match self.ledger_reader.get_amount_in(amount_out, asset_in, asset_out, provider).await
             {
                 Ok(amount_in) if amount_in > 0 => {
                     let is_better = best.as_ref().is_none_or(|(_, prev)| amount_in < *prev);
@@ -1236,11 +1183,7 @@ impl Liquidator {
     ) -> Option<Action> {
         let requests = self.build_batch_requests(&plan)?;
 
-        match self
-            .gateway
-            .simulate_batch(market, liquidator_obl_key, &requests)
-            .await
-        {
+        match self.gateway.simulate_batch(market, liquidator_obl_key, &requests).await {
             Ok(true) => {
                 info!(
                     ?plan.borrower_key,
@@ -1274,11 +1217,9 @@ impl Liquidator {
 
                 (borrow_token, plan.repay_amount)
             }
-            LiquidationType::PreSwap {
-                source_asset,
-                source_amount_in,
-                ..
-            } => (source_asset.clone(), *source_amount_in),
+            LiquidationType::PreSwap { source_asset, source_amount_in, .. } => {
+                (source_asset.clone(), *source_amount_in)
+            }
             // Flash liquidations source their capital from the protocol — the
             // keeper's wallet is not at risk for the repay amount, so there is
             // nothing to reserve.
@@ -1313,10 +1254,7 @@ impl Liquidator {
                 raw_balance
             };
 
-            match self
-                .liquidator_capital
-                .reserve(reserve_amount, available, &reserve_token)
-            {
+            match self.liquidator_capital.reserve(reserve_amount, available, &reserve_token) {
                 Ok(id) => id,
                 Err(e) => {
                     warn!(
@@ -1537,19 +1475,15 @@ impl Liquidator {
 
 fn emit_keeper_position_metrics(market: &str, obligation: &Obligation, market_data: &MarketData) {
     for deposit in &obligation.deposits {
-        let Some(pool) = market_data
-            .pools_data
-            .iter()
-            .find(|p| p.pool_address == deposit.pool_address)
+        let Some(pool) =
+            market_data.pools_data.iter().find(|p| p.pool_address == deposit.pool_address)
         else {
             error!(%market, pool = %deposit.pool_address, "emit_keeper_position_metrics: pool not found");
 
             continue;
         };
-        let j_tokens_underlying = pool
-            .j_tokens_to_tokens_floor(deposit.j_tokens)
-            .map(|u| u.0)
-            .unwrap_or(0);
+        let j_tokens_underlying =
+            pool.j_tokens_to_tokens_floor(deposit.j_tokens).map(|u| u.0).unwrap_or(0);
         metrics::set_keeper_deposit(
             market,
             &pool.pool_address,
@@ -1561,19 +1495,15 @@ fn emit_keeper_position_metrics(market: &str, obligation: &Obligation, market_da
     }
 
     for borrow in &obligation.borrows {
-        let Some(pool) = market_data
-            .pools_data
-            .iter()
-            .find(|p| p.pool_address == borrow.pool_address)
+        let Some(pool) =
+            market_data.pools_data.iter().find(|p| p.pool_address == borrow.pool_address)
         else {
             warn!(%market, pool = %borrow.pool_address, "emit_keeper_position_metrics: pool not found");
 
             continue;
         };
-        let d_tokens_underlying = pool
-            .d_tokens_to_tokens_ceil(borrow.d_tokens)
-            .map(|u| u.0)
-            .unwrap_or(0);
+        let d_tokens_underlying =
+            pool.d_tokens_to_tokens_ceil(borrow.d_tokens).map(|u| u.0).unwrap_or(0);
         metrics::set_keeper_borrow(
             market,
             &pool.pool_address,

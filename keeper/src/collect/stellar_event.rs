@@ -1,16 +1,17 @@
 //! Polls the Stellar RPC for contract events and emits them, persisting the
 //! cursor across restarts via [`crate::storage::CursorRepo`].
 
-use {
-    super::{Event, lag_counted_stream},
-    crate::metrics::CursorSource,
-    crate::{stellar::errors::is_terminal_cursor_error, storage::cursor::CursorRepo},
-    engine::reactor::{BoxFuture, Collector, CollectorStream},
-    std::{sync::Arc, time::Duration},
-    stellar_rpc_client::{Client, EventStart, EventType},
-    tokio::sync::broadcast,
-    tracing::{error, info, warn},
-    url::Url,
+use std::{sync::Arc, time::Duration};
+
+use engine::reactor::{BoxFuture, Collector, CollectorStream};
+use stellar_rpc_client::{Client, EventStart, EventType};
+use tokio::sync::broadcast;
+use tracing::{error, info, warn};
+use url::Url;
+
+use super::{Event, lag_counted_stream};
+use crate::{
+    metrics::CursorSource, stellar::errors::is_terminal_cursor_error, storage::cursor::CursorRepo,
 };
 
 /// Subscription filter forwarded to [`Client::get_events`]. Each entry in
@@ -44,11 +45,8 @@ impl SorobanEventCollector {
         let (last_ledger, last_cursor_id) = match cursor_repo.get()? {
             Some(saved) => {
                 info!(?saved, "resuming from saved cursor/ledger");
-                let last_cursor_id = if saved.cursor_id.is_empty() {
-                    None
-                } else {
-                    Some(saved.cursor_id)
-                };
+                let last_cursor_id =
+                    if saved.cursor_id.is_empty() { None } else { Some(saved.cursor_id) };
 
                 (saved.ledger, last_cursor_id)
             }

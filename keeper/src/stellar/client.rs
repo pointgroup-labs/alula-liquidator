@@ -2,17 +2,16 @@
 //!
 //! Internal to the `stellar` adapter. Strategies never reach here.
 
-use {
-    super::xdr_codec::{account_strkey_to_muxed, contract_strkey_to_hash},
-    crate::metrics::{self, SimulateFailureKind, SimulateOutcome},
-    anyhow::anyhow,
-    stellar_rpc_client::{AuthMode, Client},
-    stellar_xdr::{
-        ContractId, Hash, HostFunction, InvokeContractArgs, Memo, Operation, OperationBody,
-        Preconditions, ScAddress, ScSymbol, ScVal, SequenceNumber, Transaction,
-        TransactionEnvelope, TransactionExt, TransactionV1Envelope, VecM,
-    },
+use anyhow::anyhow;
+use stellar_rpc_client::{AuthMode, Client};
+use stellar_xdr::{
+    ContractId, Hash, HostFunction, InvokeContractArgs, Memo, Operation, OperationBody,
+    Preconditions, ScAddress, ScSymbol, ScVal, SequenceNumber, Transaction, TransactionEnvelope,
+    TransactionExt, TransactionV1Envelope, VecM,
 };
+
+use super::xdr_codec::{account_strkey_to_muxed, contract_strkey_to_hash};
+use crate::metrics::{self, SimulateFailureKind, SimulateOutcome};
 
 const DEFAULT_SIMULATION_FEE: u32 = 100_000;
 
@@ -23,10 +22,7 @@ pub struct Gateway {
 
 impl Gateway {
     pub fn new(rpc_url: &url::Url, source_account: String) -> anyhow::Result<Self> {
-        Ok(Self {
-            rpc: Client::new(rpc_url.as_str())?,
-            source_account,
-        })
+        Ok(Self { rpc: Client::new(rpc_url.as_str())?, source_account })
     }
 }
 
@@ -61,10 +57,8 @@ impl Gateway {
             .try_into()?,
             ext: TransactionExt::V0,
         };
-        let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
-            tx,
-            signatures: VecM::default(),
-        });
+        let envelope =
+            TransactionEnvelope::Tx(TransactionV1Envelope { tx, signatures: VecM::default() });
 
         let started = std::time::Instant::now();
         let sim_response = match self
@@ -100,9 +94,7 @@ impl Gateway {
 
         let results = sim_response.results()?;
         if results.is_empty() {
-            return Err(anyhow!(
-                "simulation returned no results for {function_name}"
-            ));
+            return Err(anyhow!("simulation returned no results for {function_name}"));
         }
 
         Ok(results[0].xdr.clone())

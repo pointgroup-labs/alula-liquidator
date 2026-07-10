@@ -5,23 +5,20 @@
 
 mod catalog;
 
-pub use catalog::*;
-
-use {
-    axum::{Router, extract::State, http::StatusCode, routing::get},
-    metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle},
-    std::{
-        net::SocketAddr,
-        sync::atomic::{AtomicI64, Ordering},
-    },
-    tracing::info,
+use std::{
+    net::SocketAddr,
+    sync::atomic::{AtomicI64, Ordering},
 };
+
+use axum::{Router, extract::State, http::StatusCode, routing::get};
+pub use catalog::*;
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
+use tracing::info;
 
 /// Explicit buckets for the `*_seconds` latency histograms, spanning a few
 /// milliseconds to 10 s. The 5 s boundary lines up with `KeeperScanSlow`.
-const LATENCY_BUCKETS: [f64; 12] = [
-    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 7.5, 10.0,
-];
+const LATENCY_BUCKETS: [f64; 12] =
+    [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 7.5, 10.0];
 
 /// Wall-clock unix seconds of the most recent scan tick. Bridges the reactor
 /// (writer, via [`catalog::record_scan`]) and the readiness probe (reader)
@@ -124,10 +121,9 @@ async fn readyz_handler(State(state): State<AppState>) -> (StatusCode, &'static 
         .unwrap_or(last);
 
     match readiness_state(last, now, state.ready_budget_secs) {
-        Readiness::Warming => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "warming up: no scan completed yet",
-        ),
+        Readiness::Warming => {
+            (StatusCode::SERVICE_UNAVAILABLE, "warming up: no scan completed yet")
+        }
         Readiness::Ready => (StatusCode::OK, "ready"),
         Readiness::Stalled => (StatusCode::SERVICE_UNAVAILABLE, "scan loop stalled"),
     }

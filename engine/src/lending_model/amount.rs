@@ -1,8 +1,9 @@
 //! Constants, fixed-point multiplication helpers and type definitions for protocol fixed-point math.
 
+use serde::{Deserialize, Serialize};
+
 use super::error::LMError;
 use crate::lending_model::error::MapArithmeticError;
-use serde::{Deserialize, Serialize};
 
 pub const BPS_FACTOR: i128 = 10_000;
 

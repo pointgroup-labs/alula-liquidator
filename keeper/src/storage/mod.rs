@@ -1,9 +1,9 @@
-use {
-    crate::storage::{cursor::CursorRepo, obligations::ObligationsRepo},
-    parking_lot::Mutex,
-    rusqlite::Connection,
-    std::{path::Path, sync::Arc},
-};
+use std::{path::Path, sync::Arc};
+
+use parking_lot::Mutex;
+use rusqlite::Connection;
+
+use crate::storage::{cursor::CursorRepo, obligations::ObligationsRepo};
 
 pub mod cursor;
 pub mod obligations;
@@ -22,9 +22,7 @@ impl SqliteStore {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(include_str!("schema.sql"))?;
 
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
     pub fn obligations(&self) -> ObligationsRepo {

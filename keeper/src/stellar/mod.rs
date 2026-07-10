@@ -8,10 +8,8 @@ mod event_decode;
 mod simulation;
 mod tx_builder;
 
-use {
-    ed25519_dalek::SigningKey,
-    stellar_xdr::{AccountId, PublicKey, ScAddress, Uint256},
-};
+use ed25519_dalek::SigningKey;
+use stellar_xdr::{AccountId, PublicKey, ScAddress, Uint256};
 
 /// Encode an ed25519 signing key as a Stellar `G…` strkey.
 pub fn pubkey_to_strkey(skey: &SigningKey) -> String {

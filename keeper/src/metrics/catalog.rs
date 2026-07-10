@@ -547,18 +547,9 @@ pub(super) fn describe_all() {
         TX_BAD_SEQ_RETRIES,
         "Transaction retries triggered by a stale local sequence number."
     );
-    describe_counter!(
-        TX_SUBMITTED,
-        "Transaction submission attempts by terminal outcome."
-    );
-    describe_counter!(
-        TX_CONFIRMED,
-        "Submitted transactions by on-chain confirmation outcome."
-    );
-    describe_counter!(
-        SIMULATION,
-        "Higher-level contract-call simulations by call and verdict."
-    );
+    describe_counter!(TX_SUBMITTED, "Transaction submission attempts by terminal outcome.");
+    describe_counter!(TX_CONFIRMED, "Submitted transactions by on-chain confirmation outcome.");
+    describe_counter!(SIMULATION, "Higher-level contract-call simulations by call and verdict.");
     describe_counter!(
         RPC_SIMULATE_FAILURES,
         "Failed RPC simulate_transaction calls by contract function and failure layer."
@@ -578,10 +569,7 @@ pub(super) fn describe_all() {
         "Unix time the process started; subtract from time() for uptime."
     );
 
-    describe_counter!(
-        SCAN_COMPLETED,
-        "Completed market scans by market and verdict."
-    );
+    describe_counter!(SCAN_COMPLETED, "Completed market scans by market and verdict.");
     describe_histogram!(
         SCAN_DURATION,
         Unit::Seconds,
@@ -596,10 +584,7 @@ pub(super) fn describe_all() {
         "Liquidation plans handed to the executor, by market and execution mode."
     );
     describe_gauge!(OBLIGATIONS, "Borrower obligations modelled per market.");
-    describe_gauge!(
-        LIQUIDATABLE,
-        "Obligations currently flagged liquidatable per market."
-    );
+    describe_gauge!(LIQUIDATABLE, "Obligations currently flagged liquidatable per market.");
     describe_gauge!(
         LAST_SCAN_TS,
         Unit::Seconds,
@@ -621,20 +606,11 @@ pub(super) fn describe_all() {
         REALISED_PROFIT_TOTAL,
         "Running total of realised net profit in oracle-price units, by market."
     );
-    describe_gauge!(
-        ASSET_BALANCE,
-        "On-chain wallet balance held by the keeper, by token address."
-    );
+    describe_gauge!(ASSET_BALANCE, "On-chain wallet balance held by the keeper, by token address.");
     describe_gauge!(XLM_BALANCE, "Keeper XLM wallet balance in stroops.");
-    describe_gauge!(
-        XLM_SAFETY_MARGIN,
-        "Configured XLM safety-margin floor in stroops."
-    );
+    describe_gauge!(XLM_SAFETY_MARGIN, "Configured XLM safety-margin floor in stroops.");
     describe_gauge!(SELF_J_TOKENS, "Keeper's own jToken supply, by pool.");
-    describe_gauge!(
-        SELF_PLAIN_COLLATERAL,
-        "Keeper's own plain collateral, by pool."
-    );
+    describe_gauge!(SELF_PLAIN_COLLATERAL, "Keeper's own plain collateral, by pool.");
     describe_gauge!(
         SELF_J_TOKENS_UNDERLYING,
         "Keeper's own jToken supply valued in underlying, by pool."
@@ -660,10 +636,7 @@ pub(super) fn describe_all() {
     );
 
     describe_counter!(WITHDRAWER_OUTCOME, "Withdrawer per-position verdicts.");
-    describe_counter!(
-        BAD_DEBT_OUTCOME,
-        "Bad-debt initiator per-liquidation-event verdicts."
-    );
+    describe_counter!(BAD_DEBT_OUTCOME, "Bad-debt initiator per-liquidation-event verdicts.");
 }
 
 #[cfg(test)]
@@ -679,29 +652,14 @@ mod tests {
         assert_eq!(TX_SUBMITTED, "keeper_tx_submitted_total");
         assert_eq!(TX_CONFIRMED, "keeper_tx_confirmed_total");
         assert_eq!(SIMULATION, "keeper_simulation_total");
-        assert_eq!(
-            RPC_SIMULATE_DURATION,
-            "keeper_rpc_simulate_duration_seconds"
-        );
+        assert_eq!(RPC_SIMULATE_DURATION, "keeper_rpc_simulate_duration_seconds");
         assert_eq!(SCAN_COMPLETED, "liquidator_scan_completed_total");
         assert_eq!(SCAN_DURATION, "liquidator_market_scan_duration_seconds");
         assert_eq!(SKIP, "liquidator_skip_total");
-        assert_eq!(
-            PLANS_DISPATCHED,
-            "liquidator_liquidation_plans_dispatched_total"
-        );
-        assert_eq!(
-            EXPECTED_PROFIT,
-            "liquidator_plan_expected_net_profit_oracle_units"
-        );
-        assert_eq!(
-            REALISED_PROFIT,
-            "liquidator_plan_realised_net_profit_oracle_units"
-        );
-        assert_eq!(
-            BALANCER_DISPATCHED_VALUE,
-            "balancer_dispatched_swap_value_cents"
-        );
+        assert_eq!(PLANS_DISPATCHED, "liquidator_liquidation_plans_dispatched_total");
+        assert_eq!(EXPECTED_PROFIT, "liquidator_plan_expected_net_profit_oracle_units");
+        assert_eq!(REALISED_PROFIT, "liquidator_plan_realised_net_profit_oracle_units");
+        assert_eq!(BALANCER_DISPATCHED_VALUE, "balancer_dispatched_swap_value_cents");
         assert_eq!(WITHDRAWER_OUTCOME, "withdrawer_outcome_total");
         assert_eq!(BAD_DEBT_OUTCOME, "bad_debt_outcome_total");
         assert_eq!(BUILD_INFO, "keeper_build_info");
@@ -719,19 +677,10 @@ mod tests {
     #[test]
     fn tx_confirm_outcome_labels_are_stable() {
         assert_eq!(TxConfirmOutcome::Confirmed.as_str(), "confirmed");
-        assert_eq!(
-            TxConfirmOutcome::HashDecodeFailed.as_str(),
-            "hash_decode_failed"
-        );
+        assert_eq!(TxConfirmOutcome::HashDecodeFailed.as_str(), "hash_decode_failed");
         assert_eq!(TxConfirmOutcome::FailedOnChain.as_str(), "failed_on_chain");
-        assert_eq!(
-            TxConfirmOutcome::SubmissionTimeout.as_str(),
-            "submission_timeout"
-        );
-        assert_eq!(
-            TxConfirmOutcome::UnexpectedStatus.as_str(),
-            "unexpected_status"
-        );
+        assert_eq!(TxConfirmOutcome::SubmissionTimeout.as_str(), "submission_timeout");
+        assert_eq!(TxConfirmOutcome::UnexpectedStatus.as_str(), "unexpected_status");
         assert_eq!(TxConfirmOutcome::TransportError.as_str(), "transport_error");
     }
 
@@ -740,10 +689,7 @@ mod tests {
         assert_eq!(SimulationCall::Liquidate.as_str(), "liquidate");
         assert_eq!(SimulationCall::Batch.as_str(), "batch");
         assert_eq!(SimulationOutcome::Ok.as_str(), "ok");
-        assert_eq!(
-            SimulationOutcome::NotLiquidatable.as_str(),
-            "not_liquidatable"
-        );
+        assert_eq!(SimulationOutcome::NotLiquidatable.as_str(), "not_liquidatable");
         assert_eq!(SimulationOutcome::Error.as_str(), "error");
         assert_eq!(SimulationOutcome::Failed.as_str(), "failed");
         assert_eq!(SimulateOutcome::Ok.as_str(), "ok");
@@ -761,23 +707,11 @@ mod tests {
 
     #[test]
     fn skip_reason_labels_are_stable() {
-        assert_eq!(
-            SkipReason::BelowCollateralThreshold.as_str(),
-            "below_collateral_threshold"
-        );
-        assert_eq!(
-            SkipReason::BalanceQueryFailed.as_str(),
-            "balance_query_failed"
-        );
-        assert_eq!(
-            SkipReason::UnprofitableSeizeZero.as_str(),
-            "unprofitable_seize_zero"
-        );
+        assert_eq!(SkipReason::BelowCollateralThreshold.as_str(), "below_collateral_threshold");
+        assert_eq!(SkipReason::BalanceQueryFailed.as_str(), "balance_query_failed");
+        assert_eq!(SkipReason::UnprofitableSeizeZero.as_str(), "unprofitable_seize_zero");
         assert_eq!(SkipReason::BatchSimFailed.as_str(), "batch_sim_failed");
-        assert_eq!(
-            SkipReason::FlashSwapShortfall.as_str(),
-            "flash_swap_shortfall"
-        );
+        assert_eq!(SkipReason::FlashSwapShortfall.as_str(), "flash_swap_shortfall");
         assert_eq!(
             SkipReason::InsufficientBalanceAfterReservations.as_str(),
             "insufficient_balance_after_reservations"
@@ -794,38 +728,23 @@ mod tests {
 
     #[test]
     fn bad_debt_outcome_labels_are_stable() {
-        assert_eq!(
-            BadDebtOutcome::EligibilityError.as_str(),
-            "eligibility_error"
-        );
+        assert_eq!(BadDebtOutcome::EligibilityError.as_str(), "eligibility_error");
         assert_eq!(BadDebtOutcome::Ineligible.as_str(), "ineligible");
         assert_eq!(BadDebtOutcome::Dispatched.as_str(), "dispatched");
         assert_eq!(BadDebtOutcome::BuildFailed.as_str(), "build_failed");
         assert_eq!(BadDebtOutcome::DecodeOpError.as_str(), "decode_op_error");
         assert_eq!(BadDebtOutcome::ParseError.as_str(), "parse_error");
-        assert_eq!(
-            BadDebtOutcome::ObligationCleared.as_str(),
-            "obligation_cleared"
-        );
+        assert_eq!(BadDebtOutcome::ObligationCleared.as_str(), "obligation_cleared");
     }
 
     #[test]
     fn balancer_outcome_labels_are_stable() {
-        assert_eq!(
-            BalancerOutcome::EvaluationError.as_str(),
-            "evaluation_error"
-        );
+        assert_eq!(BalancerOutcome::EvaluationError.as_str(), "evaluation_error");
         assert_eq!(BalancerOutcome::NothingToSwap.as_str(), "nothing_to_swap");
         assert_eq!(BalancerOutcome::BadOraclePrice.as_str(), "bad_oracle_price");
-        assert_eq!(
-            BalancerOutcome::NoViableProvider.as_str(),
-            "no_viable_provider"
-        );
+        assert_eq!(BalancerOutcome::NoViableProvider.as_str(), "no_viable_provider");
         assert_eq!(BalancerOutcome::BelowDust.as_str(), "below_dust");
-        assert_eq!(
-            BalancerOutcome::ReservationLost.as_str(),
-            "reservation_lost"
-        );
+        assert_eq!(BalancerOutcome::ReservationLost.as_str(), "reservation_lost");
         assert_eq!(BalancerOutcome::Dispatched.as_str(), "dispatched");
     }
 
@@ -833,37 +752,19 @@ mod tests {
     fn withdrawer_outcome_labels_are_stable() {
         assert_eq!(WithdrawerOutcome::NoMarketData.as_str(), "no_market_data");
         assert_eq!(WithdrawerOutcome::PoolMissing.as_str(), "pool_missing");
-        assert_eq!(
-            WithdrawerOutcome::MaxWithdrawalError.as_str(),
-            "max_withdrawal_error"
-        );
-        assert_eq!(
-            WithdrawerOutcome::PoolAtCapacity.as_str(),
-            "pool_at_capacity"
-        );
-        assert_eq!(
-            WithdrawerOutcome::ConversionError.as_str(),
-            "conversion_error"
-        );
+        assert_eq!(WithdrawerOutcome::MaxWithdrawalError.as_str(), "max_withdrawal_error");
+        assert_eq!(WithdrawerOutcome::PoolAtCapacity.as_str(), "pool_at_capacity");
+        assert_eq!(WithdrawerOutcome::ConversionError.as_str(), "conversion_error");
         assert_eq!(WithdrawerOutcome::EmptyPosition.as_str(), "empty_position");
         assert_eq!(WithdrawerOutcome::Dispatched.as_str(), "dispatched");
         assert_eq!(WithdrawerOutcome::BuildError.as_str(), "build_error");
-        assert_eq!(
-            WithdrawerOutcome::BelowThreshold.as_str(),
-            "below_threshold"
-        );
+        assert_eq!(WithdrawerOutcome::BelowThreshold.as_str(), "below_threshold");
     }
 
     #[test]
     fn cursor_source_labels_are_stable() {
-        assert_eq!(
-            CursorSource::LiquidatorEventCursor.as_str(),
-            "liquidator_event_cursor"
-        );
-        assert_eq!(
-            CursorSource::EventCollectorCursor.as_str(),
-            "event_collector_cursor"
-        );
+        assert_eq!(CursorSource::LiquidatorEventCursor.as_str(), "liquidator_event_cursor");
+        assert_eq!(CursorSource::EventCollectorCursor.as_str(), "event_collector_cursor");
     }
 
     #[test]
@@ -893,10 +794,7 @@ mod tests {
         });
         let out = handle.render();
 
-        assert!(
-            out.contains("# HELP keeper_tx_submitted_total"),
-            "missing HELP metadata:\n{out}"
-        );
+        assert!(out.contains("# HELP keeper_tx_submitted_total"), "missing HELP metadata:\n{out}");
         assert!(
             out.contains("# TYPE keeper_tx_submitted_total counter"),
             "missing TYPE metadata:\n{out}"

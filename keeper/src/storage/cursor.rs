@@ -4,11 +4,10 @@
 //! belongs to. The collector reads it on startup to resume from where it
 //! left off and writes it after each successful page.
 
-use {
-    parking_lot::Mutex,
-    rusqlite::{Connection, OptionalExtension, params},
-    std::sync::Arc,
-};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// Saved resume position for the Soroban event stream.
 #[derive(Debug, Clone)]
@@ -30,16 +29,9 @@ impl CursorRepo {
     pub fn get(&self) -> anyhow::Result<Option<EventCursor>> {
         let conn = self.conn.lock();
         let row = conn
-            .query_row(
-                "SELECT cursor_id, ledger FROM event_cursor WHERE id = 1",
-                [],
-                |row| {
-                    Ok(EventCursor {
-                        ledger: row.get(1)?,
-                        cursor_id: row.get(0)?,
-                    })
-                },
-            )
+            .query_row("SELECT cursor_id, ledger FROM event_cursor WHERE id = 1", [], |row| {
+                Ok(EventCursor { ledger: row.get(1)?, cursor_id: row.get(0)? })
+            })
             .optional()?;
 
         Ok(row)
