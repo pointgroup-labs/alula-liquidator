@@ -7,10 +7,10 @@ help:
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 fmt: ## Apply rustfmt
-	cargo fmt --all
+	cargo +nightly fmt --all
 
 fmt-check: ## Check formatting (CI gate)
-	cargo fmt --all --check
+	cargo +nightly fmt --all --check
 
 clippy: ## Lint with warnings denied (CI gate)
 	cargo clippy --workspace --all-targets --locked -- -D warnings

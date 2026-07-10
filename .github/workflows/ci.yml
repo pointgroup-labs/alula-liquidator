@@ -29,10 +29,12 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # rustfmt.toml uses nightly-only options (group_imports, format_strings…),
+      # so the fmt gate runs nightly; the rest of CI stays on stable.
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
-      - run: cargo fmt --all --check
+      - run: cargo +nightly fmt --all --check
 
   clippy:
     name: clippy
