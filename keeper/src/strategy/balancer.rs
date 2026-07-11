@@ -110,9 +110,7 @@ impl Balancer {
             return vec![];
         };
 
-        let _ = self.find_rebalance_actions(&market_data).await;
-
-        vec![]
+        self.find_rebalance_actions(&market_data).await
     }
 
     async fn handle_soroban_event(&mut self, event: SorobanEvent) -> Vec<Action> {
@@ -182,6 +180,8 @@ impl Balancer {
         Some(self.gateway.decode_topic(event, 1))
     }
 
+    /// Each returned Action holds the sole release hook for a capital
+    /// reservation taken here; a caller that drops them leaks it until TTL.
     async fn find_rebalance_actions(&mut self, market_data: &MarketData) -> Vec<Action> {
         self.update_asset_index(market_data);
         let target_asset = self.config.assets_to_hold[0].clone();
