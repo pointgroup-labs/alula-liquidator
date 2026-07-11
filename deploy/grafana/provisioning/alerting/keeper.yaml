@@ -437,7 +437,7 @@ groups:
       datasourceUid: prometheus
       model:
         editorMode: code
-        expr: liquidator_xlm_balance_stroops / (liquidator_xlm_safety_margin_stroops * 2)
+        expr: liquidator_xlm_balance_stroops / (liquidator_xlm_safety_margin_stroops * 0.9)
         instant: true
         intervalMs: 1000
         maxDataPoints: 43200
@@ -463,8 +463,8 @@ groups:
     labels:
       severity: warning
     annotations:
-      summary: XLM balance within 2x of safety margin
-      description: The keeper's XLM balance is approaching the configured xlm_safety_margin. Below the margin the rebalancer and liquidator refuse to spend XLM, so opportunities start being skipped. Refill the keeper account.
+      summary: XLM balance fell below the safety margin
+      description: The keeper's XLM balance dropped under xlm_safety_margin, the inclusion-fee reserve the rebalancer holds in XLM. The rebalancer only drains surplus XLM into USDC, never the reverse, so it cannot refill this reserve — a sustained dip means fees are outrunning seized-collateral top-ups. Refill the keeper account.
   - uid: keeper_xlm_funding_critical
     title: KeeperXlmFundingCritical
     condition: B
@@ -476,7 +476,7 @@ groups:
       datasourceUid: prometheus
       model:
         editorMode: code
-        expr: liquidator_xlm_balance_stroops / (liquidator_xlm_safety_margin_stroops * 1.1)
+        expr: liquidator_xlm_balance_stroops / (liquidator_xlm_safety_margin_stroops * 0.5)
         instant: true
         intervalMs: 1000
         maxDataPoints: 43200
@@ -502,8 +502,8 @@ groups:
     labels:
       severity: critical
     annotations:
-      summary: XLM balance at safety margin — keeper is freezing
-      description: The keeper's XLM balance is within 10% of the configured xlm_safety_margin. The next opportunity will be skipped with insufficient_capital. Refill immediately.
+      summary: XLM reserve half-depleted — refill now
+      description: The keeper's XLM balance is under half of xlm_safety_margin. Inclusion-fee headroom is running out and the rebalancer cannot refill XLM; the next opportunity will be skipped with insufficient_capital. Refill immediately.
   - uid: keeper_bad_debt_schema_drift
     title: KeeperBadDebtSchemaDrift
     condition: B

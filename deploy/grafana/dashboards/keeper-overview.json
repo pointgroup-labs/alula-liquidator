@@ -1,4 +1,11 @@
 {
+  "uid": "alula-liquidator",
+  "title": "Alula :: Liquidator",
+  "timezone": "browser",
+  "version": 4,
+  "weekStart": "",
+  "refresh": "10s",
+  "schemaVersion": 39,
   "annotations": {
     "list": [
       {
@@ -15,340 +22,48 @@
       }
     ]
   },
+  "tags": [
+    "alula",
+    "liquidator"
+  ],
   "description": "Operational view of the keeper. Rows are grouped by the question an on-call would ask; each panel answers a slice of it.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 2,
   "id": null,
-  "links": [],
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [
+        "alula"
+      ],
+      "title": "Alula dashboards",
+      "type": "dashboards"
+    }
+  ],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h"
+    ]
+  },
+  "templating": {
+    "list": []
+  },
   "panels": [
-    {
-      "id": 200,
-      "type": "row",
-      "title": "Release & SLOs",
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 0
-      },
-      "panels": []
-    },
-    {
-      "id": 201,
-      "type": "stat",
-      "title": "Running build",
-      "description": "Version and git commit currently running (keeper_build_info). Line up metric shifts against deploys.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 6,
-        "x": 0,
-        "y": 1
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "keeper_build_info",
-          "legendFormat": "{{version}} · {{commit}}",
-          "instant": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "text"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "orientation": "auto",
-        "textMode": "name",
-        "colorMode": "none",
-        "graphMode": "none",
-        "justifyMode": "auto"
-      }
-    },
-    {
-      "id": 202,
-      "type": "stat",
-      "title": "Uptime",
-      "description": "time() - keeper_start_time_seconds. Drops to ~0 on every restart / redeploy.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 6,
-        "y": 1
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "time() - keeper_start_time_seconds",
-          "legendFormat": "uptime",
-          "instant": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "decimals": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "orientation": "auto",
-        "textMode": "value",
-        "colorMode": "none",
-        "graphMode": "none",
-        "justifyMode": "auto"
-      }
-    },
-    {
-      "id": 203,
-      "type": "stat",
-      "title": "Tx confirm rate (15m)",
-      "description": "confirmed ÷ submitted over 15m — the core execution SLI. `KeeperTxConfirmationRateLow` pages below 50%; green ≥90%. Shows 'No data' when nothing is being submitted (idle, not a failure).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 5,
-        "x": 10,
-        "y": 1
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum(rate(keeper_tx_confirmed_total{outcome=\"confirmed\"}[15m])) / sum(rate(keeper_tx_submitted_total{outcome=\"ok\"}[15m]))",
-          "legendFormat": "confirm rate",
-          "instant": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "value": null,
-                "color": "red"
-              },
-              {
-                "value": 0.5,
-                "color": "yellow"
-              },
-              {
-                "value": 0.9,
-                "color": "green"
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      }
-    },
-    {
-      "id": 204,
-      "type": "stat",
-      "title": "Profit capture (1h)",
-      "description": "realised ÷ expected net profit over 1h — the realisation-tax SLI. 100% = every modelled dollar landed on-chain. 'No data' when no plans dispatched.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 5,
-        "x": 15,
-        "y": 1
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum(increase(liquidator_plan_realised_net_profit_oracle_units_total[1h])) / sum(increase(liquidator_plan_expected_net_profit_oracle_units_total[1h]))",
-          "legendFormat": "capture",
-          "instant": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "value": null,
-                "color": "red"
-              },
-              {
-                "value": 0.5,
-                "color": "yellow"
-              },
-              {
-                "value": 0.8,
-                "color": "green"
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      }
-    },
-    {
-      "id": 205,
-      "type": "stat",
-      "title": "Scan freshness (worst)",
-      "description": "Oldest 'last successful scan' across all markets. `KeeperScanStalled` fires at 300s. Green ≤60s.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 20,
-        "y": 1
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "max(time() - liquidator_last_successful_scan_timestamp_seconds)",
-          "legendFormat": "staleness",
-          "instant": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "value": null,
-                "color": "green"
-              },
-              {
-                "value": 60,
-                "color": "yellow"
-              },
-              {
-                "value": 180,
-                "color": "orange"
-              },
-              {
-                "value": 300,
-                "color": "red"
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto"
-      }
-    },
-    {
-      "id": 210,
-      "type": "alertlist",
-      "title": "Firing alerts",
-      "description": "Grafana-managed alert rules currently firing, pending, or in error. Empty = all clear. Rules live in deploy/grafana/provisioning/alerting/.",
-      "gridPos": {
-        "h": 6,
-        "w": 24,
-        "x": 0,
-        "y": 6
-      },
-      "options": {
-        "alertInstanceLabelFilter": "",
-        "alertName": "",
-        "dashboardAlerts": false,
-        "groupBy": [],
-        "groupMode": "default",
-        "maxItems": 20,
-        "sortOrder": 3,
-        "stateFilter": {
-          "error": true,
-          "firing": true,
-          "noData": false,
-          "normal": false,
-          "pending": true
-        },
-        "viewMode": "list",
-        "showInactiveAlerts": false
-      }
-    },
     {
       "id": 100,
       "type": "row",
@@ -358,7 +73,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 12
+        "y": 0
       },
       "panels": []
     },
@@ -375,7 +90,7 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 13
+        "y": 1
       },
       "targets": [
         {
@@ -436,7 +151,7 @@
       "id": 1,
       "type": "stat",
       "title": "Time since last successful scan",
-      "description": "How long since each market completed a scan. Green ≤30s, yellow ≤60s, red beyond. Shows 'No data' until the first scan lands — pair with *Keeper reachable* to tell 'starting up' from 'stuck'.",
+      "description": "How long since each market completed a scan. Green \u226430s, yellow \u226460s, red beyond. Shows 'No data' until the first scan lands \u2014 pair with *Keeper reachable* to tell 'starting up' from 'stuck'.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -445,7 +160,7 @@
         "h": 5,
         "w": 4,
         "x": 4,
-        "y": 13
+        "y": 1
       },
       "targets": [
         {
@@ -506,7 +221,7 @@
         "h": 5,
         "w": 4,
         "x": 8,
-        "y": 13
+        "y": 1
       },
       "targets": [
         {
@@ -563,7 +278,7 @@
         "h": 5,
         "w": 4,
         "x": 12,
-        "y": 13
+        "y": 1
       },
       "targets": [
         {
@@ -611,16 +326,16 @@
       "id": 16,
       "type": "stat",
       "title": "XLM funding",
-      "description": "Keeper's XLM wallet balance. XLM pays inclusion fees — once it falls below `xlm_safety_margin` the bot stops submitting. See *XLM balance vs safety margin* for the headroom curve.",
+      "description": "Keeper's XLM wallet balance. XLM pays inclusion fees \u2014 once it falls below `xlm_safety_margin` the bot stops submitting. See *XLM balance vs safety margin* for the headroom curve.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 5,
-        "w": 8,
+        "w": 4,
         "x": 16,
-        "y": 13
+        "y": 1
       },
       "targets": [
         {
@@ -638,16 +353,16 @@
             "mode": "absolute",
             "steps": [
               {
-                "value": null,
-                "color": "red"
+                "color": "red",
+                "value": null
               },
               {
-                "value": 100,
-                "color": "yellow"
+                "color": "yellow",
+                "value": 50
               },
               {
-                "value": 1000,
-                "color": "green"
+                "color": "green",
+                "value": 90
               }
             ]
           }
@@ -664,7 +379,7 @@
         },
         "orientation": "auto",
         "textMode": "auto",
-        "colorMode": "background",
+        "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto"
       }
@@ -678,15 +393,15 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 18
+        "y": 6
       },
       "panels": []
     },
     {
       "id": 4,
       "type": "timeseries",
-      "title": "Liquidation pipeline — plans → submitted → confirmed",
-      "description": "Steady-state: all three series track each other. Plans > submitted = simulations rejecting in the executor. Submitted > confirmed = submissions not landing — see *TX confirmation outcomes* for the breakdown.",
+      "title": "Liquidation pipeline \u2014 plans \u2192 submitted \u2192 confirmed",
+      "description": "Steady-state: all three series track each other. Plans > submitted = simulations rejecting in the executor. Submitted > confirmed = submissions not landing \u2014 see *TX confirmation outcomes* for the breakdown.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -695,22 +410,22 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 19
+        "y": 7
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(liquidator_liquidation_plans_dispatched_total[$__rate_interval])) or on() vector(0)",
+          "expr": "sum(rate(liquidator_liquidation_plans_dispatched_total[5m])) or on() vector(0)",
           "legendFormat": "plans dispatched"
         },
         {
           "refId": "B",
-          "expr": "sum(rate(keeper_tx_submitted_total{outcome=\"ok\"}[$__rate_interval])) or on() vector(0)",
+          "expr": "sum(rate(keeper_tx_submitted_total{outcome=\"ok\"}[5m])) or on() vector(0)",
           "legendFormat": "tx submitted ok"
         },
         {
           "refId": "C",
-          "expr": "sum(rate(keeper_tx_confirmed_total{outcome=\"confirmed\"}[$__rate_interval])) or on() vector(0)",
+          "expr": "sum(rate(keeper_tx_confirmed_total{outcome=\"confirmed\"}[5m])) or on() vector(0)",
           "legendFormat": "tx confirmed"
         }
       ],
@@ -721,8 +436,10 @@
             "drawStyle": "line",
             "lineInterpolation": "smooth",
             "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never"
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "spanNulls": true
           }
         },
         "overrides": []
@@ -756,12 +473,12 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 27
+        "y": 15
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (outcome) (rate(liquidator_scan_completed_total[$__rate_interval]))",
+          "expr": "sum by (outcome) (rate(liquidator_scan_completed_total[5m]))",
           "legendFormat": "{{outcome}}"
         }
       ],
@@ -771,12 +488,15 @@
           "custom": {
             "drawStyle": "bars",
             "lineWidth": 1,
-            "fillOpacity": 80,
+            "fillOpacity": 12,
             "stacking": {
               "mode": "normal",
               "group": "A"
             },
-            "showPoints": "never"
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -847,7 +567,7 @@
       "id": 9,
       "type": "timeseries",
       "title": "Obligations vs liquidatable positions",
-      "description": "Borrowers being modelled vs the subset flagged liquidatable, per market. Sustained zero liquidatable against non-zero obligations is suspicious — usually engine or oracle drift.",
+      "description": "Borrowers being modelled vs the subset flagged liquidatable, per market. Sustained zero liquidatable against non-zero obligations is suspicious \u2014 usually engine or oracle drift.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -856,7 +576,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 27
+        "y": 15
       },
       "targets": [
         {
@@ -877,8 +597,10 @@
             "drawStyle": "line",
             "lineInterpolation": "stepAfter",
             "lineWidth": 2,
-            "fillOpacity": 5,
-            "showPoints": "never"
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -946,7 +668,7 @@
       "id": 5,
       "type": "timeseries",
       "title": "Skip reasons",
-      "description": "Why the strategy declined to act on an opportunity. A reason spiking 10× over baseline is the early signal worth investigating.",
+      "description": "Why the strategy declined to act on an opportunity. A reason spiking 10\u00d7 over baseline is the early signal worth investigating.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -955,12 +677,12 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 35
+        "y": 23
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (reason) (rate(liquidator_skip_total[$__rate_interval]))",
+          "expr": "sum by (reason) (rate(liquidator_skip_total[5m]))",
           "legendFormat": "{{reason}}"
         }
       ],
@@ -970,12 +692,15 @@
           "custom": {
             "drawStyle": "bars",
             "lineWidth": 1,
-            "fillOpacity": 70,
+            "fillOpacity": 12,
             "stacking": {
               "mode": "normal",
               "group": "A"
             },
-            "showPoints": "never"
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -1055,12 +780,12 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 35
+        "y": 23
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (call, outcome) (rate(keeper_simulation_total[$__rate_interval]))",
+          "expr": "sum by (call, outcome) (rate(keeper_simulation_total[5m]))",
           "legendFormat": "{{call}} / {{outcome}}"
         }
       ],
@@ -1070,12 +795,15 @@
           "custom": {
             "drawStyle": "bars",
             "lineWidth": 1,
-            "fillOpacity": 70,
+            "fillOpacity": 12,
             "stacking": {
               "mode": "normal",
               "group": "A"
             },
-            "showPoints": "never"
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -1155,12 +883,12 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 43
+        "y": 31
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (outcome) (rate(keeper_tx_submitted_total[$__rate_interval]))",
+          "expr": "sum by (outcome) (rate(keeper_tx_submitted_total[5m]))",
           "legendFormat": "{{outcome}}"
         }
       ],
@@ -1170,12 +898,15 @@
           "custom": {
             "drawStyle": "bars",
             "lineWidth": 1,
-            "fillOpacity": 70,
+            "fillOpacity": 12,
             "stacking": {
               "mode": "normal",
               "group": "A"
             },
-            "showPoints": "never"
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -1212,7 +943,7 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "retry_exhausted|seq_fetch_failed"
+              "options": "retry_exhausted|seq_acquire_failed|unreachable"
             },
             "properties": [
               {
@@ -1246,7 +977,7 @@
       "id": 8,
       "type": "timeseries",
       "title": "TX confirmation outcomes",
-      "description": "Outcome of each submitted transaction once we wait for confirmation. `failed_on_chain` is the realisation-tax tail — tx landed but reverted, gas spent. `submission_timeout` is uncertainty (tx may yet land). `transport_error` / `unexpected_status` indicate an RPC regression.",
+      "description": "Outcome of each submitted transaction once we wait for confirmation. `failed_on_chain` is the realisation-tax tail \u2014 tx landed but reverted, gas spent. `submission_timeout` is uncertainty (tx may yet land). `transport_error` / `unexpected_status` indicate an RPC regression.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1255,12 +986,12 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 43
+        "y": 31
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (outcome) (rate(keeper_tx_confirmed_total[$__rate_interval]))",
+          "expr": "sum by (outcome) (rate(keeper_tx_confirmed_total[5m]))",
           "legendFormat": "{{outcome}}"
         }
       ],
@@ -1270,12 +1001,15 @@
           "custom": {
             "drawStyle": "bars",
             "lineWidth": 1,
-            "fillOpacity": 70,
+            "fillOpacity": 12,
             "stacking": {
               "mode": "normal",
               "group": "A"
             },
-            "showPoints": "never"
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -1336,7 +1070,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 51
+        "y": 39
       },
       "panels": []
     },
@@ -1353,7 +1087,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 52
+        "y": 40
       },
       "targets": [
         {
@@ -1368,8 +1102,11 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never"
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         }
       },
@@ -1392,7 +1129,7 @@
       "id": 15,
       "type": "timeseries",
       "title": "Keeper self-position per market",
-      "description": "What the keeper itself holds in each market — supply (jTokens), borrow (dTokens), plain collateral. The withdrawer operates on supply; non-zero borrow means the keeper is exposed to liquidation itself.",
+      "description": "What the keeper itself holds in each market \u2014 supply (jTokens), borrow (dTokens), plain collateral. The withdrawer operates on supply; non-zero borrow means the keeper is exposed to liquidation itself.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1401,7 +1138,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 52
+        "y": 40
       },
       "targets": [
         {
@@ -1426,8 +1163,11 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never"
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         }
       },
@@ -1459,7 +1199,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 60
+        "y": 48
       },
       "targets": [
         {
@@ -1479,8 +1219,11 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never"
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -1551,7 +1294,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 68
+        "y": 56
       },
       "panels": []
     },
@@ -1559,7 +1302,7 @@
       "id": 10,
       "type": "timeseries",
       "title": "Dropped events (back-pressure)",
-      "description": "Any non-zero rate means events are being dropped because a downstream consumer can't keep up. Always urgent — investigate immediately.",
+      "description": "Any non-zero rate means events are being dropped because a downstream consumer can't keep up. Always urgent \u2014 investigate immediately.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1568,22 +1311,22 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 69
+        "y": 57
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (collector) (rate(keeper_collector_lagged_events_total[$__rate_interval]))",
+          "expr": "sum by (collector) (rate(keeper_collector_lagged_events_total[5m]))",
           "legendFormat": "collector: {{collector}}"
         },
         {
           "refId": "B",
-          "expr": "rate(engine_strategy_lagged_events_total[$__rate_interval]) or on() vector(0)",
+          "expr": "rate(engine_strategy_lagged_events_total[5m]) or on() vector(0)",
           "legendFormat": "strategy"
         },
         {
           "refId": "C",
-          "expr": "rate(engine_executor_lagged_actions_total[$__rate_interval]) or on() vector(0)",
+          "expr": "rate(engine_executor_lagged_actions_total[5m]) or on() vector(0)",
           "legendFormat": "executor"
         }
       ],
@@ -1593,8 +1336,11 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never"
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": []
@@ -1628,17 +1374,17 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 69
+        "y": 57
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (source) (rate(keeper_cursor_save_failures_total[$__rate_interval]))",
+          "expr": "sum by (source) (rate(keeper_cursor_save_failures_total[5m]))",
           "legendFormat": "cursor save fail: {{source}}"
         },
         {
           "refId": "B",
-          "expr": "rate(keeper_tx_bad_seq_retries_total[$__rate_interval]) or on() vector(0)",
+          "expr": "rate(keeper_tx_bad_seq_retries_total[5m]) or on() vector(0)",
           "legendFormat": "bad_seq retries"
         }
       ],
@@ -1648,8 +1394,11 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never"
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -1714,23 +1463,23 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 77
+        "y": 65
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.5, sum by (le, market, outcome) (rate(liquidator_market_scan_duration_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p50 {{market}} / {{outcome}}"
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(liquidator_market_scan_duration_seconds_bucket{outcome=\"ok\"}[5m])))",
+          "legendFormat": "p50"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, sum by (le, market, outcome) (rate(liquidator_market_scan_duration_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p95 {{market}} / {{outcome}}"
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(liquidator_market_scan_duration_seconds_bucket{outcome=\"ok\"}[5m])))",
+          "legendFormat": "p95"
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.99, sum by (le, market, outcome) (rate(liquidator_market_scan_duration_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p99 {{market}} / {{outcome}}"
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(liquidator_market_scan_duration_seconds_bucket{outcome=\"ok\"}[5m])))",
+          "legendFormat": "p99"
         }
       ],
       "fieldConfig": {
@@ -1739,8 +1488,11 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never"
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -1811,7 +1563,7 @@
       "id": 19,
       "type": "timeseries",
       "title": "RPC simulate latency by function (p95)",
-      "description": "Per-function p95 of `simulate_transaction` roundtrips. Drill-down for *Market scan latency* — tells you which contract call is the slow one. Outcomes split `ok` from `transport_error` so failed RPCs don't dilute the latency signal.",
+      "description": "Per-function p95 of `simulate_transaction` roundtrips. Drill-down for *Market scan latency* \u2014 tells you which contract call is the slow one. Outcomes split `ok` from `transport_error` so failed RPCs don't dilute the latency signal.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1820,13 +1572,13 @@
         "h": 8,
         "w": 16,
         "x": 0,
-        "y": 85
+        "y": 73
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, function) (rate(keeper_rpc_simulate_duration_seconds_bucket{outcome=\"ok\"}[$__rate_interval])))",
-          "legendFormat": "p95 {{function}}"
+          "expr": "histogram_quantile(0.95, sum by (le, function) (rate(keeper_rpc_simulate_duration_seconds_bucket{outcome=\"ok\"}[5m])))",
+          "legendFormat": "{{function}}"
         }
       ],
       "fieldConfig": {
@@ -1835,8 +1587,11 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never"
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         }
       },
@@ -1869,12 +1624,12 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 85
+        "y": 73
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "60 * rate(keeper_rpc_simulate_failures_total[$__rate_interval])",
+          "expr": "60 * rate(keeper_rpc_simulate_failures_total[5m])",
           "legendFormat": "{{kind}} / {{function}}"
         }
       ],
@@ -1884,8 +1639,11 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never"
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -1946,7 +1704,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 93
+        "y": 81
       },
       "panels": []
     },
@@ -1954,7 +1712,7 @@
       "id": 21,
       "type": "timeseries",
       "title": "Expected profit per plan",
-      "description": "Distribution of modelled profit on each dispatched liquidation plan, per market. This is the dispatch-time profit, not the realised on-chain amount. p50 collapse means we're scraping dust — re-tune `min_profit_margin_cents`.",
+      "description": "Distribution of modelled profit on each dispatched liquidation plan, per market. This is the dispatch-time profit, not the realised on-chain amount. p50 collapse means we're scraping dust \u2014 re-tune `min_profit_margin_cents`.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1963,7 +1721,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 94
+        "y": 82
       },
       "targets": [
         {
@@ -1979,12 +1737,16 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "currencyUSD",
+          "unit": "none",
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never"
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "axisLabel": "XLM (oracle units)",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -2040,7 +1802,7 @@
       "id": 22,
       "type": "timeseries",
       "title": "Expected vs realised profit",
-      "description": "Hourly run-rate of profit on dispatched plans. `expected` totals at dispatch; `realised` totals only when the tx is confirmed on-chain. The gap is the realisation tax — submission failures, simulation drift, retries exhausted. Both lines remain modelled (use `plan.net_profit_oracle`, not seized amounts).",
+      "description": "Hourly run-rate of profit on dispatched plans. `expected` totals at dispatch; `realised` totals only when the tx is confirmed on-chain. The gap is the realisation tax \u2014 submission failures, simulation drift, retries exhausted. Both lines remain modelled (use `plan.net_profit_oracle`, not seized amounts).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -2049,7 +1811,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 94
+        "y": 82
       },
       "targets": [
         {
@@ -2070,12 +1832,16 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "currencyUSD",
+          "unit": "none",
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never"
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "axisLabel": "XLM (oracle units)",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -2145,7 +1911,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 102
+        "y": 90
       },
       "panels": []
     },
@@ -2153,21 +1919,21 @@
       "id": 23,
       "type": "timeseries",
       "title": "Rebalancer outcomes",
-      "description": "What the rebalancer decided per candidate. `dispatched` is the only success outcome. `nothing_to_swap` is normal; `precondition_*` means config; `evaluation_error` / `reservation_lost` mean trouble. A silent panel means the rebalancer isn't being invoked — check the soroban-event topic filter or `refresh_interval_blocks`.",
+      "description": "What the rebalancer decided per candidate. `dispatched` is the only success outcome. `nothing_to_swap` is normal; `precondition_*` means config; `evaluation_error` / `reservation_lost` mean trouble. A silent panel means the rebalancer isn't being invoked \u2014 check the soroban-event topic filter or `refresh_interval_blocks`.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
-        "y": 103
+        "y": 91
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "60 * rate(balancer_outcome_total[$__rate_interval])",
+          "expr": "60 * rate(balancer_outcome_total[5m])",
           "legendFormat": "{{outcome}}"
         }
       ],
@@ -2177,11 +1943,14 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 10,
+            "fillOpacity": 12,
             "showPoints": "never",
             "stacking": {
               "mode": "normal"
-            }
+            },
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -2267,16 +2036,16 @@
       "id": 24,
       "type": "timeseries",
       "title": "Rebalancer swap size (p50 / p95)",
-      "description": "USD value of swaps actually emitted. The floor is `rebalancer_min_swap_amount_value_cents`; p50 hugging the floor means dust-only activity — re-tune the threshold.",
+      "description": "USD value of swaps actually emitted. The floor is `balancer_min_swap_amount_value_cents`; p50 hugging the floor means dust-only activity \u2014 re-tune the threshold.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 103
+        "w": 8,
+        "x": 8,
+        "y": 91
       },
       "targets": [
         {
@@ -2296,8 +2065,11 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never"
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -2358,7 +2130,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 111
+        "y": 99
       },
       "panels": []
     },
@@ -2366,7 +2138,7 @@
       "id": 25,
       "type": "timeseries",
       "title": "Withdrawer outcomes",
-      "description": "What the withdrawer decided per position. `dispatched` = action emitted. `pool_at_capacity` / `below_threshold` / `empty_position` are normal pauses. `no_market_data` / `pool_missing` / `build_error` are red flags.",
+      "description": "What the withdrawer decided per position. `dispatched` = action emitted. `pool_at_capacity` / `below_threshold` are normal pauses (utilization safety floor and `min_withdraw_value_cents`). `no_obligations` is steady-state for non-depositor markets. `pool_missing` / `build_error` / `no_market_data` are red flags.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -2375,12 +2147,12 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 112
+        "y": 100
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "60 * rate(withdrawer_outcome_total[$__rate_interval])",
+          "expr": "60 * rate(withdrawer_outcome_total[5m])",
           "legendFormat": "{{outcome}}"
         }
       ],
@@ -2390,11 +2162,14 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 10,
+            "fillOpacity": 12,
             "showPoints": "never",
             "stacking": {
               "mode": "normal"
-            }
+            },
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -2416,7 +2191,7 @@
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "^(empty_position|pool_at_capacity|below_threshold)$"
+              "options": "^(no_obligations|pool_at_capacity|below_threshold)$"
             },
             "properties": [
               {
@@ -2465,7 +2240,7 @@
       "id": 26,
       "type": "timeseries",
       "title": "Bad-debt initiator outcomes",
-      "description": "What the bad-debt initiator decided per Liquidate event. `ineligible` is the steady state (most liquidations leave healthy residual collateral). `dispatched` fires only when a borrower is underwater. `parse_error` / `decode_op_error` / `build_failed` mean the strategy can't even evaluate — chase via logs.",
+      "description": "What the bad-debt initiator decided per Liquidate event. `ineligible` is the steady state (most liquidations leave healthy residual collateral). `dispatched` fires only when a borrower is underwater. `parse_error` / `decode_op_error` / `build_failed` mean the strategy can't even evaluate \u2014 chase via logs.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -2474,12 +2249,12 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 112
+        "y": 100
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "60 * rate(bad_debt_outcome_total[$__rate_interval])",
+          "expr": "60 * rate(bad_debt_outcome_total[5m])",
           "legendFormat": "{{outcome}}"
         }
       ],
@@ -2489,11 +2264,14 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 10,
+            "fillOpacity": 12,
             "showPoints": "never",
             "stacking": {
               "mode": "normal"
-            }
+            },
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear",
+            "spanNulls": true
           }
         },
         "overrides": [
@@ -2559,36 +2337,146 @@
           "sort": "desc"
         }
       }
+    },
+    {
+      "type": "stat",
+      "title": "Uptime",
+      "id": 40,
+      "gridPos": {
+        "h": 5,
+        "w": 2,
+        "x": 20,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dtdurations",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - keeper_start_time_seconds",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Version",
+      "id": 41,
+      "gridPos": {
+        "h": 5,
+        "w": 2,
+        "x": 22,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "keeper_build_info",
+          "legendFormat": "{{version}}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "name",
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Swap price impact (p50 / p95)",
+      "id": 42,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 91
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "lineInterpolation": "linear",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "balancer_swap_price_impact_bps{quantile=\"0.5\"}",
+          "legendFormat": "p50 (bps)"
+        },
+        {
+          "refId": "B",
+          "expr": "balancer_swap_price_impact_bps{quantile=\"0.95\"}",
+          "legendFormat": "p95 (bps)"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     }
-  ],
-  "refresh": "10s",
-  "schemaVersion": 39,
-  "tags": [
-    "alula",
-    "liquidator"
-  ],
-  "templating": {
-    "list": []
-  },
-  "time": {
-    "from": "now-6h",
-    "to": "now"
-  },
-  "timepicker": {
-    "refresh_intervals": [
-      "5s",
-      "10s",
-      "30s",
-      "1m",
-      "5m",
-      "15m",
-      "30m",
-      "1h"
-    ]
-  },
-  "timezone": "browser",
-  "title": "Alula Liquidator",
-  "uid": "alula-overview",
-  "version": 6,
-  "weekStart": ""
+  ]
 }
