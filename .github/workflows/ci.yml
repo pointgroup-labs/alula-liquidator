@@ -3,7 +3,17 @@ name: ci
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'deploy/**'
+      - 'docs/**'
+      - '.gitignore'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'deploy/**'
+      - 'docs/**'
+      - '.gitignore'
   workflow_dispatch:
 
 concurrency:
