@@ -1,6 +1,7 @@
 # Alula Liquidator
 
-[![ci](https://github.com/pointgroup-labs/alula-liquidator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pointgroup-labs/alula-liquidator/actions/workflows/ci.yml)
+[![Stellar](https://img.shields.io/badge/Stellar-grey?logo=stellar&logoColor=white&style=for-the-badge)](https://stellar.org)
+[![CI](https://img.shields.io/github/actions/workflow/status/pointgroup-labs/alula-liquidator/ci.yml?logo=githubactions&logoColor=white&style=for-the-badge&label=CI)](./.github/workflows/ci.yml)
 
 An automated keeper bot for [Alula](https://alula.finance/) lending pools on Stellar/Soroban.
 
