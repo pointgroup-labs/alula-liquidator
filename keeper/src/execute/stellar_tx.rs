@@ -6,7 +6,6 @@ use anyhow::Result;
 use ed25519_dalek::{Signer, SigningKey};
 use engine::reactor::{BoxFuture, Executor};
 use sha2::{Digest, Sha256};
-use stellar_rpc_client::{AuthMode, Client};
 use stellar_xdr::{
     DecoratedSignature, Hash, Limits, Memo, MuxedAccount, Operation, OperationBody, Preconditions,
     ReadXdr, SequenceNumber, Signature, SignatureHint, SorobanAuthorizationEntry, Transaction,
@@ -18,6 +17,7 @@ use tracing::{error, info, warn};
 
 use super::Action;
 use crate::{
+    execute::failover::FailoverClient,
     liquidator_capital::LiquidatorCapital,
     metrics::{self, TxConfirmOutcome, TxSubmitOutcome},
     stellar::{
@@ -77,7 +77,7 @@ impl SorobanExecutor {
         }
     }
 
-    async fn fetch_seq_num(&self, rpc: &Client) -> Result<i64> {
+    async fn fetch_seq_num(&self, rpc: &FailoverClient) -> Result<i64> {
         let account = rpc.get_account(&self.pkey).await?;
         let next = account.seq_num.0.saturating_add(1);
 
@@ -269,7 +269,7 @@ fn spawn_confirmation_poll(
 }
 
 async fn build_and_send(
-    rpc: &Client,
+    rpc: &FailoverClient,
     seq_num_to_use: i64,
     network_passphrase: &str,
     action: &SubmitStellarTx,
@@ -298,8 +298,7 @@ async fn build_and_send(
         signatures: vec![].try_into()?,
     });
 
-    let sim_response =
-        rpc.simulate_transaction_envelope(&temp_envelope, Some(AuthMode::Record)).await?;
+    let sim_response = rpc.simulate_transaction_envelope(&temp_envelope).await?;
 
     if sim_response.results.is_empty() {
         error!(

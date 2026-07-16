@@ -10,6 +10,17 @@
 # latency directly caps how fast the bot reacts. Use one you trust.
 rpc_url = "https://soroban-testnet.stellar.org"
 
+# Optional fallback Soroban RPC endpoints. When the primary `rpc_url` is
+# unreachable (times out / connection reset / 5xx), the keeper fails over to
+# these in order and sticks to the last-known-good node. Leave empty to run
+# against a single endpoint.
+fallback_rpc_urls = []
+
+# Wall-clock budget for a single logical RPC call across all failover attempts.
+# Once exceeded, the failover loop stops trying further endpoints and returns
+# the last transport error. Optional; defaults to 30.
+rpc_max_call_duration_secs = 30
+
 # Local SQLite file: event cursor + obligation cache. Deleting it forces a
 # full event re-sync from `event_collector_start_ledger` on next start.
 db_path = "./data.db"

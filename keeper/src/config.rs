@@ -31,6 +31,16 @@ pub struct CliConfig {
     // -------------------------------------------------------------------------
     pub rpc_url: Url,
 
+    /// Optional fallback RPC endpoints, tried in order whenever the primary
+    /// [`Self::rpc_url`] is on cooldown or fails with a transport error.
+    pub fallback_rpc_urls: Vec<Url>,
+
+    /// Wall-clock budget for a single logical RPC call across all failover
+    /// attempts. Once exceeded, the failover loop stops trying further
+    /// endpoints and returns the last transport error.
+    #[validate(range(min = 1))]
+    pub rpc_max_call_duration_secs: u64,
+
     pub db_path: PathBuf,
 
     #[validate(length(min = 1, message = "At least one market must be specified"))]

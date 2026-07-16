@@ -53,12 +53,14 @@ async fn main() -> anyhow::Result<()> {
         swap_providers,
         assets_to_hold,
         metrics_bind_addr,
-        readiness_staleness_budget_secs,
+        fallback_rpc_urls,
         xlm_safety_margin,
         network_passphrase,
         default_simulation_fee,
+        rpc_max_call_duration_secs,
         event_collector_start_ledger,
         keeper_capital_balance_ttl_secs,
+        readiness_staleness_budget_secs,
         keeper_capital_reservation_ttl_secs,
         ledger_collector_polling_interval_secs,
         // -- Bad Debt Request Initiator --
@@ -96,7 +98,17 @@ async fn main() -> anyhow::Result<()> {
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
     metrics::emit_build_info(start_unix_secs);
-    let gateway = Arc::new(Gateway::new(&rpc_url, pkey.clone())?);
+    // Primary endpoint first, then any configured fallbacks. The
+    // FailoverClient routes calls through this list, sticking to the
+    // last-known-good node and demoting endpoints that fail with transport
+    // errors.
+    let rpc_urls: Vec<url::Url> =
+        std::iter::once(rpc_url.clone()).chain(fallback_rpc_urls).collect();
+    let gateway = Arc::new(Gateway::new(
+        rpc_urls,
+        pkey.clone(),
+        Duration::from_secs(rpc_max_call_duration_secs),
+    )?);
     let ledger_reader: Arc<dyn LedgerReader> = gateway.clone();
 
     metrics::set_xlm_safety_margin(xlm_safety_margin);
