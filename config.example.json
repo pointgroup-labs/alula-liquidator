@@ -10,9 +10,9 @@
     "xlm_safety_margin": 2000000000,
     "default_simulation_fee": 10000,
     "network_passphrase": "Test SDF Network ; September 2015",
-    "assets_to_hold": [
-        "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
-    ],
+    "assets_to_hold": {
+        "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC": 10000
+    },
     "swap_providers": [
         "CBU6NTBOV5FD6H4ERIF3X3YYUZI6W54DUUVE3ZBM33X5YVTSUKCELQ6L"
     ],

@@ -1,6 +1,7 @@
 //! CLI args + config schema for the keeper binary.
 
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -63,9 +64,13 @@ pub struct CliConfig {
     #[validate(length(min = 1, message = "Network passphrase cannot be empty"))]
     pub network_passphrase: String,
 
+    /// Assets the keeper wants to keep on its balance, mapped to the share of
+    /// held value each should target (in basis points; 10_000 = 100%). The
+    /// distributions must sum to exactly 10_000. The asset with the largest
+    /// distribution is used as the Balancer's swap target.
     #[validate(length(min = 1, message = "At least one asset to hold must be specified"))]
-    #[validate(custom(function = "validate_stellar_addresses"))]
-    pub assets_to_hold: Vec<String>,
+    #[validate(custom(function = "validate_asset_distribution"))]
+    pub assets_to_hold: HashMap<String, u16>,
 
     #[validate(length(min = 1, message = "At least one swap provider must be specified"))]
     #[validate(custom(function = "validate_stellar_addresses"))]
@@ -169,6 +174,25 @@ pub struct CliConfig {
     pub balancer_min_swap_amount_value_cents: i128,
 }
 
+/// Validates `assets_to_hold`: every key must be a valid stellar address and
+/// the distribution values (basis points) must sum to exactly 10_000 (100%).
+fn validate_asset_distribution(holdings: &HashMap<String, u16>) -> Result<(), ValidationError> {
+    for address in holdings.keys() {
+        validate_stellar_address(address)?;
+    }
+
+    let total: u32 = holdings.values().map(|bps| u32::from(*bps)).sum();
+    if total != 10_000 {
+        let mut err = ValidationError::new("asset_distribution_sum");
+        err.message =
+            Some(format!("assets_to_hold distributions must sum to 10000 bps, got {total}").into());
+            
+        return Err(err);
+    }
+
+    Ok(())
+}
+
 fn default_readiness_staleness_budget_secs() -> u64 {
     120
 }
@@ -203,5 +227,23 @@ impl CliConfig {
         config.validate()?;
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod example_config_tests {
+    use super::*;
+
+    #[test]
+    fn example_toml_loads_and_validates() {
+        let cfg = CliConfig::load(Path::new("../config.example.toml")).expect("toml loads");
+        let sum: u32 = cfg.assets_to_hold.values().map(|bps| u32::from(*bps)).sum();
+        assert_eq!(sum, 10_000);
+    }
+
+    #[test]
+    fn example_json_loads_and_validates() {
+        let cfg = CliConfig::load(Path::new("../config.example.json")).expect("json loads");
+        assert!(!cfg.assets_to_hold.is_empty());
     }
 }

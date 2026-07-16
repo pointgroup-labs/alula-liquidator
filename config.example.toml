@@ -44,12 +44,11 @@ default_simulation_fee = 10000
 # Mainnet: "Public Global Stellar Network ; September 2015".
 network_passphrase = "Test SDF Network ; September 2015"
 
-# Assets the keeper keeps on its balance. The FIRST entry is the Balancer's
-# swap target — anything not in this list is rebalanced into assets_to_hold[0].
-assets_to_hold = [
-    "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
-    "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
-]
+# Assets the keeper keeps on its balance, mapped to a target share of held
+# value in basis points (bps; 10000 = 100%). The distributions must sum to
+# exactly 10000. The asset with the largest share is the Balancer's swap
+# target — anything not in this map is rebalanced into it.
+assets_to_hold = { CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA = 5000, CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC = 5000 }
 
 # DEX-adapter contract IDs the keeper may route swaps through. More providers
 # = better fills but more RPC calls per evaluation.

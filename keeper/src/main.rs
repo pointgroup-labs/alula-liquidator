@@ -98,6 +98,18 @@ async fn main() -> anyhow::Result<()> {
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
     metrics::emit_build_info(start_unix_secs);
+
+    // Strategies currently consume only the ordered list of asset addresses;
+    // the per-asset target distribution lives in `assets_to_hold` and is not
+    // wired into the Balancer yet. The Balancer treats `assets_to_hold[0]` as
+    // its swap target, so put the asset with the largest distribution first.
+    let mut assets_to_hold_addresses: Vec<String> = assets_to_hold.keys().cloned().collect();
+    assets_to_hold_addresses.sort_by(|a, b| {
+        assets_to_hold[b]
+            .cmp(&assets_to_hold[a])
+            .then_with(|| a.cmp(b))
+    });
+
     // Primary endpoint first, then any configured fallbacks. The
     // FailoverClient routes calls through this list, sticking to the
     // last-known-good node and demoting endpoints that fail with transport
@@ -142,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
         LiquidatorConfig {
             markets: markets.clone(),
             min_profit_margin_cents: liquidator_min_profit_margin_cents,
-            assets_to_hold: assets_to_hold.clone(),
+            assets_to_hold: assets_to_hold_addresses.clone(),
             swap_providers: swap_providers.clone(),
             xlm_address: xlm_address.clone(),
             xlm_safety_margin,
@@ -180,7 +192,7 @@ async fn main() -> anyhow::Result<()> {
             max_price_impact_bps: balancer_max_price_impact_bps,
             max_retries: balancer_max_retries,
             allowed_swap_slippage_bps: balancer_max_allowed_swap_slippage_bps,
-            assets_to_hold: assets_to_hold.clone(),
+            assets_to_hold: assets_to_hold_addresses.clone(),
             swap_providers: swap_providers.clone(),
             refresh_interval_blocks: balancer_refresh_interval_blocks,
             max_swap_provider_probes: balancer_max_swap_provider_probes,
