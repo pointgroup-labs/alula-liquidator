@@ -34,14 +34,16 @@ pub struct LiquidationOutcomeMetric {
 
 #[derive(Debug, Clone)]
 pub struct TransactionSettleHook {
-    pub op_id: u64,
+    pub op_ids: Vec<u64>,
     pub liquidator_capital: Arc<LiquidatorCapital>,
     pub liquidation_outcome: Option<LiquidationOutcomeMetric>,
 }
 
 impl TransactionSettleHook {
     pub fn release(&self) {
-        self.liquidator_capital.release(self.op_id);
+        for op_id in &self.op_ids {
+            self.liquidator_capital.release(*op_id);
+        }
     }
 }
 

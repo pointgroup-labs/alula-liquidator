@@ -7,11 +7,12 @@
         "CCUDRNK5K5UR6NLYKAQROCBUQJBVY66DF62NDMKVH7CQ7W46ASJAJPBI"
     ],
     "xlm_address": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+    "hub_address": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "xlm_safety_margin": 2000000000,
     "default_simulation_fee": 10000,
     "network_passphrase": "Test SDF Network ; September 2015",
     "assets_to_hold": {
-        "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC": 10000
+        "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC": 4000
     },
     "swap_providers": [
         "CBU6NTBOV5FD6H4ERIF3X3YYUZI6W54DUUVE3ZBM33X5YVTSUKCELQ6L"
@@ -35,7 +36,9 @@
     "balancer_max_retries": 3,
     "balancer_refresh_interval_blocks": 2,
     "balancer_max_allowed_swap_slippage_bps": 30,
-    "balancer_max_price_impact_bps": 1200,
+    "balancer_max_execution_impact_bps": 1200,
+    "balancer_rebalance_threshold_bps": 500,
+    "balancer_max_swaps_per_batch": 5,
     "balancer_max_swap_provider_probes": 3,
     "balancer_min_swap_amount_value_cents": 100
 }

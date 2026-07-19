@@ -25,6 +25,7 @@ pub struct Args {
 
 #[derive(Deserialize, Debug, Validate)]
 #[serde(deny_unknown_fields)]
+#[validate(schema(function = "validate_hub_invariants", skip_on_field_errors = false))]
 #[non_exhaustive]
 pub struct CliConfig {
     // -------------------------------------------------------------------------
@@ -51,6 +52,14 @@ pub struct CliConfig {
     #[validate(length(equal = 56, message = "XLM address must be exactly 56 characters"))]
     pub xlm_address: String,
 
+    /// The stablecoin "hub" asset the Balancer prices the portfolio in and
+    /// routes every rebalance swap through. It has no explicit target weight in
+    /// `assets_to_hold`; its share is the residual left after the volatile
+    /// assets' targets. Must be a valid stellar address and must NOT appear as
+    /// a key in `assets_to_hold`.
+    #[validate(length(equal = 56, message = "Hub address must be exactly 56 characters"))]
+    pub hub_address: String,
+
     #[validate(range(min = 1, message = "XLM safety margin must be positive"))]
     #[serde(deserialize_with = "de_i128")]
     pub xlm_safety_margin: i128,
@@ -65,9 +74,10 @@ pub struct CliConfig {
     pub network_passphrase: String,
 
     /// Assets the keeper wants to keep on its balance, mapped to the share of
-    /// held value each should target (in basis points; 10_000 = 100%). The
-    /// distributions must sum to exactly 10_000. The asset with the largest
-    /// distribution is used as the Balancer's swap target.
+    /// held value each should target (in basis points; 10_000 = 100%). These are mostly
+    /// *volatile* assets; the hub ([`Self::hub_address`]) is the residual and
+    /// is NOT listed here. The distributions must sum to at most 10_000 — the
+    /// remainder is the implied hub floor.
     #[validate(length(min = 1, message = "At least one asset to hold must be specified"))]
     #[validate(custom(function = "validate_asset_distribution"))]
     pub assets_to_hold: HashMap<String, u16>,
@@ -161,10 +171,25 @@ pub struct CliConfig {
     #[validate(range(
         min = 0,
         max = 10000,
-        message = "Price impact BPS must be between 0 and 10000"
+        message = "Execution impact BPS must be between 0 and 10000"
     ))]
     #[serde(deserialize_with = "de_i128")]
-    pub balancer_max_price_impact_bps: i128,
+    pub balancer_max_execution_impact_bps: i128,
+
+    /// Per-asset tolerance band around its target weight, in basis points. An
+    /// asset is only rebalanced once `|current_weight - target_weight|` reaches
+    /// this many bps (500 = 5 percentage points).
+    #[validate(range(
+        min = 0,
+        max = 10000,
+        message = "Rebalance threshold BPS must be between 0 and 10000"
+    ))]
+    pub balancer_rebalance_threshold_bps: u16,
+
+    /// Upper bound on the number of swap legs packed into a single atomic
+    /// rebalance batch (sells first, then buys).
+    #[validate(range(min = 1))]
+    pub balancer_max_swaps_per_batch: u32,
 
     #[validate(range(min = 1))]
     pub balancer_max_swap_provider_probes: u32,
@@ -175,18 +200,26 @@ pub struct CliConfig {
 }
 
 /// Validates `assets_to_hold`: every key must be a valid stellar address and
-/// the distribution values (basis points) must sum to exactly 10_000 (100%).
+/// the raw distribution values (basis points) must sum to at most 10_000 (100%).
+///
+/// This is only a *necessary* bound. The *sufficient* liquidity invariant — that
+/// enough of the residual is reserved for the hub even when every asset drifts
+/// to the top of its tolerance band — also depends on
+/// `balancer_rebalance_threshold_bps`, which a field-level validator can't see,
+/// so it lives in [`validate_hub_liquidity_headroom`].
 fn validate_asset_distribution(holdings: &HashMap<String, u16>) -> Result<(), ValidationError> {
     for address in holdings.keys() {
         validate_stellar_address(address)?;
     }
 
     let total: u32 = holdings.values().map(|bps| u32::from(*bps)).sum();
-    if total != 10_000 {
+    if total > 10_000 {
         let mut err = ValidationError::new("asset_distribution_sum");
-        err.message =
-            Some(format!("assets_to_hold distributions must sum to 10000 bps, got {total}").into());
-            
+        err.message = Some(
+            format!("assets_to_hold distributions must sum to at most 10000 bps, got {total}")
+                .into(),
+        );
+
         return Err(err);
     }
 
@@ -195,6 +228,72 @@ fn validate_asset_distribution(holdings: &HashMap<String, u16>) -> Result<(), Va
 
 fn default_readiness_staleness_budget_secs() -> u64 {
     120
+}
+
+/// Runs every whole-config invariant tying the hub to `assets_to_hold`. The
+/// `validate` derive allows only one `schema` function, so the individual checks
+/// are composed here rather than stacked as separate attributes.
+fn validate_hub_invariants(config: &CliConfig) -> Result<(), ValidationError> {
+    validate_hub_not_held(config)?;
+    validate_hub_liquidity_headroom(config)?;
+
+    Ok(())
+}
+
+/// The hub asset is the residual counterparty for every rebalance swap. It must
+/// not appear as a targeted asset in `assets_to_hold`.
+fn validate_hub_not_held(config: &CliConfig) -> Result<(), ValidationError> {
+    if config.assets_to_hold.contains_key(&config.hub_address) {
+        let mut err = ValidationError::new("hub_in_assets_to_hold");
+        err.message = Some("hub_address must not also be a key in assets_to_hold".into());
+
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+/// Guarantees the hub keeps a positive residual share even in the worst case,
+/// so it always has liquidity to *buy* deficit assets during a rebalance.
+///
+/// The rebalance threshold is a tolerance band: an asset isn't sold until its
+/// weight exceeds `target + threshold`. In the worst case every volatile asset
+/// sits at the top of its band simultaneously, so the volatile side can occupy
+/// up to `Σ target_i + N·threshold` of total value. The hub's residual is
+/// `10_000 − (Σ target_i + N·threshold)`; if that isn't strictly positive the
+/// buy phase can be starved of hub liquidity. So we require:
+///
+/// ```text
+/// Σ target_i + N·threshold < 10_000
+/// ```
+fn validate_hub_liquidity_headroom(config: &CliConfig) -> Result<(), ValidationError> {
+    let target_sum: u32 = config.assets_to_hold.values().map(|bps| u32::from(*bps)).sum();
+    let n = config.assets_to_hold.len() as u32;
+    let threshold = u32::from(config.balancer_rebalance_threshold_bps);
+    let worst_case_volatile = worst_case_volatile_bps(target_sum, n, threshold);
+
+    if worst_case_volatile >= 10_000 {
+        let mut err = ValidationError::new("hub_liquidity_headroom");
+        err.message = Some(
+            format!(
+                "assets_to_hold targets ({target_sum} bps) plus worst-case drift \
+                 ({n} assets × {threshold} bps threshold) reach {worst_case_volatile} bps, \
+                 leaving no residual for the hub; keep the sum below 10000"
+            )
+            .into(),
+        );
+
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+/// Worst-case share of total value the volatile assets can occupy: every asset
+/// sitting at the top of its tolerance band at once. Saturating so an over-large
+/// config can't wrap — it just reports the ceiling and fails the check.
+fn worst_case_volatile_bps(target_sum: u32, asset_count: u32, threshold_bps: u32) -> u32 {
+    target_sum.saturating_add(asset_count.saturating_mul(threshold_bps))
 }
 
 fn de_i128<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i128, D::Error> {
@@ -238,12 +337,34 @@ mod example_config_tests {
     fn example_toml_loads_and_validates() {
         let cfg = CliConfig::load(Path::new("../config.example.toml")).expect("toml loads");
         let sum: u32 = cfg.assets_to_hold.values().map(|bps| u32::from(*bps)).sum();
-        assert_eq!(sum, 10_000);
+        // Volatile targets must leave headroom for the residual hub share.
+        assert!(sum <= 10_000);
+        // The hub must not double as a targeted volatile asset.
+        assert!(!cfg.assets_to_hold.contains_key(&cfg.hub_address));
     }
 
     #[test]
     fn example_json_loads_and_validates() {
         let cfg = CliConfig::load(Path::new("../config.example.json")).expect("json loads");
         assert!(!cfg.assets_to_hold.is_empty());
+    }
+
+    #[test]
+    fn hub_headroom_accounts_for_worst_case_drift() {
+        // Two assets targeting 4500 bps each = 9000 bps of targets, which alone
+        // clears the naive `≤ 10000` bound. But with a 500 bps threshold each can
+        // drift to 5000, so the volatile side can reach 10000 and starve the hub.
+        assert_eq!(worst_case_volatile_bps(9_000, 2, 500), 10_000);
+        assert!(worst_case_volatile_bps(9_000, 2, 500) >= 10_000, "must reject");
+
+        // Same targets, no threshold: the hub keeps its 1000 bps residual.
+        assert_eq!(worst_case_volatile_bps(9_000, 2, 0), 9_000);
+        assert!(worst_case_volatile_bps(9_000, 2, 0) < 10_000, "must accept");
+    }
+
+    #[test]
+    fn hub_headroom_saturates_instead_of_wrapping() {
+        // Absurd inputs must not wrap around u32; they just pin to the ceiling.
+        assert_eq!(worst_case_volatile_bps(u32::MAX, u32::MAX, u32::MAX), u32::MAX);
     }
 }

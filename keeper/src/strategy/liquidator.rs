@@ -1289,12 +1289,12 @@ impl Liquidator {
                     signing_key: self.skey.clone(),
                     max_submission_retries: self.config.max_retries,
                     on_settle: Some(TransactionSettleHook {
-                        op_id,
+                        op_ids: vec![op_id],
+                        liquidator_capital: self.liquidator_capital.clone(),
                         liquidation_outcome: Some(LiquidationOutcomeMetric {
                             market: market.to_string(),
                             expected_net_value: plan.net_profit_value,
                         }),
-                        liquidator_capital: self.liquidator_capital.clone(),
                     }),
                 }))
             }

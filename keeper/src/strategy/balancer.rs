@@ -1,7 +1,14 @@
-//! Balancer: swaps non-target assets back into the configured target asset if
-//! the swap doesn't exceed the predefined max price impact.
+//! Balancer: keeps the held portfolio near its configured target weights.
+//!
+//! Each cycle it values the whole portfolio in the hub asset's numeraire,
+//! finds assets that have drifted past the threshold, then **sells** surpluses
+//! into the hub and **buys** deficits with the hub — all packed into a single
+//! atomic `submit_requests_batch` (sells ordered first, so they fund the buys inside
+//! the same transaction). Every leg is initially sized to fully
+//! correct its drift, then halved until it clears the execution-impact ceiling.
 
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use engine::{
@@ -27,18 +34,28 @@ const BPS_FACTOR: i128 = 10_000;
 
 pub struct BalancerConfig {
     pub market: String,
-    pub xlm_address: String,
-    pub xlm_safety_margin: i128,
-    /// Max price impact of the swapped asset, compared to the oracle's asset price
-    pub max_price_impact_bps: i128,
     pub max_retries: u32,
-    /// Allowed slippage applied to the swap after `price impact` checks
-    pub allowed_swap_slippage_bps: i128,
-    pub assets_to_hold: Vec<String>,
+    pub xlm_address: String,
+    /// Stablecoin hub(Implemented for USD stablecoin): the numeraire the portfolio is priced in and the
+    /// counterparty of every rebalance swap. Not a key in `assets_to_hold`.
+    pub hub_address: String,
+    pub xlm_safety_margin: i128,
+    /// Upper bound on swap legs packed into one atomic rebalance batch.
+    pub max_swaps_per_batch: u32,
     pub swap_providers: Vec<String>,
+    /// Tolerance band around each asset's target weight, in bps. An asset is
+    /// only rebalanced once `|current_weight - target_weight|` reaches this.
+    pub rebalance_threshold_bps: u16,
     pub refresh_interval_blocks: u32,
     pub max_swap_provider_probes: u32,
+    /// Max execution price impact of a single leg, compared to the oracle price.
+    pub max_execution_impact_bps: i128,
+    /// Allowed slippage applied to the swap after `execution impact` checks.
+    pub allowed_swap_slippage_bps: i128,
     pub min_swap_amount_value_cents: i128,
+    /// Volatile assets mapped to their target share of held value, in bps. The
+    /// hub is the residual and is not listed here.
+    pub assets_to_hold: HashMap<String, u16>,
 }
 
 pub struct Balancer {
@@ -52,6 +69,7 @@ pub struct Balancer {
     liquidator_capital: Arc<LiquidatorCapital>,
 }
 
+#[derive(Clone)]
 struct AssetInfo {
     decimals: u32,
     oracle_price: i128,
@@ -148,7 +166,7 @@ impl Balancer {
     fn try_parse_asset_from_liquidate_event(&self, event: &SorobanEvent) -> Option<String> {
         let (liquidator, collateral_pool) =
             (self.gateway.decode_topic(event, 1), self.gateway.decode_topic(event, 4));
-        if liquidator != self.pkey || self.config.assets_to_hold.contains(&collateral_pool) {
+        if liquidator != self.pkey || self.config.assets_to_hold.contains_key(&collateral_pool) {
             return None;
         }
 
@@ -180,193 +198,363 @@ impl Balancer {
         Some(self.gateway.decode_topic(event, 1))
     }
 
-    /// Each returned Action holds the sole release hook for a capital
-    /// reservation taken here; a caller that drops them leaks it until TTL.
+    /// Runs one rebalance cycle and returns at most one Action: a single atomic
+    /// batch of swap legs (sells ordered before buys). The Action holds the sole
+    /// release hooks for every capital reservation taken here; a caller that
+    /// drops it leaks them until TTL.
     async fn find_rebalance_actions(&mut self, market_data: &MarketData) -> Vec<Action> {
         self.update_asset_index(market_data);
-        let target_asset = self.config.assets_to_hold[0].clone();
 
-        let Some(target_oracle_price) = market_data
-            .pools_data
-            .iter()
-            .find(|p| p.pool_address == target_asset)
-            .map(|p| p.oracle_asset_price)
-        else {
-            error!(%target_asset, "target asset missing from pools data");
+        let Some(hub_info) = self.asset_index.get(&self.config.hub_address).cloned() else {
+            error!(hub = %self.config.hub_address, "hub asset missing from pools data");
+            BalancerOutcome::BadOraclePrice.record();
 
             return vec![];
         };
-        if !target_oracle_price.is_positive() {
-            error!(target_asset, target_oracle_price, "non-positive target's oracle price");
-        }
-
-        let mut actions = vec![];
-        for candidate in
-            self.asset_index.keys().filter(|addr| !self.config.assets_to_hold.contains(*addr))
-        {
-            let Some(candidate_oracle_price) = market_data
-                .pools_data
-                .iter()
-                .find(|p| p.pool_address == *candidate)
-                .map(|p| p.oracle_asset_price)
-            else {
-                error!(%candidate, "candidate asset missing from pools data; skipping");
-
-                continue;
-            };
-            if !candidate_oracle_price.is_positive() {
-                error!(candidate, candidate_oracle_price, "non-positive candidate's oracle price");
-            }
-
-            match self
-                .evaluate_rebalancable_candidate(
-                    &target_asset,
-                    candidate,
-                    market_data.oracle_price_decimals,
-                    target_oracle_price,
-                    candidate_oracle_price,
-                )
-                .await
-            {
-                Ok(Some(a)) => actions.push(a),
-                Ok(None) => {}
-                Err(e) => {
-                    warn!(?e, %candidate, "candidate evaluation failed");
-                    BalancerOutcome::EvaluationError.record();
-                }
-            }
-        }
-
-        actions
-    }
-
-    async fn evaluate_rebalancable_candidate(
-        &self,
-        target: &str,
-        candidate: &str,
-        oracle_decimals: u32,
-        target_oracle_price: i128,
-        candidate_oracle_price: i128,
-    ) -> anyhow::Result<Option<Action>> {
-        let raw_balance =
-            self.liquidator_capital.try_get_balance(candidate, &*self.ledger_reader).await?;
-        let swappable_balance = if candidate == self.config.xlm_address {
-            raw_balance.saturating_sub(self.config.xlm_safety_margin)
-        } else {
-            raw_balance
-        };
-        if !swappable_balance.is_positive() {
-            debug!(%candidate, raw_balance, swappable_balance, "nothing to swap");
-            BalancerOutcome::NothingToSwap.record();
-
-            return Ok(None);
-        }
-
-        if target_oracle_price <= 0 {
-            error!(%target, target_oracle_price, "non-positive target oracle price; skipping candidate");
+        if hub_info.oracle_price <= 0 {
+            error!(hub = %self.config.hub_address, "non-positive hub oracle price");
             BalancerOutcome::BadOraclePrice.record();
 
-            return Ok(None);
+            return vec![];
         }
-        let oracle_scale = 10_i128.pow(oracle_decimals);
-        let candidate_quoted_in_target =
-            (candidate_oracle_price * oracle_scale) / target_oracle_price;
 
-        let mut best_provider: Option<(String, i128, i128)> = None;
-        for provider in &self.config.swap_providers {
-            match self
-                .probe_provider(
-                    provider,
-                    candidate,
-                    target,
-                    candidate_quoted_in_target,
-                    oracle_decimals,
-                    swappable_balance,
-                )
+        // --- Phase 1: value the whole portfolio (hub included) in cents. ---
+        let hub_raw = match self
+            .liquidator_capital
+            .try_get_balance(&self.config.hub_address, &*self.ledger_reader)
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(?e, "failed to read hub balance");
+                return vec![];
+            }
+        };
+        let hub_value_cents = compute_value_cents(hub_raw, &hub_info);
+
+        // Per-volatile-asset snapshot: (address, info, raw balance, swappable, value).
+        struct Held {
+            address: String,
+            info: AssetInfo,
+            swappable: i128,
+            value_cents: i128,
+        }
+
+        let mut held: Vec<Held> = Vec::new();
+        let mut total_value_cents = hub_value_cents.max(0);
+        for address in self.config.assets_to_hold.keys() {
+            let Some(info) = self.asset_index.get(address).cloned() else {
+                error!(%address, "held asset missing from pools data; skipping");
+                continue;
+            };
+            if info.oracle_price <= 0 {
+                error!(%address, "non-positive oracle price; skipping");
+                BalancerOutcome::BadOraclePrice.record();
+                continue;
+            }
+
+            let raw = match self
+                .liquidator_capital
+                .try_get_balance(address, &*self.ledger_reader)
                 .await
             {
-                Ok(Some((amount_in, amount_out))) => {
-                    debug!(%provider, %candidate, amount_in, amount_out, "found a route that doesn't exceed the max price impact");
-
-                    let take = match best_provider {
-                        None => true,
-                        Some((_, best_in, _)) => amount_in > best_in,
-                    };
-                    if take {
-                        best_provider = Some((provider.clone(), amount_in, amount_out));
-                    }
-                }
-                Ok(None) => debug!(%provider, %candidate, "provider unviable"),
+                Ok(b) => b,
                 Err(e) => {
-                    warn!(?e, %candidate, "candidate evaluation failed");
-                    BalancerOutcome::EvaluationError.record();
+                    warn!(?e, %address, "failed to read asset balance; skipping");
+                    continue;
+                }
+            };
+            let swappable = if address == &self.config.xlm_address {
+                raw.saturating_sub(self.config.xlm_safety_margin)
+            } else {
+                raw
+            };
+            let value_cents = compute_value_cents(raw, &info);
+            total_value_cents = total_value_cents.saturating_add(value_cents.max(0));
+
+            held.push(Held { address: address.clone(), info, swappable, value_cents });
+        }
+
+        if total_value_cents <= 0 {
+            debug!("portfolio has no value; nothing to rebalance");
+            return vec![];
+        }
+
+        // --- Phase 2: classify offenders (past the threshold) into sells/buys. ---
+        let threshold = i128::from(self.config.rebalance_threshold_bps);
+        let mut sells: Vec<Drift> = Vec::new();
+        let mut buys: Vec<Drift> = Vec::new();
+        for h in &held {
+            let target_bps =
+                i128::from(self.config.assets_to_hold.get(&h.address).copied().unwrap_or(0));
+            let current_bps = h.value_cents.max(0).saturating_mul(BPS_FACTOR) / total_value_cents;
+            let drift_bps = current_bps - target_bps;
+            if drift_bps.abs() < threshold {
+                BalancerOutcome::ThresholdHold.record();
+                continue;
+            }
+
+            let target_value = total_value_cents.saturating_mul(target_bps) / BPS_FACTOR;
+            let delta_cents = (h.value_cents - target_value).abs();
+            let drift = Drift {
+                address: h.address.clone(),
+                info: h.info.clone(),
+                swappable: h.swappable,
+                delta_cents,
+                abs_drift_bps: drift_bps.abs(),
+            };
+            if drift_bps > 0 {
+                sells.push(drift);
+            } else {
+                buys.push(drift);
+            }
+        }
+
+        // Worst drift first; deterministic address tiebreak.
+        let sort_worst_first = |v: &mut Vec<Drift>| {
+            v.sort_by(|a, b| {
+                b.abs_drift_bps.cmp(&a.abs_drift_bps).then_with(|| a.address.cmp(&b.address))
+            });
+        };
+        sort_worst_first(&mut sells);
+        sort_worst_first(&mut buys);
+
+        let oracle_scale = 10_i128.pow(hub_info.oracle_decimals);
+        let cap = self.config.max_swaps_per_batch as usize;
+
+        // --- Phase 3: size sells (asset -> hub), worst-first, up to the cap. ---
+        let mut requests: Vec<<Gateway as OperationBuilder>::Request> = Vec::new();
+        let mut op_ids: Vec<u64> = Vec::new();
+        let mut dispatched_value_cents: i128 = 0;
+        let mut expected_hub_out: i128 = 0;
+
+        for sell in &sells {
+            if requests.len() >= cap {
+                break;
+            }
+            // Token amount of the surplus asset that clears `delta_cents` of
+            // value, capped by what we may actually spend.
+            let want_in = value_to_token_amount(sell.delta_cents, &sell.info).min(sell.swappable);
+            if want_in <= 0 {
+                continue;
+            }
+            // Oracle price of the sold asset expressed in hub units, oracle-scaled.
+            let asset_in_hub = (sell.info.oracle_price * oracle_scale) / hub_info.oracle_price;
+
+            let Some((provider, amount_in, amount_out)) = self
+                .best_route(&sell.address, &self.config.hub_address, asset_in_hub, want_in)
+                .await
+            else {
+                BalancerOutcome::NoViableProvider.record();
+                continue;
+            };
+
+            let value_cents = compute_value_cents(amount_in, &sell.info);
+            if value_cents < self.config.min_swap_amount_value_cents {
+                debug!(asset = %sell.address, amount_in, value_cents, "sell below dust threshold");
+                BalancerOutcome::BelowDust.record();
+                continue;
+            }
+
+            let op_id = match self.liquidator_capital.reserve(
+                amount_in,
+                sell.swappable,
+                &sell.address,
+            ) {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!(?e, asset = %sell.address, amount_in, "sell reservation lost; skipping");
+                    BalancerOutcome::ReservationLost.record();
+                    continue;
+                }
+            };
+
+            let min_amount_out = amount_out
+                .saturating_mul(BPS_FACTOR - self.config.allowed_swap_slippage_bps)
+                / BPS_FACTOR;
+            let path = [sell.address.as_str(), self.config.hub_address.as_str()];
+            match self.gateway.swap_exact_tokens_request(
+                &provider,
+                amount_in,
+                min_amount_out,
+                &path,
+            ) {
+                Ok(req) => {
+                    requests.push(req);
+                    op_ids.push(op_id);
+                    expected_hub_out = expected_hub_out.saturating_add(amount_out);
+                    dispatched_value_cents = dispatched_value_cents.saturating_add(value_cents);
+                    metrics::record_balancer_realised_price(
+                        &sell.address,
+                        amount_out.saturating_mul(oracle_scale).checked_div(amount_in).unwrap_or(0),
+                    );
+                    BalancerOutcome::SellLegDispatched.record();
+                    info!(asset = %sell.address, %provider, amount_in, amount_out, min_amount_out, "sell leg queued");
+                }
+                Err(e) => {
+                    warn!(?e, asset = %sell.address, "failed to build sell request; releasing");
+                    self.liquidator_capital.release(op_id);
                 }
             }
         }
-        let Some((provider, amount_in, amount_out)) = best_provider else {
-            BalancerOutcome::NoViableProvider.record();
 
-            return Ok(None);
+        // --- Phase 4: size buys (hub -> asset) within the leg cap and the hub
+        // budget actually available after the included sells. The batch is
+        // atomic, so hub minted by the sells above funds these buys. ---
+        let hub_swappable = if self.config.hub_address == self.config.xlm_address {
+            hub_raw.saturating_sub(self.config.xlm_safety_margin)
+        } else {
+            hub_raw
         };
+        // Reservations for the hub are checked against this projected balance;
+        // every buy shares the same pool of hub capital, so a running committed
+        // sum inside `reserve` keeps successive buys honest.
+        let hub_available = hub_swappable.saturating_add(expected_hub_out).max(0);
+        let mut hub_remaining = hub_available;
 
-        let info = self.asset_index.get(candidate).expect("candidate sourced from asset_index");
-        let swap_value_cents = compute_value_cents(amount_in, info);
-        if swap_value_cents < self.config.min_swap_amount_value_cents {
-            info!(%candidate, amount_in, swap_value_cents, "swap below dust threshold");
-            BalancerOutcome::BelowDust.record();
+        for buy in &buys {
+            if requests.len() >= cap || hub_remaining <= 0 {
+                break;
+            }
+            // Hub tokens needed to buy back `delta_cents` of value, capped by the
+            // hub we can still spend this cycle.
+            let want_in = value_to_token_amount(buy.delta_cents, &hub_info).min(hub_remaining);
+            if want_in <= 0 {
+                continue;
+            }
+            // Oracle price of the hub expressed in the bought asset's units.
+            let hub_in_asset = (hub_info.oracle_price * oracle_scale) / buy.info.oracle_price;
 
-            return Ok(None);
+            let Some((provider, amount_in, amount_out)) = self
+                .best_route(&self.config.hub_address, &buy.address, hub_in_asset, want_in)
+                .await
+            else {
+                BalancerOutcome::NoViableProvider.record();
+                continue;
+            };
+
+            let value_cents = compute_value_cents(amount_in, &hub_info);
+            if value_cents < self.config.min_swap_amount_value_cents {
+                debug!(asset = %buy.address, amount_in, value_cents, "buy below dust threshold");
+                BalancerOutcome::BelowDust.record();
+                continue;
+            }
+
+            let op_id = match self.liquidator_capital.reserve(
+                amount_in,
+                hub_available,
+                &self.config.hub_address,
+            ) {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!(?e, asset = %buy.address, amount_in, "buy reservation lost; skipping");
+                    BalancerOutcome::ReservationLost.record();
+                    continue;
+                }
+            };
+
+            let min_amount_out = amount_out
+                .saturating_mul(BPS_FACTOR - self.config.allowed_swap_slippage_bps)
+                / BPS_FACTOR;
+            let path = [self.config.hub_address.as_str(), buy.address.as_str()];
+            match self.gateway.swap_exact_tokens_request(
+                &provider,
+                amount_in,
+                min_amount_out,
+                &path,
+            ) {
+                Ok(req) => {
+                    requests.push(req);
+                    op_ids.push(op_id);
+                    hub_remaining = hub_remaining.saturating_sub(amount_in);
+                    dispatched_value_cents = dispatched_value_cents.saturating_add(value_cents);
+                    BalancerOutcome::BuyLegDispatched.record();
+                    info!(asset = %buy.address, %provider, amount_in, amount_out, min_amount_out, "buy leg queued");
+                }
+                Err(e) => {
+                    warn!(?e, asset = %buy.address, "failed to build buy request; releasing");
+                    self.liquidator_capital.release(op_id);
+                }
+            }
         }
 
-        let min_amount_out = amount_out
-            .saturating_mul(BPS_FACTOR - self.config.allowed_swap_slippage_bps)
-            / BPS_FACTOR;
+        if requests.is_empty() {
+            return vec![];
+        }
 
-        let path = [candidate, target];
-        let request =
-            self.gateway.swap_exact_tokens_request(&provider, amount_in, min_amount_out, &path)?;
-
-        let op = self.gateway.batch_op(&self.config.market, &self.liquidator_key, &[request])?;
-        let op_id = match self.liquidator_capital.reserve(amount_in, swappable_balance, candidate) {
-            Ok(id) => id,
+        // --- Assemble one atomic batch: sells already precede buys. ---
+        let op = match self.gateway.batch_op(&self.config.market, &self.liquidator_key, &requests) {
+            Ok(op) => op,
             Err(e) => {
-                warn!(?e, %candidate, amount_in, swappable_balance,
-                    "balancer: reservation lost race; skipping submission");
-                BalancerOutcome::ReservationLost.record();
+                error!(?e, "failed to build rebalance batch op; releasing reservations");
+                for op_id in &op_ids {
+                    self.liquidator_capital.release(*op_id);
+                }
+                BalancerOutcome::EvaluationError.record();
 
-                return Ok(None);
+                return vec![];
             }
         };
 
-        // Realised execution price of the winning route (candidate priced in
-        // target), on the oracle scale so it's directly comparable to
-        // `candidate_quoted_in_target`. Written out separately from the impact
-        // metric so we have the actual price we transacted at, not just the
-        // spread. `amount_in` is positive here (checked above), so this can't
-        // divide by zero.
-        let realised_price_scaled =
-            amount_out.saturating_mul(oracle_scale).checked_div(amount_in).unwrap_or(0);
-        metrics::record_balancer_realised_price(candidate, realised_price_scaled);
-
-        info!(
-            %candidate, swap_value_cents, %target, %provider, amount_in, amount_out,
-            min_amount_out, market = %self.config.market,
-            realised_price_scaled, oracle_price_scaled = candidate_quoted_in_target,
-            "submitting swap..."
-        );
+        let legs = requests.len();
+        metrics::record_balancer_batch_legs(legs);
+        metrics::record_balancer_dispatched_value(dispatched_value_cents);
         BalancerOutcome::Dispatched.record();
-        metrics::record_balancer_dispatched_value(swap_value_cents);
+        info!(legs, dispatched_value_cents, market = %self.config.market, "submitting rebalance batch...");
 
-        Ok(Some(Action::SubmitTx(SubmitStellarTx {
+        vec![Action::SubmitTx(SubmitStellarTx {
             op,
             signing_key: self.skey.clone(),
             max_submission_retries: self.config.max_retries,
             on_settle: Some(TransactionSettleHook {
-                op_id,
+                op_ids,
                 liquidation_outcome: None,
                 liquidator_capital: self.liquidator_capital.clone(),
             }),
-        })))
+        })]
+    }
+
+    /// Probes every configured provider for the best (largest admissible)
+    /// `asset_in -> asset_out` route starting from `base_in`, halving on impact.
+    /// Returns `(provider, amount_in, amount_out)` of the winner, if any.
+    async fn best_route(
+        &self,
+        asset_in: &str,
+        asset_out: &str,
+        oracle_price: i128,
+        base_in: i128,
+    ) -> Option<(String, i128, i128)> {
+        let mut best: Option<(String, i128, i128)> = None;
+        for provider in &self.config.swap_providers {
+            match self
+                .probe_provider(
+                    provider,
+                    asset_in,
+                    asset_out,
+                    oracle_price,
+                    self.asset_index.get(asset_in).map(|i| i.oracle_decimals).unwrap_or_default(),
+                    base_in,
+                )
+                .await
+            {
+                Ok(Some((amount_in, amount_out))) => {
+                    let take = match &best {
+                        None => true,
+                        Some((_, best_in, _)) => amount_in > *best_in,
+                    };
+                    if take {
+                        best = Some((provider.clone(), amount_in, amount_out));
+                    }
+                }
+                Ok(None) => debug!(%provider, %asset_in, "provider unviable"),
+                Err(e) => {
+                    warn!(?e, %asset_in, "route probe failed");
+                    BalancerOutcome::EvaluationError.record();
+                }
+            }
+        }
+
+        best
     }
 
     async fn probe_provider(
@@ -376,11 +564,15 @@ impl Balancer {
         asset_out: &str,
         oracle_price: i128,
         oracle_decimals: u32,
-        swappable_balance: i128,
+        base_in: i128,
     ) -> anyhow::Result<Option<(i128, i128)>> {
-        let mut amount_in = swappable_balance;
+        let mut amount_in = base_in;
 
         for _ in 0..self.config.max_swap_provider_probes {
+            if amount_in <= 0 {
+                return Ok(None);
+            }
+
             let amount_out =
                 self.ledger_reader.get_amount_out(amount_in, asset_in, asset_out, provider).await?;
 
@@ -398,8 +590,8 @@ impl Balancer {
             // Observe the oracle-vs-DEX price gap for every probe, tagged by
             // whether it cleared the configured ceiling. This is the realised
             // spread the balancer is gating on — useful for tuning
-            // `max_price_impact_bps` and spotting oracle/DEX divergence.
-            let admitted = impact.bps <= self.config.max_price_impact_bps;
+            // `max_execution_impact_bps` and spotting oracle/DEX divergence.
+            let admitted = impact.bps <= self.config.max_execution_impact_bps;
             metrics::record_balancer_price_impact(asset_in, admitted, impact.bps);
 
             if admitted {
@@ -407,7 +599,7 @@ impl Balancer {
                     %provider, %asset_in, amount_in, amount_out,
                     price_impact_bps = impact.bps,
                     execution_price_scaled = impact.execution_price_scaled,
-                    "probe within max price impact"
+                    "probe within max execution impact"
                 );
 
                 return Ok(Some((amount_in, amount_out)));
@@ -416,8 +608,8 @@ impl Balancer {
             debug!(
                 %provider, %asset_in, amount_in, amount_out,
                 price_impact_bps = impact.bps,
-                max = self.config.max_price_impact_bps,
-                "probe exceeds max price impact; halving amount_in"
+                max = self.config.max_execution_impact_bps,
+                "probe exceeds max execution impact; halving amount_in"
             );
             amount_in /= 2;
         }
@@ -521,4 +713,98 @@ fn compute_value_cents(token_amount: i128, info: &AssetInfo) -> i128 {
         return 0;
     }
     (token_amount.saturating_mul(info.oracle_price) / denom).max(0)
+}
+
+/// Inverse of [`compute_value_cents`]: the token amount whose oracle value is
+/// approximately `value_cents`. Rounds down (truncating integer division), so a
+/// leg sized from this never over-shoots the intended value correction.
+fn value_to_token_amount(value_cents: i128, info: &AssetInfo) -> i128 {
+    if info.oracle_price <= 0 || value_cents <= 0 {
+        return 0;
+    }
+    let denom_pow = info.decimals + info.oracle_decimals;
+    if denom_pow < 2 {
+        return 0;
+    }
+    // value_cents = token_amount * oracle_price / 10^(denom_pow - 2)
+    //  => token_amount = value_cents * 10^(denom_pow - 2) / oracle_price
+    let scale = 10_i128.checked_pow(denom_pow - 2).unwrap_or(0);
+    if scale == 0 {
+        return 0;
+    }
+    value_cents.saturating_mul(scale) / info.oracle_price
+}
+
+/// An asset that has drifted past the threshold and needs correcting. Direction
+/// is implied by which bucket it lands in (surplus → sell, deficit → buy).
+struct Drift {
+    address: String,
+    info: AssetInfo,
+    /// Amount of the *source* asset we may spend (post XLM safety margin).
+    swappable: i128,
+    /// Absolute value gap between current holding and target, in cents.
+    delta_cents: i128,
+    /// Absolute drift from target weight, in bps — the sort key.
+    abs_drift_bps: i128,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(decimals: u32, oracle_price: i128, oracle_decimals: u32) -> AssetInfo {
+        AssetInfo { decimals, oracle_price, oracle_decimals }
+    }
+
+    #[test]
+    fn value_and_token_amount_round_trip() {
+        // 7-decimal token, oracle price 1.00 at 7 oracle decimals => $1/token.
+        let i = info(7, 10_000_000, 7);
+        // 5 whole tokens = 5 * 10^7 base units => $5.00 => 500 cents.
+        let tokens = 5 * 10_i128.pow(7);
+        let value = compute_value_cents(tokens, &i);
+        assert_eq!(value, 500);
+
+        // Inverse recovers the token amount (exact here, no truncation).
+        assert_eq!(value_to_token_amount(value, &i), tokens);
+    }
+
+    #[test]
+    fn value_to_token_amount_rounds_down() {
+        let i = info(7, 10_000_000, 7);
+        // 501 cents doesn't divide evenly by the per-token value, but must never
+        // round up (over-shoot the correction).
+        let recovered = value_to_token_amount(501, &i);
+        assert!(compute_value_cents(recovered, &i) <= 501);
+    }
+
+    #[test]
+    fn non_positive_inputs_are_safe() {
+        let i = info(7, 10_000_000, 7);
+        assert_eq!(value_to_token_amount(0, &i), 0);
+        assert_eq!(value_to_token_amount(-100, &i), 0);
+        assert_eq!(compute_value_cents(-100, &i), 0);
+        assert_eq!(compute_value_cents(100, &info(7, 0, 7)), 0);
+    }
+
+    fn drift(address: &str, abs_drift_bps: i128) -> Drift {
+        Drift {
+            address: address.to_string(),
+            info: info(7, 10_000_000, 7),
+            swappable: 0,
+            delta_cents: 0,
+            abs_drift_bps,
+        }
+    }
+
+    #[test]
+    fn worst_drift_first_with_address_tiebreak() {
+        let mut v = vec![drift("B", 100), drift("A", 300), drift("C", 300)];
+        v.sort_by(|a, b| {
+            b.abs_drift_bps.cmp(&a.abs_drift_bps).then_with(|| a.address.cmp(&b.address))
+        });
+        let order: Vec<_> = v.iter().map(|d| d.address.as_str()).collect();
+        // Largest drift first; equal drifts broken by ascending address.
+        assert_eq!(order, ["A", "C", "B"]);
+    }
 }

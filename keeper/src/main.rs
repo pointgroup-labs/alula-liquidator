@@ -50,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
         db_path,
         markets,
         xlm_address,
+        hub_address,
         swap_providers,
         assets_to_hold,
         metrics_bind_addr,
@@ -74,11 +75,13 @@ async fn main() -> anyhow::Result<()> {
         // -- Liquidator --
         liquidator_max_retries,
         liquidator_refresh_interval_blocks,
-        liquidator_max_allowed_swap_slippage_bps,
         liquidator_min_profit_margin_cents,
+        liquidator_max_allowed_swap_slippage_bps,
         // -- Balancer --
         balancer_max_retries,
-        balancer_max_price_impact_bps,
+        balancer_max_swaps_per_batch,
+        balancer_rebalance_threshold_bps,
+        balancer_max_execution_impact_bps,
         balancer_refresh_interval_blocks,
         balancer_max_swap_provider_probes,
         balancer_min_swap_amount_value_cents,
@@ -99,16 +102,21 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(0.0);
     metrics::emit_build_info(start_unix_secs);
 
-    // Strategies currently consume only the ordered list of asset addresses;
-    // the per-asset target distribution lives in `assets_to_hold` and is not
-    // wired into the Balancer yet. The Balancer treats `assets_to_hold[0]` as
-    // its swap target, so put the asset with the largest distribution first.
+    // The liquidator consumes only the ordered list of asset addresses (its
+    // pre-swap source candidates); the Balancer consumes the full weighted map
+    // plus the hub. Order the flat list by descending target weight so the
+    // liquidator prefers larger holdings first.
     let mut assets_to_hold_addresses: Vec<String> = assets_to_hold.keys().cloned().collect();
-    assets_to_hold_addresses.sort_by(|a, b| {
-        assets_to_hold[b]
-            .cmp(&assets_to_hold[a])
-            .then_with(|| a.cmp(b))
-    });
+    assets_to_hold_addresses
+        .sort_by(|a, b| assets_to_hold[b].cmp(&assets_to_hold[a]).then_with(|| a.cmp(b)));
+
+    // The hub isn't a key in `assets_to_hold` (it's the balancer's residual
+    // numeraire), but the liquidator still holds it and can swap it into a
+    // repay token during a pre-swap liquidation. It typically carries the
+    // largest balance, so surface it first as a source candidate.
+    let liquidator_source_assets: Vec<String> = std::iter::once(hub_address.clone())
+        .chain(assets_to_hold_addresses.iter().cloned())
+        .collect();
 
     // Primary endpoint first, then any configured fallbacks. The
     // FailoverClient routes calls through this list, sticking to the
@@ -152,15 +160,15 @@ async fn main() -> anyhow::Result<()> {
         gateway.clone(),
         store.cursor(),
         LiquidatorConfig {
-            markets: markets.clone(),
-            min_profit_margin_cents: liquidator_min_profit_margin_cents,
-            assets_to_hold: assets_to_hold_addresses.clone(),
-            swap_providers: swap_providers.clone(),
-            xlm_address: xlm_address.clone(),
             xlm_safety_margin,
-            max_allowed_swap_slippage_bps: liquidator_max_allowed_swap_slippage_bps,
+            markets: markets.clone(),
+            xlm_address: xlm_address.clone(),
             max_retries: liquidator_max_retries,
+            swap_providers: swap_providers.clone(),
+            assets_to_hold: liquidator_source_assets.clone(),
+            min_profit_margin_cents: liquidator_min_profit_margin_cents,
             refresh_interval_blocks: liquidator_refresh_interval_blocks,
+            max_allowed_swap_slippage_bps: liquidator_max_allowed_swap_slippage_bps,
         },
         store.obligations(),
         Arc::clone(&ledger_reader),
@@ -186,17 +194,20 @@ async fn main() -> anyhow::Result<()> {
         skey.clone(),
         gateway.clone(),
         BalancerConfig {
-            market: markets[0].clone(),
-            xlm_address: xlm_address.clone(),
             xlm_safety_margin,
-            max_price_impact_bps: balancer_max_price_impact_bps,
+            market: markets[0].clone(),
+            hub_address: hub_address.clone(),
+            xlm_address: xlm_address.clone(),
             max_retries: balancer_max_retries,
-            allowed_swap_slippage_bps: balancer_max_allowed_swap_slippage_bps,
-            assets_to_hold: assets_to_hold_addresses.clone(),
+            assets_to_hold: assets_to_hold.clone(),
             swap_providers: swap_providers.clone(),
+            max_swaps_per_batch: balancer_max_swaps_per_batch,
             refresh_interval_blocks: balancer_refresh_interval_blocks,
+            rebalance_threshold_bps: balancer_rebalance_threshold_bps,
             max_swap_provider_probes: balancer_max_swap_provider_probes,
+            max_execution_impact_bps: balancer_max_execution_impact_bps,
             min_swap_amount_value_cents: balancer_min_swap_amount_value_cents,
+            allowed_swap_slippage_bps: balancer_max_allowed_swap_slippage_bps,
         },
         Arc::clone(&ledger_reader),
         Arc::clone(&liquidator_capital),

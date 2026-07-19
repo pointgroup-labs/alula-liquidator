@@ -33,6 +33,12 @@ markets = ["CCUDRNK5K5UR6NLYKAQROCBUQJBVY66DF62NDMKVH7CQ7W46ASJAJPBI"]
 # `xlm_safety_margin` applies to.
 xlm_address = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
 
+# Stablecoin "hub" the Balancer prices the portfolio in and routes every
+# rebalance swap through. It has no explicit target weight — its share is the
+# residual left after the assets_to_hold targets. Must NOT appear in
+# assets_to_hold.
+hub_address = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
+
 # Min XLM (stroops) held back for inclusion fees and reserves. 1 XLM =
 # 10_000_000 stroops, so 2000000000 = 200 XLM. Usable XLM = balance − margin.
 xlm_safety_margin = 2000000000
@@ -45,10 +51,11 @@ default_simulation_fee = 10000
 network_passphrase = "Test SDF Network ; September 2015"
 
 # Assets the keeper keeps on its balance, mapped to a target share of held
-# value in basis points (bps; 10000 = 100%). The distributions must sum to
-# exactly 10000. The asset with the largest share is the Balancer's swap
-# target — anything not in this map is rebalanced into it.
-assets_to_hold = { CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA = 5000, CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC = 5000 }
+# value in basis points (bps; 10000 = 100%). These are the *volatile* assets;
+# the hub (hub_address) is NOT listed here. The distributions must sum to at
+# most 10000 — the remainder is the implied hub floor. Anything held but not in
+# this map (nor the hub) is sold into the hub.
+assets_to_hold = { CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC = 4000 }
 
 # DEX-adapter contract IDs the keeper may route swaps through. More providers
 # = better fills but more RPC calls per evaluation.
@@ -112,7 +119,9 @@ liquidator_min_profit_margin_cents = 0
 liquidator_max_allowed_swap_slippage_bps = 0
 
 # --- Balancer ---
-# Rebalances stray assets into assets_to_hold[0].
+# Rebalances the held portfolio back toward the assets_to_hold target weights,
+# using the hub asset as the swap counterparty. Sells surpluses into the hub,
+# then buys deficits with the hub, in one atomic batch per cycle.
 
 # Max submission attempts (1–50).
 balancer_max_retries = 3
@@ -120,8 +129,14 @@ balancer_max_retries = 3
 balancer_refresh_interval_blocks = 2
 # Max swap slippage tolerated on a rebalance (bps, 0–10000).
 balancer_max_allowed_swap_slippage_bps = 30
-# Max price impact tolerated on a rebalance (bps, 0–10000).
-balancer_max_price_impact_bps = 1200
+# Max execution price impact tolerated on a rebalance leg vs oracle (bps,
+# 0–10000). Legs are halved until they clear this ceiling.
+balancer_max_execution_impact_bps = 1200
+# Tolerance band around each asset's target weight before it's rebalanced
+# (bps, 0–10000; 500 = 5 percentage points).
+balancer_rebalance_threshold_bps = 500
+# Max swap legs packed into one atomic rebalance batch (≥ 1).
+balancer_max_swaps_per_batch = 5
 # How many swap providers to probe when pricing a rebalance (≥ 1).
 balancer_max_swap_provider_probes = 3
 # Skip rebalances below this value (USD cents, ≥ 0).

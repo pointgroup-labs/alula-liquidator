@@ -84,6 +84,7 @@ const BALANCER_OUTCOME: &str = "balancer_outcome_total";
 const BALANCER_DISPATCHED_VALUE: &str = "balancer_dispatched_swap_value_cents";
 const BALANCER_REALISED_PRICE: &str = "balancer_realised_swap_price_scaled";
 const BALANCER_PRICE_IMPACT: &str = "balancer_swap_price_impact_bps";
+const BALANCER_BATCH_LEGS: &str = "balancer_batch_legs";
 
 const WITHDRAWER_OUTCOME: &str = "withdrawer_outcome_total";
 
@@ -309,11 +310,13 @@ impl BadDebtOutcome {
 #[derive(Clone, Copy, Debug)]
 pub enum BalancerOutcome {
     EvaluationError,
-    NothingToSwap,
     BadOraclePrice,
     NoViableProvider,
     BelowDust,
     ReservationLost,
+    ThresholdHold,
+    SellLegDispatched,
+    BuyLegDispatched,
     Dispatched,
 }
 
@@ -321,11 +324,13 @@ impl BalancerOutcome {
     const fn as_str(self) -> &'static str {
         match self {
             Self::EvaluationError => "evaluation_error",
-            Self::NothingToSwap => "nothing_to_swap",
             Self::BadOraclePrice => "bad_oracle_price",
             Self::NoViableProvider => "no_viable_provider",
             Self::BelowDust => "below_dust",
             Self::ReservationLost => "reservation_lost",
+            Self::ThresholdHold => "threshold_hold",
+            Self::SellLegDispatched => "sell_leg_dispatched",
+            Self::BuyLegDispatched => "buy_leg_dispatched",
             Self::Dispatched => "dispatched",
         }
     }
@@ -516,6 +521,11 @@ pub fn record_balancer_price_impact(asset: &str, admitted: bool, bps: i128) {
         .record(bps as f64);
 }
 
+/// Records the number of swap legs packed into a dispatched rebalance batch.
+pub fn record_balancer_batch_legs(legs: usize) {
+    histogram!(BALANCER_BATCH_LEGS).record(legs as f64);
+}
+
 /// Emits the constant `keeper_build_info` identity series (value `1`, provenance
 /// in labels) and stamps `keeper_start_time_seconds` for uptime panels.
 pub fn emit_build_info(start_unix_secs: f64) {
@@ -634,6 +644,10 @@ pub(super) fn describe_all() {
         BALANCER_PRICE_IMPACT,
         "Oracle-vs-DEX price impact per probe in bps, by asset and admission verdict."
     );
+    describe_histogram!(
+        BALANCER_BATCH_LEGS,
+        "Number of swap legs packed into a dispatched rebalance batch."
+    );
 
     describe_counter!(WITHDRAWER_OUTCOME, "Withdrawer per-position verdicts.");
     describe_counter!(BAD_DEBT_OUTCOME, "Bad-debt initiator per-liquidation-event verdicts.");
@@ -740,11 +754,13 @@ mod tests {
     #[test]
     fn balancer_outcome_labels_are_stable() {
         assert_eq!(BalancerOutcome::EvaluationError.as_str(), "evaluation_error");
-        assert_eq!(BalancerOutcome::NothingToSwap.as_str(), "nothing_to_swap");
         assert_eq!(BalancerOutcome::BadOraclePrice.as_str(), "bad_oracle_price");
         assert_eq!(BalancerOutcome::NoViableProvider.as_str(), "no_viable_provider");
         assert_eq!(BalancerOutcome::BelowDust.as_str(), "below_dust");
         assert_eq!(BalancerOutcome::ReservationLost.as_str(), "reservation_lost");
+        assert_eq!(BalancerOutcome::ThresholdHold.as_str(), "threshold_hold");
+        assert_eq!(BalancerOutcome::SellLegDispatched.as_str(), "sell_leg_dispatched");
+        assert_eq!(BalancerOutcome::BuyLegDispatched.as_str(), "buy_leg_dispatched");
         assert_eq!(BalancerOutcome::Dispatched.as_str(), "dispatched");
     }
 
