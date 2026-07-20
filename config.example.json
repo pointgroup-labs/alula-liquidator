@@ -39,6 +39,6 @@
     "balancer_max_execution_impact_bps": 1200,
     "balancer_rebalance_threshold_bps": 500,
     "balancer_max_swaps_per_batch": 5,
-    "balancer_max_swap_provider_probes": 3,
+    "balancer_max_swap_provider_halving_probes": 3,
     "balancer_min_swap_amount_value_cents": 100
 }

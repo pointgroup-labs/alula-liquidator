@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
         balancer_rebalance_threshold_bps,
         balancer_max_execution_impact_bps,
         balancer_refresh_interval_blocks,
-        balancer_max_swap_provider_probes,
+        balancer_max_swap_provider_halving_probes,
         balancer_min_swap_amount_value_cents,
         balancer_max_allowed_swap_slippage_bps,
     } = CliConfig::load(&config)?;
@@ -204,7 +204,7 @@ async fn main() -> anyhow::Result<()> {
             max_swaps_per_batch: balancer_max_swaps_per_batch,
             refresh_interval_blocks: balancer_refresh_interval_blocks,
             rebalance_threshold_bps: balancer_rebalance_threshold_bps,
-            max_swap_provider_probes: balancer_max_swap_provider_probes,
+            max_swap_provider_halving_probes: balancer_max_swap_provider_halving_probes,
             max_execution_impact_bps: balancer_max_execution_impact_bps,
             min_swap_amount_value_cents: balancer_min_swap_amount_value_cents,
             allowed_swap_slippage_bps: balancer_max_allowed_swap_slippage_bps,

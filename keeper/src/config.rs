@@ -192,7 +192,7 @@ pub struct CliConfig {
     pub balancer_max_swaps_per_batch: u32,
 
     #[validate(range(min = 1))]
-    pub balancer_max_swap_provider_probes: u32,
+    pub balancer_max_swap_provider_halving_probes: u32,
 
     #[validate(range(min = 0))]
     #[serde(deserialize_with = "de_i128")]

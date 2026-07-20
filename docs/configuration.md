@@ -95,11 +95,11 @@ Rebalances the held portfolio back toward the `assets_to_hold` target weights, u
 | `balancer_max_execution_impact_bps` | i128 (bps) | 0–10000 | Hard cap on a single leg's execution price impact **relative to the oracle price**. The balancer sizes a leg to fully correct the drift and, if the quote's impact exceeds this cap, halves the size and re-probes, taking the largest slice that clears the cap. `1200` = 12 %.|
 | `balancer_rebalance_threshold_bps` | u16 (bps) | 0–10000 | Tolerance band around each asset's target weight. An asset is only rebalanced once `|current_weight − target_weight|` reaches this many bps. `500` = 5 percentage points. |
 | `balancer_max_swaps_per_batch` | u32 | ≥ 1 | Upper bound on swap legs packed into one atomic rebalance batch (sells ordered before buys). Largest-drift assets are serviced first when the cap truncates. |
-| `balancer_max_swap_provider_probes` | u32 | ≥ 1 | How many halving attempts the size-search makes per provider before giving up on that route. With `max_execution_impact_bps`, this bounds the descent: `3` probes tries full, ½, ¼ of the intended size. Higher = more chances to find a fitting size, at more RPC calls. |
+| `balancer_max_swap_provider_halving_probes` | u32 | ≥ 1 | How many halving attempts the size-search makes per provider before giving up on that route. With `max_execution_impact_bps`, this bounds the descent: `3` probes tries full, ½, ¼ of the intended size. Higher = more chances to find a fitting size, at more RPC calls. |
 | `balancer_min_swap_amount_value_cents` | i128 (USD cents) | ≥ 0 | Skip rebalance swaps whose input value is below this. Stops the keeper paying fees on dust.|
 
 ★ Insight ─────────────────────────────────────
-- **`max_execution_impact_bps` and `max_swap_provider_probes` work together as a sizing search.** The cap says "don't move the price more than X"; the probe count says "how hard to look for a size that fits under X". A tight cap with only 1 probe often yields `no_viable_provider` because the first (full-size) quote blows the cap and there's no room to shrink and retry.
+- **`max_execution_impact_bps` and `max_swap_provider_halving_probes` work together as a sizing search.** The cap says "don't move the price more than X"; the probe count says "how hard to look for a size that fits under X". A tight cap with only 1 probe often yields `no_viable_provider` because the first (full-size) quote blows the cap and there's no room to shrink and retry.
 - **One leg per asset per batch is forced by AMM mechanics.** 
 - **Sells settle before buys inside the atomic batch.** The hub minted by selling surpluses funds the buys in the *same* transaction.
 ─────────────────────────────────────────────────

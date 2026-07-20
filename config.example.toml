@@ -137,7 +137,8 @@ balancer_max_execution_impact_bps = 1200
 balancer_rebalance_threshold_bps = 500
 # Max swap legs packed into one atomic rebalance batch (≥ 1).
 balancer_max_swaps_per_batch = 5
-# How many swap providers to probe when pricing a rebalance (≥ 1).
-balancer_max_swap_provider_probes = 3
+# How many times a leg's input is halved while searching for a size that clears
+# the execution-impact ceiling (≥ 1).
+balancer_max_swap_provider_halving_probes = 3
 # Skip rebalances below this value (USD cents, ≥ 0).
 balancer_min_swap_amount_value_cents = 100
