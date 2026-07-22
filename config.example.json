@@ -4,22 +4,23 @@
     "rpc_max_call_duration_secs": 30,
     "db_path": "./data.db",
     "markets": [
-        "CCUDRNK5K5UR6NLYKAQROCBUQJBVY66DF62NDMKVH7CQ7W46ASJAJPBI"
+        "CB5IJJRIYYF2BJESDFIEERGCX7DCDWRWBTYXSMSQF2TXSZ2MVQYWXJYT"
     ],
     "xlm_address": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
     "hub_address": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
     "xlm_safety_margin": 2000000000,
-    "default_simulation_fee": 10000,
+    "default_simulation_fee": 100000,
     "network_passphrase": "Test SDF Network ; September 2015",
     "assets_to_hold": {
-        "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC": 4000
+        "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC": 1000,
+        "CDNVQW44C3HALYNVQ4SOBXY5EWYTGVYXX6JPESOLQDABJI5FC5LTRRUE": 1000
     },
     "swap_providers": [
-        "CBU6NTBOV5FD6H4ERIF3X3YYUZI6W54DUUVE3ZBM33X5YVTSUKCELQ6L"
+        "CCRIEORD53E4TSYS33JYSQVN5N6AQCB7JUSVROWFHHKQUBDDDZTXOLU7"
     ],
     "metrics_bind_addr": "0.0.0.0:9000",
     "readiness_staleness_budget_secs": 120,
-    "event_collector_start_ledger": 3536052,
+    "event_collector_start_ledger": 3724633,
     "ledger_collector_polling_interval_secs": 2,
     "keeper_capital_balance_ttl_secs": 10,
     "keeper_capital_reservation_ttl_secs": 30,

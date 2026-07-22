@@ -225,6 +225,9 @@ impl Balancer {
         }
 
         // --- Value the whole portfolio (hub included) in cents. ---
+        // `hub_raw` is the gross on-chain balance (fed to the reserve gate,
+        // which nets out committed capital itself). `hub_net` subtracts live
+        // reservations and is what we value and size against.
         let hub_raw = match self
             .liquidator_capital
             .try_get_balance(&self.config.hub_address, &*self.ledger_reader)
@@ -237,13 +240,29 @@ impl Balancer {
                 return vec![];
             }
         };
-        let hub_value_cents = compute_value_cents(hub_raw, &hub_info);
+        let hub_net = match self
+            .liquidator_capital
+            .try_get_available_balance(&self.config.hub_address, &*self.ledger_reader)
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(?e, "failed to read hub available balance");
+
+                return vec![];
+            }
+        };
+        let hub_value_cents = compute_value_cents(hub_net, &hub_info);
 
         // Per-non-hub-asset snapshot: (address, info, raw balance, swappable, value)
         struct Held {
             address: String,
             info: AssetInfo,
+            /// Gross swappable (post XLM safety margin) — the reserve gate's
+            /// `available` arg, which nets out committed capital itself.
             swappable: i128,
+            /// Net of live reservations — what we value and size sells against.
+            deployable: i128,
             value_cents: i128,
         }
 
@@ -276,16 +295,39 @@ impl Balancer {
                     continue;
                 }
             };
+            let available = match self
+                .liquidator_capital
+                .try_get_available_balance(address, &*self.ledger_reader)
+                .await
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!(?e, %address, "failed to read asset available balance; skipping");
+
+                    continue;
+                }
+            };
+            // `swappable` (gross) feeds the reserve gate. `deployable` caps how
+            // much of a sell we may size — it excludes the XLM safety margin,
+            // which we hold but won't spend. Valuation, however, must COUNT that
+            // margin: it is real XLM allocation and belongs in the target-weight
+            // math, so we value on `available` (reservations netted, margin kept)
+            // and only exclude the margin from the sell cap.
             let swappable = if address == &self.config.xlm_address {
                 raw.saturating_sub(self.config.xlm_safety_margin)
             } else {
                 raw
             };
+            let deployable = if address == &self.config.xlm_address {
+                available.saturating_sub(self.config.xlm_safety_margin)
+            } else {
+                available
+            };
 
-            let value_cents = compute_value_cents(raw, &info);
+            let value_cents = compute_value_cents(available, &info);
             total_value_cents = total_value_cents.saturating_add(value_cents);
 
-            held.push(Held { address: address.clone(), info, swappable, value_cents });
+            held.push(Held { address: address.clone(), info, swappable, deployable, value_cents });
         }
 
         if total_value_cents <= 0 {
@@ -316,6 +358,7 @@ impl Balancer {
                 delta_cents,
                 info: h.info.clone(),
                 swappable: h.swappable,
+                deployable: h.deployable,
                 address: h.address.clone(),
                 abs_drift_bps: drift_bps.abs(),
             };
@@ -340,17 +383,15 @@ impl Balancer {
 
         // --- Size sells (asset -> hub), worst-first, up to the cap. ---
 
-        let mut op_ids = vec![];
-        let mut requests = vec![];
-        let mut expected_hub_out: i128 = 0;
-        let mut dispatched_value_cents: i128 = 0;
+        let (mut op_ids, mut requests) = (vec![], vec![]);
+        let (mut expected_hub_out, mut dispatched_value_cents) = (0_i128, 0_i128);
 
         for sell in &sells {
             if requests.len() >= cap {
                 break;
             }
 
-            let want_in = value_to_token_amount(sell.delta_cents, &sell.info).min(sell.swappable);
+            let want_in = value_to_token_amount(sell.delta_cents, &sell.info).min(sell.deployable);
             if want_in <= 0 {
                 continue;
             }
@@ -436,14 +477,23 @@ impl Balancer {
         } else {
             hub_raw
         };
+        let hub_deployable = if self.config.hub_address == self.config.xlm_address {
+            hub_net.saturating_sub(self.config.xlm_safety_margin)
+        } else {
+            hub_net
+        };
 
+        // Gross budget gates reservations; net budget (minus live reservations)
+        // bounds how much we actually size buys for. Both credit the hub minted
+        // by this batch's sells, which is real because the batch is atomic.
         let hub_available = hub_swappable.saturating_add(expected_hub_out);
-        if hub_available <= 0 {
+        let hub_deployable_budget = hub_deployable.saturating_add(expected_hub_out);
+        if hub_deployable_budget <= 0 {
             warn!("no available hub liquidity; nothing to buy");
 
             return vec![];
         }
-        let mut hub_remaining = hub_available;
+        let mut hub_remaining = hub_deployable_budget;
 
         for buy in &buys {
             if requests.len() >= cap || hub_remaining <= 0 {
@@ -587,7 +637,7 @@ impl Balancer {
                 Ok(Some((amount_in, amount_out))) => {
                     let take = match &best {
                         None => true,
-                        Some((_, best_in, _)) => amount_in > *best_in,
+                        Some((_, _, best_out)) => amount_out > *best_out,
                     };
                     if take {
                         best = Some((provider.clone(), amount_in, amount_out));
@@ -767,7 +817,7 @@ fn value_to_token_amount(value_cents: i128, info: &AssetInfo) -> i128 {
     }
     // value_cents = token_amount * oracle_price / 10^(denom_pow - 2)
     //  => token_amount = value_cents * 10^(denom_pow - 2) / oracle_price
-    let scale = 10_i128.checked_pow(denom_pow - 2).unwrap_or(0);
+    let scale = 10_i128.checked_pow(denom_pow - 2).unwrap_or(0); // TODO: Fix error swallowing
     if scale == 0 {
         return 0;
     }
@@ -779,8 +829,10 @@ fn value_to_token_amount(value_cents: i128, info: &AssetInfo) -> i128 {
 struct Drift {
     address: String,
     info: AssetInfo,
-    /// Amount of the *source* asset we may spend (post safety margin for XLM).
+    /// Gross swappable (post XLM safety margin) — passed to the reserve gate.
     swappable: i128,
+    /// Net of live reservations — bounds how much of a sell we actually size.
+    deployable: i128,
     /// Absolute value gap between current holding and target, in cents.
     delta_cents: i128,
     /// Absolute drift from target weight, in bps — the sort key.
@@ -831,6 +883,7 @@ mod tests {
             address: address.to_string(),
             info: info(7, 10_000_000, 7),
             swappable: 0,
+            deployable: 0,
             delta_cents: 0,
             abs_drift_bps,
         }

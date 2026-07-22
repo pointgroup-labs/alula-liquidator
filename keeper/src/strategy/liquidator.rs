@@ -603,9 +603,9 @@ impl Liquidator {
             return None;
         }
 
-        let raw_borrow_balance = self
+        let available_borrow_balance = self
             .liquidator_capital
-            .try_get_balance(borrow_token, &*self.ledger_reader)
+            .try_get_available_balance(borrow_token, &*self.ledger_reader)
             .await
             .inspect_err(|e| {
                 warn!(?e, %borrow_token, "balance query failed");
@@ -614,9 +614,9 @@ impl Liquidator {
             .unwrap_or(0);
 
         let usable_borrow = if borrow_token == self.config.xlm_address {
-            raw_borrow_balance.saturating_sub(self.config.xlm_safety_margin)
+            available_borrow_balance.saturating_sub(self.config.xlm_safety_margin)
         } else {
-            raw_borrow_balance
+            available_borrow_balance
         };
         let min_profit_margin_value = self
             .config
@@ -952,9 +952,10 @@ impl Liquidator {
                 continue;
             }
 
-            let Ok(raw_balance) = self
+            // Size against capital not already pledged to in-flight ops
+            let Ok(available_balance) = self
                 .liquidator_capital
-                .try_get_balance(source_asset, &*self.ledger_reader)
+                .try_get_available_balance(source_asset, &*self.ledger_reader)
                 .await
                 .inspect_err(|e| {
                     warn!(?e, %source_asset, "balance query failed");
@@ -963,13 +964,13 @@ impl Liquidator {
                 continue;
             };
             let swappable_balance = if source_asset.as_ref() == self.config.xlm_address {
-                raw_balance.saturating_sub(self.config.xlm_safety_margin)
+                available_balance.saturating_sub(self.config.xlm_safety_margin)
             } else {
-                raw_balance
+                available_balance
             };
             if !swappable_balance.is_positive() {
                 info!(
-                    raw_balance,
+                    available_balance,
                     swappable_balance, source_asset, "non-positive liquidator usable balance"
                 );
 

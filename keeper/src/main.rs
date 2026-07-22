@@ -213,9 +213,9 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&liquidator_capital),
     );
 
-    engine.add_strategy(Box::new(bad_debt_request_initiator));
-    engine.add_strategy(Box::new(liquidator));
-    engine.add_strategy(Box::new(withdrawer));
+    // engine.add_strategy(Box::new(bad_debt_request_initiator));
+    // engine.add_strategy(Box::new(liquidator));
+    // engine.add_strategy(Box::new(withdrawer));
     engine.add_strategy(Box::new(balancer));
 
     let cursor_repo = Arc::new(store.cursor());
