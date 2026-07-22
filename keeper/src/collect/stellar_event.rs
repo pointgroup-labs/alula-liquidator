@@ -4,14 +4,14 @@
 use std::{sync::Arc, time::Duration};
 
 use engine::reactor::{BoxFuture, Collector, CollectorStream};
-use stellar_rpc_client::{Client, EventStart, EventType};
+use stellar_rpc_client::{EventStart, EventType};
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
-use url::Url;
 
 use super::{Event, lag_counted_stream};
 use crate::{
-    metrics::CursorSource, stellar::errors::is_terminal_cursor_error, storage::cursor::CursorRepo,
+    metrics::CursorSource, stellar::client::Gateway, stellar::errors::is_terminal_cursor_error,
+    storage::cursor::CursorRepo,
 };
 
 /// Subscription filter forwarded to [`Client::get_events`]. Each entry in
@@ -28,7 +28,7 @@ pub struct EventFilter {
 
 /// Polls the Stellar RPC for contract events.
 pub struct SorobanEventCollector {
-    network_url: Url,
+    gateway: Arc<Gateway>,
     last_ledger: u32,
     filter: EventFilter,
     cursor_repo: Arc<CursorRepo>,
@@ -37,7 +37,7 @@ pub struct SorobanEventCollector {
 
 impl SorobanEventCollector {
     pub fn try_new(
-        network_url: &Url,
+        gateway: Arc<Gateway>,
         start_ledger: u32,
         filter: EventFilter,
         cursor_repo: Arc<CursorRepo>,
@@ -57,13 +57,7 @@ impl SorobanEventCollector {
             }
         };
 
-        Ok(Self {
-            filter,
-            last_ledger,
-            cursor_repo,
-            last_cursor_id,
-            network_url: network_url.clone(),
-        })
+        Ok(Self { filter, last_ledger, cursor_repo, last_cursor_id, gateway })
     }
 }
 
@@ -75,16 +69,10 @@ impl Collector<Event> for SorobanEventCollector {
             let mut last_ledger = self.last_ledger;
             let mut last_cursor_id = self.last_cursor_id.clone();
             let filter = self.filter.clone();
-            let network_url = self.network_url.clone();
+            let gateway = Arc::clone(&self.gateway);
             let cursor_repo = Arc::clone(&self.cursor_repo);
 
             tokio::spawn(async move {
-                let Ok(client) = Client::new(network_url.as_str()).inspect_err(|e| {
-                    error!(?e, "failed to create RPC client");
-                }) else {
-                    return;
-                };
-
                 let mut is_first_poll = true;
 
                 loop {
@@ -93,7 +81,8 @@ impl Collector<Event> for SorobanEventCollector {
                         None => EventStart::Ledger(last_ledger),
                     };
 
-                    match client
+                    match gateway
+                        .rpc
                         .get_events(
                             start,
                             Some(filter.event_type),
@@ -142,7 +131,7 @@ impl Collector<Event> for SorobanEventCollector {
                                      resetting to head ledger"
                                 );
                                 last_cursor_id = None;
-                                if let Ok(ledger) = client.get_latest_ledger().await {
+                                if let Ok(ledger) = gateway.rpc.get_latest_ledger().await {
                                     last_ledger = ledger.sequence;
                                 }
                             } else if terminal && is_first_poll {

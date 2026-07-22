@@ -7,7 +7,8 @@ use std::{
 };
 
 use stellar_rpc_client::{
-    AuthMode, Client, Error, GetTransactionResponse, SimulateTransactionResponse,
+    AuthMode, Client, Error, EventStart, EventType, GetEventsResponse, GetLatestLedgerResponse,
+    GetTransactionResponse, SimulateTransactionResponse,
 };
 use stellar_xdr::{AccountEntry, Hash, TransactionEnvelope};
 use tokio::time::Instant;
@@ -161,6 +162,25 @@ impl FailoverClient {
         self.with_failover(|client| Box::pin(client.get_transaction_polling(tx_id, timeout_s)))
             .await
     }
+
+    pub async fn get_latest_ledger(&self) -> Result<GetLatestLedgerResponse, Error> {
+        self.with_failover(|client| Box::pin(client.get_latest_ledger())).await
+    }
+
+    pub async fn get_events(
+        &self,
+        start: EventStart,
+        event_type: Option<EventType>,
+        contract_ids: &[String],
+        topics: &[Vec<String>],
+        limit: Option<usize>,
+    ) -> Result<GetEventsResponse, Error> {
+        self.with_failover(move |client| {
+            let start = start.clone();
+            Box::pin(client.get_events(start, event_type, contract_ids, topics, limit))
+        })
+        .await
+    }
 }
 
 /// Decide whether an error is a *transport* failure (the endpoint is
@@ -191,6 +211,8 @@ fn is_transport_error(e: &Error) -> bool {
                 || rendered.contains("request timeout")
                 || rendered.contains("restart required")
                 || rendered.contains("rpc service disconnected")
+                || rendered.contains("client error")
+                || rendered.contains("connect")
         }
         // Everything else (invalid address, XDR/serde issues, contract-level
         // rejections, unexpected statuses, …) is an application error: the

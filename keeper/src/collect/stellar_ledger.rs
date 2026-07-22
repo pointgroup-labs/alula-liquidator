@@ -1,15 +1,14 @@
 //! Polls the Stellar RPC for the latest ledger and emits [`NewLedger`] events.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
 use engine::reactor::{BoxFuture, Collector, CollectorStream};
-use stellar_rpc_client::Client;
 use tokio::sync::broadcast;
-use tracing::{debug, error, warn};
-use url::Url;
+use tracing::{debug, warn};
 
 use super::{Event, lag_counted_stream};
+use crate::stellar::client::Gateway;
 
 /// Emitted whenever the ledger sequence advances.
 #[derive(Debug, Clone)]
@@ -20,14 +19,14 @@ pub struct NewLedger {
 /// Polls the Stellar RPC for the latest ledger sequence and emits a
 /// [`NewLedger`] each time it advances.
 pub struct LedgerCollector {
-    network_url: Url,
+    gateway: Arc<Gateway>,
     last_seq_num: u32,
     ledger_polling_interval_secs: u64,
 }
 
 impl LedgerCollector {
-    pub fn new(url: &Url, ledger_polling_interval_secs: u64) -> Self {
-        Self { last_seq_num: 0, network_url: url.clone(), ledger_polling_interval_secs }
+    pub fn new(gateway: Arc<Gateway>, ledger_polling_interval_secs: u64) -> Self {
+        Self { last_seq_num: 0, gateway, ledger_polling_interval_secs }
     }
 }
 
@@ -36,22 +35,13 @@ impl Collector<Event> for LedgerCollector {
         Box::pin(async {
             let (sender, receiver) = broadcast::channel(512);
 
-            let url = self.network_url.clone();
+            let gateway = Arc::clone(&self.gateway);
             let mut last_seq_num = self.last_seq_num;
             let ledger_polling_interval_secs = self.ledger_polling_interval_secs;
 
             tokio::spawn(async move {
-                let server = match Client::new(url.as_str()) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!(?e, "failed to create RPC client");
-
-                        return;
-                    }
-                };
-
                 loop {
-                    match server.get_latest_ledger().await {
+                    match gateway.rpc.get_latest_ledger().await {
                         Ok(ledger) if ledger.sequence > last_seq_num => {
                             last_seq_num = ledger.sequence;
                             debug!(seq = ledger.sequence, "new ledger");

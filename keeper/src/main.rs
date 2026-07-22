@@ -220,13 +220,13 @@ async fn main() -> anyhow::Result<()> {
 
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::try_new(
-        &rpc_url,
+        gateway.clone(),
         event_collector_start_ledger,
         EventFilter { topics: vec![], contract_ids: markets, event_type: EventType::Contract },
         cursor_repo,
     )?));
     engine.add_collector(Box::new(LedgerCollector::new(
-        &rpc_url,
+        gateway.clone(),
         ledger_collector_polling_interval_secs,
     )));
 

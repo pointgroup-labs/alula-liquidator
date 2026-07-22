@@ -111,9 +111,7 @@ impl LiquidatorCapital {
 
         if removed.is_some() {
             guard.balances.clear();
-            info!("cleared balance cache on reservation release");
         }
-        info!(?guard.reservations, "CURRENT_RESERVATIONS after releasing");
     }
 
     pub async fn try_get_balance(
@@ -151,8 +149,6 @@ impl LiquidatorCapital {
         let reserved = self.reserved_amount(token_address);
         let available = raw.saturating_sub(reserved);
 
-        info!(token_address, raw, reserved, available, "AVAILABLE_AFTER_RESERVATIONS");
-
         Ok(available)
     }
 
@@ -180,7 +176,6 @@ impl LiquidatorCapital {
             .filter(|c| {
                 let elapsed = c.fetched_at.elapsed();
                 let is_freshly_cached = elapsed < self.config.balance_cache_ttl;
-                info!(?c, ?elapsed, is_freshly_cached, "balance");
 
                 is_freshly_cached
             })

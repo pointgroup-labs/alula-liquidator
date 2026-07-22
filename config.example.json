@@ -1,6 +1,6 @@
 {
-    "rpc_url": "https://soroban-testnet.stellar.org",
-    "fallback_rpc_urls": [],
+    "rpc_url": "https://sorobn-testnet.stellar.org",
+    "fallback_rpc_urls": ["https://soroban-testnet.stellar.org"],
     "rpc_max_call_duration_secs": 30,
     "db_path": "./data.db",
     "markets": [
@@ -13,10 +13,11 @@
     "network_passphrase": "Test SDF Network ; September 2015",
     "assets_to_hold": {
         "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC": 1000,
-        "CDNVQW44C3HALYNVQ4SOBXY5EWYTGVYXX6JPESOLQDABJI5FC5LTRRUE": 1000
+        "CDNVQW44C3HALYNVQ4SOBXY5EWYTGVYXX6JPESOLQDABJI5FC5LTRRUE": 4000
     },
     "swap_providers": [
-        "CCRIEORD53E4TSYS33JYSQVN5N6AQCB7JUSVROWFHHKQUBDDDZTXOLU7"
+        "CCRIEORD53E4TSYS33JYSQVN5N6AQCB7JUSVROWFHHKQUBDDDZTXOLU7",
+        "CCBMBQGNR3NCR2FPN3AYQMJ65UMGQHCOJUB34RQCGIYMX77D5HUUSQDG"
     ],
     "metrics_bind_addr": "0.0.0.0:9000",
     "readiness_staleness_budget_secs": 120,
