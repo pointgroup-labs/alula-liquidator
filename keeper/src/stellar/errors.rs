@@ -151,6 +151,19 @@ pub fn is_expected_liquidation_failure(err: &anyhow::Error) -> bool {
     EXPECTED_LIQUIDATION_FAILURE_NAMES.iter().any(|n| rendered.contains(n))
 }
 
+/// Numeric `MCError` code for `ObligationDoesNotExist` (see the lending-market
+/// `error.rs`). The contract's `get_user_obligation` aborts with this code when
+/// the obligation is absent from storage.
+const OBLIGATION_DOES_NOT_EXIST_CODE: u32 = 200;
+
+pub fn is_obligation_does_not_exist(err: &anyhow::Error) -> bool {
+    if let SorobanRpcError::Contract { code } = SorobanRpcError::classify(err) {
+        return code == OBLIGATION_DOES_NOT_EXIST_CODE;
+    }
+    let rendered = format!("{err:#}");
+    rendered.contains("ObligationDoesNotExist")
+}
+
 pub fn is_bad_seq_error(err: &anyhow::Error) -> bool {
     matches!(SorobanRpcError::classify(err), SorobanRpcError::BadSequence)
 }

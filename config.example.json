@@ -1,6 +1,6 @@
 {
-    "rpc_url": "https://sorobn-testnet.stellar.org",
-    "fallback_rpc_urls": ["https://soroban-testnet.stellar.org"],
+    "rpc_url": "https://soroban-testnet.stellar.org",
+    "fallback_rpc_urls": ["https://sorban-testnet.stellar.org"],
     "rpc_max_call_duration_secs": 30,
     "db_path": "./data.db",
     "markets": [

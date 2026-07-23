@@ -132,7 +132,6 @@ impl BadDebtRequestInitiator {
             return vec![];
         }
 
-        // TODO: Add 'claim_cover_bad_debt_result' and remove the obligation from the storage repo
         let Ok(OperationEvent::Liquidate) =
             self.gateway.decode_operation(&event).inspect_err(|e| {
                 debug!(?e, "decode_operation failed");

@@ -106,6 +106,9 @@ impl Withdrawer {
                 liquidator_obligation,
             ))
         }
+        if actions.is_empty() {
+            info!("no withdrawal opportunities");
+        }
 
         actions
     }

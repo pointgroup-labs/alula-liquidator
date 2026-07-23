@@ -15,6 +15,7 @@ pub enum OperationEvent {
     Liquidate,
     AddCollateral,
     RemoveCollateral,
+    ClaimCoverBadDebt,
 }
 
 #[derive(Debug, Error)]
@@ -37,6 +38,7 @@ impl TryFrom<&str> for OperationEvent {
             "liquidate_event" => Liquidate,
             "add_collateral_event" => AddCollateral,
             "remove_collateral_event" => RemoveCollateral,
+            "claim_cover_bad_debt_results" => ClaimCoverBadDebt,
             other => return Err(OperationEventError::Unknown(other.to_string())),
         })
     }

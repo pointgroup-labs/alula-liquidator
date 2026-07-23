@@ -12,21 +12,20 @@ use serde::{Deserialize, Deserializer};
 use url::Url;
 use validator::{Validate, ValidationError};
 
-/// Selectable strategies. When neither the CLI flag nor the config field names
-/// any, every strategy runs (see [`resolve_selection`]).
+/// Selectable *optional* strategies. When neither the CLI flag nor the config
+/// field names any, every strategy here runs (see [`resolve_selection`]).
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 #[clap(rename_all = "kebab-case")]
 pub enum StrategyKind {
-    Liquidator,
     Withdrawer,
     Balancer,
     BadDebt,
 }
 
 impl StrategyKind {
-    pub const ALL: [StrategyKind; 4] =
-        [Self::Liquidator, Self::Withdrawer, Self::Balancer, Self::BadDebt];
+    pub const ALL: [StrategyKind; 3] = [Self::Withdrawer, Self::Balancer, Self::BadDebt];
 }
 
 /// Selectable liquidation types the liquidator may build candidates for. When

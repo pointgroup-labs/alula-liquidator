@@ -242,6 +242,18 @@ impl Liquidator {
                     &event.value,
                 );
             }
+            OperationEvent::ClaimCoverBadDebt => {
+                let obl_display = self.gateway.decode_topic(&event, 1);
+                info!(%event_name, ledger = event.ledger, %market, %obl_display, "bad-debt claim event");
+
+                let Ok(key) = self.gateway.parse_obligation_key_from_topic(&event, 1) else {
+                    error!(%event_name, "cannot parse obligation key");
+
+                    return vec![];
+                };
+
+                self.reconcile_obligation_from_chain(&market, &key, event_name).await;
+            }
         }
 
         if let Err(e) = self.cursor_repo.set(&event.id, event.ledger) {
@@ -263,31 +275,70 @@ impl Liquidator {
         match self.gateway.parse_obligation_from_event_value(value_xdr_base64, field_name, key) {
             Ok(Some(obligation)) => {
                 debug!(?key, ?obligation, %event_name, %market, "obligation snapshot");
-                if let Err(e) = self.obligations_repo.put(market, key, &obligation) {
-                    warn!(?e, %event_name, %market, "failed to save obligation");
-                }
-                if key.user == self.pkey
-                    && let Some(md) = self.market_data.get(market)
-                {
-                    emit_keeper_position_metrics(market, &obligation, md);
-                }
-
-                self.obligations
-                    .entry(market.to_string())
-                    .or_default()
-                    .insert(key.clone(), obligation);
+                self.upsert_obligation(market, key, obligation, event_name);
             }
             Ok(None) => {
                 // TODO: This is liquidator's obligation, not a borrower's
                 info!(?key, %event_name, %market, "obligation deleted on the market");
-                if let Err(e) = self.obligations_repo.delete(market, key) {
-                    warn!(?e, %event_name, %market, "failed to delete obligation");
-                }
-                if let Some(map) = self.obligations.get_mut(market) {
-                    map.remove(key);
-                }
+                self.delete_obligation(market, key, event_name);
             }
             Err(e) => warn!(%event_name, %field_name, %market, ?e, "parse error"),
+        }
+    }
+
+    /// Persists a fresh obligation snapshot to the repo and in-memory cache,
+    /// and emits keeper-position metrics when it is the keeper's own obligation.
+    fn upsert_obligation(
+        &mut self,
+        market: &str,
+        key: &ObligationKey,
+        obligation: Obligation,
+        event_name: &str,
+    ) {
+        if let Err(e) = self.obligations_repo.put(market, key, &obligation) {
+            warn!(?e, %event_name, %market, "failed to save obligation");
+        }
+        if key.user == self.pkey
+            && let Some(md) = self.market_data.get(market)
+        {
+            emit_keeper_position_metrics(market, &obligation, md);
+        }
+
+        self.obligations.entry(market.to_string()).or_default().insert(key.clone(), obligation);
+    }
+
+    /// Removes an obligation from the repo and in-memory cache. Mirrors the
+    /// contract deleting an obligation once it becomes empty.
+    fn delete_obligation(&mut self, market: &str, key: &ObligationKey, event_name: &str) {
+        if let Err(e) = self.obligations_repo.delete(market, key) {
+            warn!(?e, %event_name, %market, "failed to delete obligation");
+        }
+        if let Some(map) = self.obligations.get_mut(market) {
+            map.remove(key);
+        }
+    }
+
+    async fn reconcile_obligation_from_chain(
+        &mut self,
+        market: &str,
+        key: &ObligationKey,
+        event_name: &str,
+    ) {
+        match self.ledger_reader.read_user_obligation(market, key).await {
+            Ok(obligation) => {
+                debug!(?key, ?obligation, %event_name, %market, "reconciled obligation (alive)");
+                self.upsert_obligation(market, key, obligation, event_name);
+            }
+            Err(e) if crate::stellar::errors::is_obligation_does_not_exist(&e) => {
+                info!(?key, %event_name, %market, "reconciled obligation (deleted on-chain)");
+                self.delete_obligation(market, key, event_name);
+            }
+            Err(e) => {
+                warn!(
+                    ?e, ?key, %event_name, %market,
+                    "failed to re-read obligation; leaving cache untouched"
+                );
+            }
         }
     }
 

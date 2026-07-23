@@ -96,15 +96,16 @@ async fn main() -> anyhow::Result<()> {
     let pkey = pubkey_to_strkey(&skey);
     let version = env!("CARGO_PKG_VERSION");
 
-    // Resolve selections: CLI flag wins, else config file, else all.[TODO: must be all or maybe only Direct?]
+    // Resolve selections: CLI flag wins, else config file, else all.
     let (enabled_strategies, enabled_liquidation_types) = (
         resolve_selection(&cli_strategies, &cfg_strategies, &StrategyKind::ALL),
         resolve_selection(&cli_liquidation_types, &cfg_liquidation_types, &LiquidationKindArg::ALL),
     );
-
-    info!(%pkey, %version, ?enabled_strategies, ?enabled_liquidation_types, "starting keeper...");
-
     let store = SqliteStore::open(&db_path)?;
+    let obligations = store.obligations().load_all(&markets[0])?;
+
+    info!(?obligations, %pkey, %version, ?enabled_strategies, ?enabled_liquidation_types, "starting keeper...");
+
     let metrics_handle = metrics::install_prometheus_recorder();
     let start_unix_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -225,11 +226,12 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&liquidator_capital),
     );
 
+    // The Liquidator is not opt-in: it owns the shared obligations cache that
+    // every other strategy reads, so it always runs.
+    engine.add_strategy(Box::new(liquidator));
+
     if enabled_strategies.contains(&StrategyKind::BadDebt) {
         engine.add_strategy(Box::new(bad_debt_request_initiator));
-    }
-    if enabled_strategies.contains(&StrategyKind::Liquidator) {
-        engine.add_strategy(Box::new(liquidator));
     }
     if enabled_strategies.contains(&StrategyKind::Withdrawer) {
         engine.add_strategy(Box::new(withdrawer));

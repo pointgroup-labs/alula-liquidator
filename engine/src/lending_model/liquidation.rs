@@ -61,15 +61,15 @@ pub fn compute_is_liquidatable(
         };
         let real_debt = fixed_mul_ceil(borrow.d_tokens.0, pool.d_token_rate_ceil_bps);
         let decimals_divisor = 10_i128.checked_pow(pool.token_decimals).m_ou()?;
-        let value = real_debt
-            .checked_mul(pool.oracle_asset_price)
-            .m_ou()?
-            .checked_add(decimals_divisor - 1)
-            .m_ou()?
-            .checked_div(decimals_divisor)
-            .m_ou()?;
-        let scaled = fixed_mul_ceil(value, pool.liability_factor_bps);
-        debt_value = debt_value.checked_add(scaled).m_ou()?;
+
+        let numerator_pre = real_debt.checked_mul(pool.oracle_asset_price).m_ou()?;
+        let numerator = numerator_pre.checked_add(decimals_divisor - 1).m_ou()?;
+        let denominator = decimals_divisor;
+
+        let value = numerator.checked_div(denominator).m_ou()?;
+        let value_scaled_w_liability_factor = fixed_mul_ceil(value, pool.liability_factor_bps);
+
+        debt_value = debt_value.checked_add(value_scaled_w_liability_factor).m_ou()?;
     }
     if debt_value == 0 {
         return Ok(false);
@@ -88,13 +88,14 @@ pub fn compute_is_liquidatable(
         let real_supply = fixed_mul_floor(deposit.j_tokens.0, pool.j_token_rate_floor_bps);
         let total_tokens = real_supply.checked_add(deposit.collateral.0).m_ou()?;
         let decimals_divisor = 10_i128.checked_pow(pool.token_decimals).m_ou()?;
-        let value = total_tokens
-            .checked_mul(pool.oracle_asset_price)
-            .m_ou()?
-            .checked_div(decimals_divisor)
-            .m_ou()?;
-        let scaled = fixed_mul_floor(value, pool.close_ltv_bps);
-        collateral_value = collateral_value.checked_add(scaled).m_ou()?;
+
+        let numerator = total_tokens.checked_mul(pool.oracle_asset_price).m_ou()?;
+        let denominator = decimals_divisor;
+
+        let value = numerator.checked_div(denominator).m_ou()?;
+        let value_scaled_w_close_ltv = fixed_mul_floor(value, pool.close_ltv_bps);
+
+        collateral_value = collateral_value.checked_add(value_scaled_w_close_ltv).m_ou()?;
     }
 
     let min_collateral_value_cents = market_data.min_collateral_value_cents;
