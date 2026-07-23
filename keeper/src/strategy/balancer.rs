@@ -33,9 +33,9 @@ use crate::{
 const BPS_FACTOR: i128 = 10_000;
 
 pub struct BalancerConfig {
-    pub market: String,
     pub max_retries: u32,
     pub xlm_address: String,
+    pub markets: Vec<String>,
     /// Stablecoin hub(expected to be USD stablecoin): the numeraire the portfolio is priced in and the
     /// counterparty of every rebalance swap. Not a key in `assets_to_hold`.
     pub hub_address: String,
@@ -52,13 +52,16 @@ pub struct BalancerConfig {
     pub max_execution_impact_bps: i128,
     /// Allowed slippage applied to the swap after `execution impact` checks.
     pub allowed_swap_slippage_bps: i128,
+    /// Maximum tolerated cross-market oracle price spread for any relevant
+    /// asset, in bps (`(max - min) / median`). Exceeding it aborts the cycle.
+    pub max_oracle_price_spread_bps: i128,
     pub min_swap_amount_value_cents: i128,
+    /// Assets to hold in the liquidator's wallet and mapped to their target share of held value, in bps. **DOES NOT**
+    /// include the hub asset.
+    pub assets_to_hold: HashMap<String, u16>,
     /// How many times a leg's input is halved while probing a provider for a
     /// size that satisfies the execution-impact constraint.
     pub max_swap_provider_halving_probes: u32,
-    /// Volatile assets mapped to their target share of held value, in bps. The
-    /// hub **IS NOT** listed here.
-    pub assets_to_hold: HashMap<String, u16>,
 }
 
 pub struct Balancer {
@@ -124,14 +127,12 @@ impl Balancer {
             return vec![];
         }
 
-        let market = &self.config.market;
-        let Ok(market_data) = self.ledger_reader.read_market_data(market).await.inspect_err(|e| {
-            warn!(?e, %market, "failed to fetch market data");
-        }) else {
+        let markets_data = self.read_all_markets_data().await;
+        if markets_data.is_empty() {
             return vec![];
-        };
+        }
 
-        self.find_rebalance_actions(&market_data).await
+        self.find_rebalance_actions(&markets_data).await
     }
 
     async fn handle_soroban_event(&mut self, event: SorobanEvent) -> Vec<Action> {
@@ -151,20 +152,30 @@ impl Balancer {
             }
         };
 
-        let market = self.config.market.clone();
         if asset_to_swap.is_some() {
-            let Ok(market_data) =
-                self.ledger_reader.read_market_data(&market).await.inspect_err(|e| {
-                    warn!(?e, %market, "failed to fetch market data");
-                })
-            else {
+            let markets_data = self.read_all_markets_data().await;
+            if markets_data.is_empty() {
                 return vec![];
-            };
+            }
 
-            self.find_rebalance_actions(&market_data).await
+            self.find_rebalance_actions(&markets_data).await
         } else {
             vec![]
         }
+    }
+
+    /// Reads every configured market's data. Per-market read failures are logged
+    /// and skipped; the caller should treat an empty result as "nothing to do".
+    async fn read_all_markets_data(&self) -> Vec<MarketData> {
+        let mut markets_data = Vec::with_capacity(self.config.markets.len());
+        for market in &self.config.markets {
+            match self.ledger_reader.read_market_data(market).await {
+                Ok(md) => markets_data.push(md),
+                Err(e) => warn!(?e, %market, "failed to fetch market data; skipping"),
+            }
+        }
+
+        markets_data
     }
 
     fn try_parse_asset_from_liquidate_event(&self, event: &SorobanEvent) -> Option<String> {
@@ -208,8 +219,10 @@ impl Balancer {
     /// Runs one rebalance cycle and returns at most one Action: a single atomic
     /// batch of swaps (sells ordered before buys). The Action holds the sole
     /// release hooks for every capital reservation taken.
-    async fn find_rebalance_actions(&mut self, market_data: &MarketData) -> Vec<Action> {
-        self.update_assets_info(market_data);
+    async fn find_rebalance_actions(&mut self, markets_data: &[MarketData]) -> Vec<Action> {
+        if self.reconcile_assets_info(markets_data).is_err() {
+            return vec![];
+        }
 
         let Some(hub_info) = self.assets_info.get(&self.config.hub_address).cloned() else {
             error!(hub = %self.config.hub_address, "hub asset missing from pools data");
@@ -579,25 +592,27 @@ impl Balancer {
 
         // --- Assemble one atomic batch: sells already precede buys. ---
 
-        let op = match self.gateway.batch_op(&self.config.market, &self.liquidator_key, &requests) {
-            Ok(op) => op,
-            Err(e) => {
-                error!(?e, "failed to build rebalance batch op; releasing reservations");
-                for op_id in &op_ids {
-                    self.liquidator_capital.release(*op_id);
+        let op =
+            // NB: Any market can be chosen for the swap due to loose coupling between markets and swap providers
+            match self.gateway.batch_op(&self.config.markets[0], &self.liquidator_key, &requests) {
+                Ok(op) => op,
+                Err(e) => {
+                    error!(?e, "failed to build rebalance batch op; releasing reservations");
+                    for op_id in &op_ids {
+                        self.liquidator_capital.release(*op_id);
+                    }
+
+                    BalancerOutcome::EvaluationError.record();
+
+                    return vec![];
                 }
-
-                BalancerOutcome::EvaluationError.record();
-
-                return vec![];
-            }
-        };
+            };
 
         let legs = requests.len();
         metrics::record_balancer_batch_legs(legs); // TODO: Rename legs to something more readable?
         metrics::record_balancer_dispatched_value(dispatched_value_cents);
         BalancerOutcome::Dispatched.record();
-        info!(legs, dispatched_value_cents, market = %self.config.market, "submitting rebalance batch...");
+        info!(legs, dispatched_value_cents, market = %self.config.markets[0], "submitting rebalance batch...");
 
         vec![Action::SubmitTx(SubmitStellarTx {
             op,
@@ -718,17 +733,60 @@ impl Balancer {
         Ok(None)
     }
 
-    fn update_assets_info(&mut self, market_data: &MarketData) {
-        for pool in &market_data.pools_data {
+    /// Reconciles each relevant asset's oracle price across every configured
+    /// market. Aggregates by `token_address`, takes the median, and gates on the
+    /// cross-market spread.
+    fn reconcile_assets_info(&mut self, markets_data: &[MarketData]) -> Result<(), ()> {
+        let mut prices: HashMap<String, Vec<(i128, u32)>> = HashMap::new();
+        let mut token_decimals: HashMap<String, u32> = HashMap::new();
+
+        for market_data in markets_data {
+            for pool in &market_data.pools_data {
+                prices
+                    .entry(pool.token_address.clone())
+                    .or_default()
+                    .push((pool.oracle_asset_price, market_data.oracle_price_decimals));
+                token_decimals.insert(pool.token_address.clone(), pool.token_decimals);
+            }
+        }
+
+        // Relevant tokens: the hub plus every held asset.
+        let relevant =
+            std::iter::once(&self.config.hub_address).chain(self.config.assets_to_hold.keys());
+
+        for token in relevant {
+            let Some(entries) = prices.get(token) else {
+                // No price anywhere; downstream missing/hub-abort logic applies.
+                continue;
+            };
+            let Some(reconciled) = reconcile_price(entries) else {
+                continue;
+            };
+
+            if reconciled.spread_bps > self.config.max_oracle_price_spread_bps {
+                warn!(
+                    %token,
+                    spread_bps = reconciled.spread_bps,
+                    max = self.config.max_oracle_price_spread_bps,
+                    "cross-market oracle price spread exceeded; skipping rebalance"
+                );
+                BalancerOutcome::OracleSpreadBreach.record();
+
+                return Err(());
+            }
+
+            let decimals = token_decimals.get(token).copied().unwrap_or_default();
             self.assets_info.insert(
-                pool.pool_address.clone(),
+                token.clone(),
                 AssetInfo {
-                    decimals: pool.token_decimals,
-                    oracle_price: pool.oracle_asset_price,
-                    oracle_decimals: market_data.oracle_price_decimals,
+                    decimals,
+                    oracle_price: reconciled.price,
+                    oracle_decimals: reconciled.oracle_decimals,
                 },
             );
         }
+
+        Ok(())
     }
 
     fn is_swap_reasonable(&self) -> bool {
@@ -786,6 +844,56 @@ fn compute_swap_execution_impact(
     let bps = price_diff.checked_mul(BPS_FACTOR)?.checked_div(oracle_cross_price)?;
 
     Some(SwapPriceImpact { bps, execution_price_scaled })
+}
+
+/// Reconciled cross-market oracle price for a single asset.
+struct ReconciledPrice {
+    /// Median price, normalized to `oracle_decimals`.
+    price: i128,
+    /// Cross-market disagreement `(max - min) / median` in bps.
+    spread_bps: i128,
+    /// Common oracle decimal scale the median is expressed in.
+    oracle_decimals: u32,
+}
+
+/// Reconciles an asset's oracle prices gathered from every market that lists it.
+///
+/// `prices` holds `(oracle_price, oracle_decimals)` per market. All prices are
+/// first normalized to the maximum `oracle_decimals` in the group, then the
+/// median is taken. The spread is `(max - min) * BPS_FACTOR / median`.
+///
+/// Returns `None` if the slice is empty or any price is non-positive.
+fn reconcile_price(prices: &[(i128, u32)]) -> Option<ReconciledPrice> {
+    if prices.is_empty() || prices.iter().any(|&(p, _)| p <= 0) {
+        return None;
+    }
+
+    let max_dec = prices.iter().map(|&(_, d)| d).max()?;
+    let mut normalized: Vec<i128> = prices
+        .iter()
+        .map(|&(p, d)| {
+            let scale = 10_i128.checked_pow(max_dec - d)?;
+
+            p.checked_mul(scale)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    normalized.sort_unstable();
+
+    let n = normalized.len();
+    let median = if n % 2 == 1 {
+        normalized[n / 2]
+    } else {
+        (normalized[n / 2 - 1] + normalized[n / 2]) / 2
+    };
+    if median <= 0 {
+        return None;
+    }
+
+    let min = normalized[0];
+    let max = normalized[n - 1];
+    let spread_bps = (max - min).checked_mul(BPS_FACTOR)? / median;
+
+    Some(ReconciledPrice { price: median, oracle_decimals: max_dec, spread_bps })
 }
 
 fn compute_value_cents(token_amount: i128, info: &AssetInfo) -> i128 {
@@ -898,5 +1006,51 @@ mod tests {
         let order: Vec<_> = v.iter().map(|d| d.address.as_str()).collect();
         // Largest drift first; equal drifts broken by ascending address.
         assert_eq!(order, ["A", "C", "B"]);
+    }
+
+    #[test]
+    fn reconcile_single_price_zero_spread() {
+        let r = reconcile_price(&[(100, 7)]).unwrap();
+        assert_eq!(r.price, 100);
+        assert_eq!(r.oracle_decimals, 7);
+        assert_eq!(r.spread_bps, 0);
+    }
+
+    #[test]
+    fn reconcile_odd_count_median() {
+        let r = reconcile_price(&[(100, 7), (102, 7), (101, 7)]).unwrap();
+        assert_eq!(r.price, 101);
+    }
+
+    #[test]
+    fn reconcile_even_count_median_is_average() {
+        let r = reconcile_price(&[(100, 7), (102, 7), (104, 7), (106, 7)]).unwrap();
+        // middle two are 102 and 104 => 103.
+        assert_eq!(r.price, 103);
+    }
+
+    #[test]
+    fn reconcile_normalizes_differing_decimals() {
+        // 1.00 @ 5 decimals (100_000) and 1.00 @ 7 decimals (10_000_000) are
+        // the same value; both normalize to 7 decimals => 10_000_000, spread 0.
+        let r = reconcile_price(&[(100_000, 5), (10_000_000, 7)]).unwrap();
+        assert_eq!(r.oracle_decimals, 7);
+        assert_eq!(r.price, 10_000_000);
+        assert_eq!(r.spread_bps, 0);
+    }
+
+    #[test]
+    fn reconcile_spread_math() {
+        // [100, 110] @ same decimals: median 105, (10 * 10000 / 105) = 952 bps.
+        let r = reconcile_price(&[(100, 7), (110, 7)]).unwrap();
+        assert_eq!(r.price, 105);
+        assert_eq!(r.spread_bps, 952);
+    }
+
+    #[test]
+    fn reconcile_rejects_nonpositive_and_empty() {
+        assert!(reconcile_price(&[]).is_none());
+        assert!(reconcile_price(&[(0, 7)]).is_none());
+        assert!(reconcile_price(&[(-5, 7), (100, 7)]).is_none());
     }
 }

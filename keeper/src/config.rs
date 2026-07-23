@@ -7,10 +7,60 @@ use std::{
 };
 
 use ::config::{Config, Environment, File};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Deserializer};
 use url::Url;
 use validator::{Validate, ValidationError};
+
+/// Selectable strategies. When neither the CLI flag nor the config field names
+/// any, every strategy runs (see [`resolve_selection`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[clap(rename_all = "kebab-case")]
+pub enum StrategyKind {
+    Liquidator,
+    Withdrawer,
+    Balancer,
+    BadDebt,
+}
+
+impl StrategyKind {
+    pub const ALL: [StrategyKind; 4] =
+        [Self::Liquidator, Self::Withdrawer, Self::Balancer, Self::BadDebt];
+}
+
+/// Selectable liquidation types the liquidator may build candidates for. When
+/// neither the CLI flag nor the config field names any, all types run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[clap(rename_all = "kebab-case")]
+pub enum LiquidationKindArg {
+    Direct,
+    Preswap,
+    Flash,
+}
+
+impl LiquidationKindArg {
+    pub const ALL: [LiquidationKindArg; 3] = [Self::Direct, Self::Preswap, Self::Flash];
+}
+
+/// Resolves a selection with precedence: CLI flag wins, else the config file
+/// value, else all variants (`all`).
+pub fn resolve_selection<T: Copy + Eq + std::hash::Hash>(
+    cli: &[T],
+    config: &[T],
+    all: &[T],
+) -> std::collections::HashSet<T> {
+    let source = if !cli.is_empty() {
+        cli
+    } else if !config.is_empty() {
+        config
+    } else {
+        all
+    };
+
+    source.iter().copied().collect()
+}
 
 #[derive(Parser, Debug)]
 pub struct Args {
@@ -21,6 +71,17 @@ pub struct Args {
     pub skey: String,
     #[arg(short, long)]
     pub config: PathBuf,
+
+    /// Strategies to run (repeat or comma-separate). Overrides the config
+    /// file's `strategies`. When neither is set, all strategies run.
+    #[arg(long, value_enum, value_delimiter = ',')]
+    pub strategies: Vec<StrategyKind>,
+
+    /// Liquidation types the liquidator may use (repeat or comma-separate).
+    /// Overrides the config file's `liquidation_types`. When neither is set,
+    /// all types run.
+    #[arg(long = "liquidation-types", value_enum, value_delimiter = ',')]
+    pub liquidation_types: Vec<LiquidationKindArg>,
 }
 
 #[derive(Deserialize, Debug, Validate)]
@@ -197,6 +258,26 @@ pub struct CliConfig {
     #[validate(range(min = 0))]
     #[serde(deserialize_with = "de_i128")]
     pub balancer_min_swap_amount_value_cents: i128,
+
+    /// Maximum tolerated cross-market oracle price spread for any relevant
+    /// asset, in basis points (`(max - min) / median`). If exceeded, the whole
+    /// rebalance cycle is aborted (200 = 2%).
+    #[validate(range(
+        min = 0,
+        max = 10000,
+        message = "Oracle price spread BPS must be between 0 and 10000"
+    ))]
+    #[serde(deserialize_with = "de_i128")]
+    pub balancer_max_oracle_price_spread_bps: i128,
+
+    /// Strategies to run. Empty = all (a CLI `--strategies` flag overrides this).
+    #[serde(default)]
+    pub strategies: Vec<StrategyKind>,
+
+    /// Liquidation types the liquidator may use. Empty = all (a CLI
+    /// `--liquidation-types` flag overrides this).
+    #[serde(default)]
+    pub liquidation_types: Vec<LiquidationKindArg>,
 }
 
 /// Validates `assets_to_hold`: every key must be a valid stellar address and
@@ -347,6 +428,26 @@ mod example_config_tests {
     fn example_json_loads_and_validates() {
         let cfg = CliConfig::load(Path::new("../config.example.json")).expect("json loads");
         assert!(!cfg.assets_to_hold.is_empty());
+    }
+
+    #[test]
+    fn resolve_selection_precedence() {
+        let all = StrategyKind::ALL;
+        let cli = [StrategyKind::Balancer];
+        let cfg = [StrategyKind::Withdrawer];
+
+        // CLI wins when present.
+        assert_eq!(
+            resolve_selection(&cli, &cfg, &all),
+            std::collections::HashSet::from([StrategyKind::Balancer])
+        );
+        // Config used when CLI empty.
+        assert_eq!(
+            resolve_selection(&[], &cfg, &all),
+            std::collections::HashSet::from([StrategyKind::Withdrawer])
+        );
+        // All when both empty.
+        assert_eq!(resolve_selection(&[], &[], &all), all.into_iter().collect());
     }
 
     #[test]

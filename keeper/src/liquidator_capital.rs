@@ -175,9 +175,8 @@ impl LiquidatorCapital {
             .get(token_address)
             .filter(|c| {
                 let elapsed = c.fetched_at.elapsed();
-                let is_freshly_cached = elapsed < self.config.balance_cache_ttl;
 
-                is_freshly_cached
+                elapsed < self.config.balance_cache_ttl
             })
             .map(|c| c.amount)
     }

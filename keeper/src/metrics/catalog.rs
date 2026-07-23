@@ -317,21 +317,23 @@ pub enum BalancerOutcome {
     ThresholdHold,
     SellLegDispatched,
     BuyLegDispatched,
+    OracleSpreadBreach,
     Dispatched,
 }
 
 impl BalancerOutcome {
     const fn as_str(self) -> &'static str {
         match self {
-            Self::EvaluationError => "evaluation_error",
-            Self::BadOraclePrice => "bad_oracle_price",
-            Self::NoViableProvider => "no_viable_provider",
             Self::BelowDust => "below_dust",
-            Self::ReservationLost => "reservation_lost",
-            Self::ThresholdHold => "threshold_hold",
-            Self::SellLegDispatched => "sell_leg_dispatched",
-            Self::BuyLegDispatched => "buy_leg_dispatched",
             Self::Dispatched => "dispatched",
+            Self::ThresholdHold => "threshold_hold",
+            Self::BadOraclePrice => "bad_oracle_price",
+            Self::ReservationLost => "reservation_lost",
+            Self::EvaluationError => "evaluation_error",
+            Self::BuyLegDispatched => "buy_leg_dispatched",
+            Self::NoViableProvider => "no_viable_provider",
+            Self::SellLegDispatched => "sell_leg_dispatched",
+            Self::OracleSpreadBreach => "oracle_price_spread_breach",
         }
     }
 

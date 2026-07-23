@@ -17,7 +17,7 @@ use crate::{
         stellar_event::{EventFilter, SorobanEventCollector},
         stellar_ledger::LedgerCollector,
     },
-    config::{Args, CliConfig},
+    config::{Args, CliConfig, LiquidationKindArg, StrategyKind, resolve_selection},
     execute::{Action, stellar_tx::SorobanExecutor},
     liquidator_capital::{LiquidatorCapital, LiquidatorCapitalConfig},
     stellar::{client::Gateway, pubkey_to_strkey},
@@ -43,7 +43,8 @@ mod strategy;
 async fn main() -> anyhow::Result<()> {
     setup_tracing();
 
-    let Args { config, skey } = Args::parse();
+    let Args { config, skey, strategies: cli_strategies, liquidation_types: cli_liquidation_types } =
+        Args::parse();
     let CliConfig {
         // -- General --
         rpc_url,
@@ -86,13 +87,22 @@ async fn main() -> anyhow::Result<()> {
         balancer_max_swap_provider_halving_probes,
         balancer_min_swap_amount_value_cents,
         balancer_max_allowed_swap_slippage_bps,
+        balancer_max_oracle_price_spread_bps,
+        // -- Strategy / liquidation-type selection --
+        strategies: cfg_strategies,
+        liquidation_types: cfg_liquidation_types,
     } = CliConfig::load(&config)?;
     let skey = SigningKey::from_bytes(&PrivateKey::from_string(&skey)?.0);
     let pkey = pubkey_to_strkey(&skey);
-
     let version = env!("CARGO_PKG_VERSION");
 
-    info!(%pkey, %version, "starting keeper...");
+    // Resolve selections: CLI flag wins, else config file, else all.[TODO: must be all or maybe only Direct?]
+    let (enabled_strategies, enabled_liquidation_types) = (
+        resolve_selection(&cli_strategies, &cfg_strategies, &StrategyKind::ALL),
+        resolve_selection(&cli_liquidation_types, &cfg_liquidation_types, &LiquidationKindArg::ALL),
+    );
+
+    info!(%pkey, %version, ?enabled_strategies, ?enabled_liquidation_types, "starting keeper...");
 
     let store = SqliteStore::open(&db_path)?;
     let metrics_handle = metrics::install_prometheus_recorder();
@@ -168,6 +178,7 @@ async fn main() -> anyhow::Result<()> {
             assets_to_hold: liquidator_source_assets.clone(),
             min_profit_margin_cents: liquidator_min_profit_margin_cents,
             refresh_interval_blocks: liquidator_refresh_interval_blocks,
+            enabled_liquidation_types: enabled_liquidation_types.clone(),
             max_allowed_swap_slippage_bps: liquidator_max_allowed_swap_slippage_bps,
         },
         store.obligations(),
@@ -195,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
         gateway.clone(),
         BalancerConfig {
             xlm_safety_margin,
-            market: markets[0].clone(),
+            markets: markets.clone(),
             hub_address: hub_address.clone(),
             xlm_address: xlm_address.clone(),
             max_retries: balancer_max_retries,
@@ -204,19 +215,28 @@ async fn main() -> anyhow::Result<()> {
             max_swaps_per_batch: balancer_max_swaps_per_batch,
             refresh_interval_blocks: balancer_refresh_interval_blocks,
             rebalance_threshold_bps: balancer_rebalance_threshold_bps,
-            max_swap_provider_halving_probes: balancer_max_swap_provider_halving_probes,
             max_execution_impact_bps: balancer_max_execution_impact_bps,
             min_swap_amount_value_cents: balancer_min_swap_amount_value_cents,
             allowed_swap_slippage_bps: balancer_max_allowed_swap_slippage_bps,
+            max_oracle_price_spread_bps: balancer_max_oracle_price_spread_bps,
+            max_swap_provider_halving_probes: balancer_max_swap_provider_halving_probes,
         },
         Arc::clone(&ledger_reader),
         Arc::clone(&liquidator_capital),
     );
 
-    // engine.add_strategy(Box::new(bad_debt_request_initiator));
-    // engine.add_strategy(Box::new(liquidator));
-    // engine.add_strategy(Box::new(withdrawer));
-    engine.add_strategy(Box::new(balancer));
+    if enabled_strategies.contains(&StrategyKind::BadDebt) {
+        engine.add_strategy(Box::new(bad_debt_request_initiator));
+    }
+    if enabled_strategies.contains(&StrategyKind::Liquidator) {
+        engine.add_strategy(Box::new(liquidator));
+    }
+    if enabled_strategies.contains(&StrategyKind::Withdrawer) {
+        engine.add_strategy(Box::new(withdrawer));
+    }
+    if enabled_strategies.contains(&StrategyKind::Balancer) {
+        engine.add_strategy(Box::new(balancer));
+    }
 
     let cursor_repo = Arc::new(store.cursor());
     engine.add_collector(Box::new(SorobanEventCollector::try_new(

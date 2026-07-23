@@ -142,3 +142,15 @@ balancer_max_swaps_per_batch = 5
 balancer_max_swap_provider_halving_probes = 3
 # Skip rebalances below this value (USD cents, ≥ 0).
 balancer_min_swap_amount_value_cents = 100
+# Abort the whole cycle if any asset's cross-market oracle spread exceeds this (bps, 0-10000).
+balancer_max_oracle_price_spread_bps = 200
+
+# Optional: which strategies to run. Omit or leave empty to run all.
+# Valid values: "liquidator", "withdrawer", "balancer", "bad-debt".
+# A `--strategies` CLI flag overrides this.
+# strategies = ["liquidator", "balancer"]
+
+# Optional: which liquidation types the liquidator may use. Omit/empty = all.
+# Valid values: "direct", "preswap", "flash".
+# A `--liquidation-types` CLI flag overrides this.
+# liquidation_types = ["direct", "flash"]
