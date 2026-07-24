@@ -12,12 +12,14 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
 /// Private DTO mirroring a single sqlite row.
+#[derive(Debug)]
 struct ObligationRow {
     user: String,
     seed: String,
     data_json: String,
 }
 
+#[derive(Debug)]
 pub struct ObligationsRepo {
     conn: Arc<Mutex<Connection>>, // TODO: Unify Arc visibility across the repo
 }

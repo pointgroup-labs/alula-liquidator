@@ -107,7 +107,11 @@ impl LiquidatorCapital {
 
     pub fn release(&self, reservation_id: u64) {
         let mut guard = self.inner.lock();
-        guard.reservations.remove(&reservation_id);
+        let removed = guard.reservations.remove(&reservation_id);
+
+        if removed.is_some() {
+            guard.balances.clear();
+        }
     }
 
     pub async fn try_get_balance(
@@ -121,6 +125,7 @@ impl LiquidatorCapital {
         // NB: No freshly cached balance exists, so read it directly
 
         let amount = ledger_reader.read_token_balance(token_address, &self.pkey).await?;
+
         metrics::set_asset_balance(token_address, amount);
         if token_address == self.config.xlm_address {
             metrics::set_xlm_balance(amount);
@@ -135,13 +140,44 @@ impl LiquidatorCapital {
         Ok(amount)
     }
 
+    pub async fn try_get_available_balance(
+        &self,
+        token_address: &str,
+        ledger_reader: &dyn LedgerReader,
+    ) -> anyhow::Result<i128> {
+        let raw = self.try_get_balance(token_address, ledger_reader).await?;
+        let reserved = self.reserved_amount(token_address);
+        let available = raw.saturating_sub(reserved);
+
+        Ok(available)
+    }
+
+    /// Sum of live (non-expired) reservations pledged against `token_address`.
+    /// Prunes expired reservations under the same lock so a stale TTL window
+    /// can't inflate the committed total.
+    fn reserved_amount(&self, token_address: &str) -> i128 {
+        let mut guard = self.inner.lock();
+        guard.unlock_expired(self.config.reservation_ttl);
+
+        guard
+            .reservations
+            .values()
+            .filter(|r| r.token_address == token_address)
+            .map(|r| r.amount)
+            .sum()
+    }
+
     fn get_freshly_cached_balance(&self, token_address: &str) -> Option<i128> {
         let guard = self.inner.lock();
 
         guard
             .balances
             .get(token_address)
-            .filter(|c| c.fetched_at.elapsed() < self.config.balance_cache_ttl)
+            .filter(|c| {
+                let elapsed = c.fetched_at.elapsed();
+
+                elapsed < self.config.balance_cache_ttl
+            })
             .map(|c| c.amount)
     }
 }

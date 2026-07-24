@@ -1,7 +1,7 @@
 //! Liquidator strategy: scans cached obligations after every refresh interval,
 //! picks profitable (borrow, deposit) pairs, and submits liquidations.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, collections::HashSet, sync::Arc};
 
 use ed25519_dalek::SigningKey;
 use engine::{
@@ -17,6 +17,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     collect::{Event, stellar_ledger::NewLedger},
+    config::LiquidationKindArg,
     constants::BPS_FACTOR,
     execute::{
         Action,
@@ -38,6 +39,8 @@ pub struct LiquidatorConfig {
     pub refresh_interval_blocks: u32,
     pub min_profit_margin_cents: i128,
     pub max_allowed_swap_slippage_bps: i128,
+    /// Liquidation types the liquidator may build candidates for.
+    pub enabled_liquidation_types: HashSet<LiquidationKindArg>,
 }
 
 #[derive(Debug, Clone)]
@@ -239,6 +242,18 @@ impl Liquidator {
                     &event.value,
                 );
             }
+            OperationEvent::ClaimCoverBadDebt => {
+                let obl_display = self.gateway.decode_topic(&event, 1);
+                info!(%event_name, ledger = event.ledger, %market, %obl_display, "bad-debt claim event");
+
+                let Ok(key) = self.gateway.parse_obligation_key_from_topic(&event, 1) else {
+                    error!(%event_name, "cannot parse obligation key");
+
+                    return vec![];
+                };
+
+                self.reconcile_obligation_from_chain(&market, &key, event_name).await;
+            }
         }
 
         if let Err(e) = self.cursor_repo.set(&event.id, event.ledger) {
@@ -260,31 +275,70 @@ impl Liquidator {
         match self.gateway.parse_obligation_from_event_value(value_xdr_base64, field_name, key) {
             Ok(Some(obligation)) => {
                 debug!(?key, ?obligation, %event_name, %market, "obligation snapshot");
-                if let Err(e) = self.obligations_repo.put(market, key, &obligation) {
-                    warn!(?e, %event_name, %market, "failed to save obligation");
-                }
-                if key.user == self.pkey
-                    && let Some(md) = self.market_data.get(market)
-                {
-                    emit_keeper_position_metrics(market, &obligation, md);
-                }
-
-                self.obligations
-                    .entry(market.to_string())
-                    .or_default()
-                    .insert(key.clone(), obligation);
+                self.upsert_obligation(market, key, obligation, event_name);
             }
             Ok(None) => {
                 // TODO: This is liquidator's obligation, not a borrower's
                 info!(?key, %event_name, %market, "obligation deleted on the market");
-                if let Err(e) = self.obligations_repo.delete(market, key) {
-                    warn!(?e, %event_name, %market, "failed to delete obligation");
-                }
-                if let Some(map) = self.obligations.get_mut(market) {
-                    map.remove(key);
-                }
+                self.delete_obligation(market, key, event_name);
             }
             Err(e) => warn!(%event_name, %field_name, %market, ?e, "parse error"),
+        }
+    }
+
+    /// Persists a fresh obligation snapshot to the repo and in-memory cache,
+    /// and emits keeper-position metrics when it is the keeper's own obligation.
+    fn upsert_obligation(
+        &mut self,
+        market: &str,
+        key: &ObligationKey,
+        obligation: Obligation,
+        event_name: &str,
+    ) {
+        if let Err(e) = self.obligations_repo.put(market, key, &obligation) {
+            warn!(?e, %event_name, %market, "failed to save obligation");
+        }
+        if key.user == self.pkey
+            && let Some(md) = self.market_data.get(market)
+        {
+            emit_keeper_position_metrics(market, &obligation, md);
+        }
+
+        self.obligations.entry(market.to_string()).or_default().insert(key.clone(), obligation);
+    }
+
+    /// Removes an obligation from the repo and in-memory cache. Mirrors the
+    /// contract deleting an obligation once it becomes empty.
+    fn delete_obligation(&mut self, market: &str, key: &ObligationKey, event_name: &str) {
+        if let Err(e) = self.obligations_repo.delete(market, key) {
+            warn!(?e, %event_name, %market, "failed to delete obligation");
+        }
+        if let Some(map) = self.obligations.get_mut(market) {
+            map.remove(key);
+        }
+    }
+
+    async fn reconcile_obligation_from_chain(
+        &mut self,
+        market: &str,
+        key: &ObligationKey,
+        event_name: &str,
+    ) {
+        match self.ledger_reader.read_user_obligation(market, key).await {
+            Ok(obligation) => {
+                debug!(?key, ?obligation, %event_name, %market, "reconciled obligation (alive)");
+                self.upsert_obligation(market, key, obligation, event_name);
+            }
+            Err(e) if crate::stellar::errors::is_obligation_does_not_exist(&e) => {
+                info!(?key, %event_name, %market, "reconciled obligation (deleted on-chain)");
+                self.delete_obligation(market, key, event_name);
+            }
+            Err(e) => {
+                warn!(
+                    ?e, ?key, %event_name, %market,
+                    "failed to re-read obligation; leaving cache untouched"
+                );
+            }
         }
     }
 
@@ -603,9 +657,9 @@ impl Liquidator {
             return None;
         }
 
-        let raw_borrow_balance = self
+        let available_borrow_balance = self
             .liquidator_capital
-            .try_get_balance(borrow_token, &*self.ledger_reader)
+            .try_get_available_balance(borrow_token, &*self.ledger_reader)
             .await
             .inspect_err(|e| {
                 warn!(?e, %borrow_token, "balance query failed");
@@ -614,9 +668,9 @@ impl Liquidator {
             .unwrap_or(0);
 
         let usable_borrow = if borrow_token == self.config.xlm_address {
-            raw_borrow_balance.saturating_sub(self.config.xlm_safety_margin)
+            available_borrow_balance.saturating_sub(self.config.xlm_safety_margin)
         } else {
-            raw_borrow_balance
+            available_borrow_balance
         };
         let min_profit_margin_value = self
             .config
@@ -637,7 +691,8 @@ impl Liquidator {
         // -- DIRECT LIQUIDATION --
 
         let direct_repay = max_profitable_repay.min(usable_borrow);
-        if direct_repay.is_positive()
+        if self.config.enabled_liquidation_types.contains(&LiquidationKindArg::Direct)
+            && direct_repay.is_positive()
             && let Some(plan) = self
                 .try_direct_plan(
                     is_insolvent,
@@ -657,79 +712,90 @@ impl Liquidator {
 
         // -- FLASH LIQUIDATION --
 
-        let flash_repay = {
-            let all_liquidated_position_deposit = collateral_pool
-                .j_tokens_to_tokens_floor(deposit_position.j_tokens)
-                .inspect_err(|e| error!(%e))
-                .ok()?
-                .0;
-            // NB: all that's available for borrowing is available
-            // to be withdrawn without applying scarcity fees
-            let available_to_withdraw_without_scarcity_fees =
-                collateral_pool.available_for_borrow().inspect_err(|e| error!(%e)).ok()?.0;
+        if self.config.enabled_liquidation_types.contains(&LiquidationKindArg::Flash) {
+            let flash_repay = {
+                let all_liquidated_position_deposit = collateral_pool
+                    .j_tokens_to_tokens_floor(deposit_position.j_tokens)
+                    .inspect_err(|e| error!(%e))
+                    .ok()?
+                    .0;
+                // NB: all that's available for borrowing is available
+                // to be withdrawn without applying scarcity fees
+                let available_to_withdraw_without_scarcity_fees =
+                    collateral_pool.available_for_borrow().inspect_err(|e| error!(%e)).ok()?.0;
 
-            let (instantly_available_plain_collateral, instantly_available_withdrawable_deposit) = (
-                deposit_position.collateral.0,
-                all_liquidated_position_deposit.min(available_to_withdraw_without_scarcity_fees),
-            );
-            let instantly_available_collateral =
-                instantly_available_plain_collateral + instantly_available_withdrawable_deposit;
+                let (
+                    instantly_available_plain_collateral,
+                    instantly_available_withdrawable_deposit,
+                ) = (
+                    deposit_position.collateral.0,
+                    all_liquidated_position_deposit
+                        .min(available_to_withdraw_without_scarcity_fees),
+                );
+                let instantly_available_collateral =
+                    instantly_available_plain_collateral + instantly_available_withdrawable_deposit;
 
-            let updated_max_profitable_repay = profitability::compute_repay_cap_from_collateral(
-                !is_insolvent,
-                borrow_pool,
-                max_feasible_repay,
-                collateral_pool,
-                instantly_available_collateral, // must use instantly available collateral only
-                obligation_debt_value,
-                profit_margin_borrow,
-                obligation_collateral_value,
-            )
-            .inspect_err(|e| error!(%e))
-            .ok()?;
+                let updated_max_profitable_repay =
+                    profitability::compute_repay_cap_from_collateral(
+                        !is_insolvent,
+                        borrow_pool,
+                        max_feasible_repay,
+                        collateral_pool,
+                        instantly_available_collateral, // must use instantly available collateral only
+                        obligation_debt_value,
+                        profit_margin_borrow,
+                        obligation_collateral_value,
+                    )
+                    .inspect_err(|e| error!(%e))
+                    .ok()?;
 
-            if updated_max_profitable_repay <= 0 {
-                warn!(updated_max_profitable_repay, "non-positive updated max profitable repay");
+                if updated_max_profitable_repay <= 0 {
+                    warn!(
+                        updated_max_profitable_repay,
+                        "non-positive updated max profitable repay"
+                    );
 
-                return None;
+                    return None;
+                }
+
+                updated_max_profitable_repay.min(borrow_pool.total_available_adjusted.0)
+            };
+
+            if flash_repay.is_positive()
+                && let Some(plan) = self
+                    .try_flash_plan(
+                        is_insolvent,
+                        flash_repay,
+                        borrow_pool,
+                        borrower_obligation,
+                        market_data,
+                        collateral_pool,
+                        borrower_obligation_key,
+                        min_profit_margin_value,
+                        deposit_position,
+                    )
+                    .await
+            {
+                candidates.push(plan);
             }
+        }
 
-            updated_max_profitable_repay.min(borrow_pool.total_available_adjusted.0)
-        };
+        // -- PRESWAP LIQUIDATION --
 
-        if flash_repay.is_positive()
+        if self.config.enabled_liquidation_types.contains(&LiquidationKindArg::Preswap)
             && let Some(plan) = self
-                .try_flash_plan(
+                .try_preswap_plan(
                     is_insolvent,
-                    flash_repay,
                     borrow_pool,
                     borrower_obligation,
                     market_data,
                     collateral_pool,
+                    max_profitable_repay,
                     borrower_obligation_key,
                     min_profit_margin_value,
                     deposit_position,
                 )
                 .await
-        {
-            candidates.push(plan);
-        }
-
-        // -- PRESWAP LIQUIDATION --
-
-        if let Some(plan) = self
-            .try_preswap_plan(
-                is_insolvent,
-                borrow_pool,
-                borrower_obligation,
-                market_data,
-                collateral_pool,
-                max_profitable_repay,
-                borrower_obligation_key,
-                min_profit_margin_value,
-                deposit_position,
-            )
-            .await
         {
             candidates.push(plan);
         }
@@ -952,9 +1018,10 @@ impl Liquidator {
                 continue;
             }
 
-            let Ok(raw_balance) = self
+            // Size against capital not already pledged to in-flight ops
+            let Ok(available_balance) = self
                 .liquidator_capital
-                .try_get_balance(source_asset, &*self.ledger_reader)
+                .try_get_available_balance(source_asset, &*self.ledger_reader)
                 .await
                 .inspect_err(|e| {
                     warn!(?e, %source_asset, "balance query failed");
@@ -963,13 +1030,13 @@ impl Liquidator {
                 continue;
             };
             let swappable_balance = if source_asset.as_ref() == self.config.xlm_address {
-                raw_balance.saturating_sub(self.config.xlm_safety_margin)
+                available_balance.saturating_sub(self.config.xlm_safety_margin)
             } else {
-                raw_balance
+                available_balance
             };
             if !swappable_balance.is_positive() {
                 info!(
-                    raw_balance,
+                    available_balance,
                     swappable_balance, source_asset, "non-positive liquidator usable balance"
                 );
 
@@ -1289,12 +1356,12 @@ impl Liquidator {
                     signing_key: self.skey.clone(),
                     max_submission_retries: self.config.max_retries,
                     on_settle: Some(TransactionSettleHook {
-                        op_id,
+                        op_ids: vec![op_id],
+                        liquidator_capital: self.liquidator_capital.clone(),
                         liquidation_outcome: Some(LiquidationOutcomeMetric {
                             market: market.to_string(),
                             expected_net_value: plan.net_profit_value,
                         }),
-                        liquidator_capital: self.liquidator_capital.clone(),
                     }),
                 }))
             }

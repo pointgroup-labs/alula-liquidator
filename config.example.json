@@ -1,0 +1,47 @@
+{
+    "rpc_url": "https://soroban-testnet.stellar.org",
+    "fallback_rpc_urls": ["https://sorban-testnet.stellar.org"],
+    "rpc_max_call_duration_secs": 30,
+    "db_path": "./data.db",
+    "markets": [
+        "CB5IJJRIYYF2BJESDFIEERGCX7DCDWRWBTYXSMSQF2TXSZ2MVQYWXJYT"
+    ],
+    "xlm_address": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+    "hub_address": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+    "xlm_safety_margin": 2000000000,
+    "default_simulation_fee": 100000,
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "assets_to_hold": {
+        "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC": 1000,
+        "CDNVQW44C3HALYNVQ4SOBXY5EWYTGVYXX6JPESOLQDABJI5FC5LTRRUE": 4000
+    },
+    "swap_providers": [
+        "CCRIEORD53E4TSYS33JYSQVN5N6AQCB7JUSVROWFHHKQUBDDDZTXOLU7",
+        "CCBMBQGNR3NCR2FPN3AYQMJ65UMGQHCOJUB34RQCGIYMX77D5HUUSQDG"
+    ],
+    "metrics_bind_addr": "0.0.0.0:9000",
+    "readiness_staleness_budget_secs": 120,
+    "event_collector_start_ledger": 3724633,
+    "ledger_collector_polling_interval_secs": 2,
+    "keeper_capital_balance_ttl_secs": 10,
+    "keeper_capital_reservation_ttl_secs": 30,
+    "bad_debt_request_initiator_max_retries": 3,
+    "bad_debt_request_initiator_refresh_interval_blocks": 5,
+    "withdrawer_max_retries": 3,
+    "withdrawer_refresh_interval_blocks": 5,
+    "withdrawer_min_withdraw_value_cents": 500,
+    "withdrawer_utilization_safety_margin_bps": 500,
+    "liquidator_max_retries": 3,
+    "liquidator_refresh_interval_blocks": 2,
+    "liquidator_min_profit_margin_cents": 0,
+    "liquidator_max_allowed_swap_slippage_bps": 0,
+    "balancer_max_retries": 3,
+    "balancer_refresh_interval_blocks": 2,
+    "balancer_max_allowed_swap_slippage_bps": 30,
+    "balancer_max_execution_impact_bps": 1200,
+    "balancer_rebalance_threshold_bps": 500,
+    "balancer_max_swaps_per_batch": 5,
+    "balancer_max_swap_provider_halving_probes": 3,
+    "balancer_min_swap_amount_value_cents": 100,
+    "balancer_max_oracle_price_spread_bps": 200
+}

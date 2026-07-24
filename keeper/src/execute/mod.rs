@@ -1,5 +1,6 @@
 //! Implementation of `engine::reactor::Executor` for the keeper.
 
+pub mod failover;
 pub mod stellar_tx;
 
 use stellar_tx::SubmitStellarTx;

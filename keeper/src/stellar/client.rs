@@ -2,8 +2,9 @@
 //!
 //! Internal to the `stellar` adapter. Strategies never reach here.
 
+use core::time::Duration;
+
 use anyhow::anyhow;
-use stellar_rpc_client::{AuthMode, Client};
 use stellar_xdr::{
     ContractId, Hash, HostFunction, InvokeContractArgs, Memo, Operation, OperationBody,
     Preconditions, ScAddress, ScSymbol, ScVal, SequenceNumber, Transaction, TransactionEnvelope,
@@ -11,18 +12,25 @@ use stellar_xdr::{
 };
 
 use super::xdr_codec::{account_strkey_to_muxed, contract_strkey_to_hash};
-use crate::metrics::{self, SimulateFailureKind, SimulateOutcome};
+use crate::{
+    execute::failover::FailoverClient,
+    metrics::{self, SimulateFailureKind, SimulateOutcome},
+};
 
 const DEFAULT_SIMULATION_FEE: u32 = 100_000;
 
 pub struct Gateway {
-    pub rpc: Client,
+    pub rpc: FailoverClient,
     pub source_account: String,
 }
 
 impl Gateway {
-    pub fn new(rpc_url: &url::Url, source_account: String) -> anyhow::Result<Self> {
-        Ok(Self { rpc: Client::new(rpc_url.as_str())?, source_account })
+    pub fn new(
+        rpc_urls: Vec<url::Url>,
+        source_account: String,
+        max_call_duration: Duration,
+    ) -> anyhow::Result<Self> {
+        Ok(Self { rpc: FailoverClient::new(rpc_urls, max_call_duration)?, source_account })
     }
 }
 
@@ -61,11 +69,7 @@ impl Gateway {
             TransactionEnvelope::Tx(TransactionV1Envelope { tx, signatures: VecM::default() });
 
         let started = std::time::Instant::now();
-        let sim_response = match self
-            .rpc
-            .simulate_transaction_envelope(&envelope, Some(AuthMode::Record))
-            .await
-        {
+        let sim_response = match self.rpc.simulate_transaction_envelope(&envelope).await {
             Ok(r) => {
                 // RPC roundtrip completed — record latency regardless of
                 // whether the simulation itself succeeded. The sim-error
