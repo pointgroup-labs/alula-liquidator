@@ -5,7 +5,8 @@ use std::sync::Arc;
 use ed25519_dalek::SigningKey;
 use engine::{
     lending_model::{
-        MarketData, Obligation, ObligationKey, profitability::cents_to_oracle_value_ceil,
+        MarketData, Obligation, ObligationKey, error::MapArithmeticError,
+        profitability::cents_to_oracle_value_ceil,
     },
     ports::{EventCodec, LedgerReader, OperationEvent},
     reactor::{BoxFuture, Strategy},
@@ -253,10 +254,17 @@ impl BadDebtRequestInitiator {
                 return Ok(false);
             };
 
+            let collateral_token_factor = 10i128.checked_pow(pool.token_decimals).m_ou()?;
+
             let underlying_from_j = pool.j_tokens_to_tokens_ceil(deposit_pos.j_tokens)?;
             let total_collateral = underlying_from_j + deposit_pos.collateral; // TODO: checked/saturating?
 
-            let collateral_value = total_collateral.checked_mul(pool.oracle_asset_price)?;
+            let collateral_value = total_collateral
+                .0
+                .checked_mul(pool.oracle_asset_price)
+                .m_ou()?
+                .checked_div(collateral_token_factor)
+                .m_ou()?;
             if collateral_value > min_collateral_threshold_value {
                 info!(
                     ?obl_key,
