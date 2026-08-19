@@ -272,7 +272,7 @@ impl Balancer {
         let candidate_quoted_in_target =
             (candidate_oracle_price * oracle_scale) / target_oracle_price;
 
-        let mut best_provider: Option<(String, i128, i128)> = None;
+        let mut best_provider: Option<(String, i128, i128, i128)> = None;
         for provider in &self.config.swap_providers {
             match self
                 .probe_provider(
@@ -285,15 +285,16 @@ impl Balancer {
                 )
                 .await
             {
-                Ok(Some((amount_in, amount_out))) => {
+                Ok(Some((amount_in, amount_out, realised_price_scaled))) => {
                     debug!(%provider, %candidate, amount_in, amount_out, "found a route that doesn't exceed the max price impact");
 
                     let take = match best_provider {
                         None => true,
-                        Some((_, best_in, _)) => amount_in > best_in,
+                        Some((_, best_in, _, _)) => amount_in > best_in,
                     };
                     if take {
-                        best_provider = Some((provider.clone(), amount_in, amount_out));
+                        best_provider =
+                            Some((provider.clone(), amount_in, amount_out, realised_price_scaled));
                     }
                 }
                 Ok(None) => debug!(%provider, %candidate, "provider unviable"),
@@ -303,7 +304,7 @@ impl Balancer {
                 }
             }
         }
-        let Some((provider, amount_in, amount_out)) = best_provider else {
+        let Some((provider, amount_in, amount_out, realised_price_scaled)) = best_provider else {
             BalancerOutcome::NoViableProvider.record();
 
             return Ok(None);
@@ -338,14 +339,6 @@ impl Balancer {
             }
         };
 
-        // Realised execution price of the winning route (candidate priced in
-        // target), on the oracle scale so it's directly comparable to
-        // `candidate_quoted_in_target`. Written out separately from the impact
-        // metric so we have the actual price we transacted at, not just the
-        // spread. `amount_in` is positive here (checked above), so this can't
-        // divide by zero.
-        let realised_price_scaled =
-            amount_out.saturating_mul(oracle_scale).checked_div(amount_in).unwrap_or(0);
         metrics::record_balancer_realised_price(candidate, realised_price_scaled);
 
         info!(
@@ -377,16 +370,29 @@ impl Balancer {
         oracle_price: i128,
         oracle_decimals: u32,
         swappable_balance: i128,
-    ) -> anyhow::Result<Option<(i128, i128)>> {
+    ) -> anyhow::Result<Option<(i128, i128, i128)>> {
+        let (Some(in_info), Some(out_info)) =
+            (self.asset_index.get(asset_in), self.asset_index.get(asset_out))
+        else {
+            warn!(%provider, %asset_in, %asset_out, "asset decimals unknown; skipping probe");
+
+            return Ok(None);
+        };
+
         let mut amount_in = swappable_balance;
 
         for _ in 0..self.config.max_swap_provider_probes {
             let amount_out =
                 self.ledger_reader.get_amount_out(amount_in, asset_in, asset_out, provider).await?;
 
-            let Some(impact) =
-                compute_swap_price_impact(oracle_price, amount_in, amount_out, oracle_decimals)
-            else {
+            let Some(impact) = compute_swap_price_impact(
+                oracle_price,
+                amount_in,
+                amount_out,
+                in_info.decimals,
+                out_info.decimals,
+                oracle_decimals,
+            ) else {
                 debug!(
                     %provider, %asset_in, amount_in, amount_out, oracle_price,
                     "price impact not computable (non-positive input); treating probe as unviable"
@@ -410,7 +416,7 @@ impl Balancer {
                     "probe within max price impact"
                 );
 
-                return Ok(Some((amount_in, amount_out)));
+                return Ok(Some((amount_in, amount_out, impact.execution_price_scaled)));
             }
 
             debug!(
@@ -478,9 +484,12 @@ struct SwapPriceImpact {
 /// different number of decimals. `oracle_price_decimals` is a runtime value on
 /// `MarketData`, not a constant, so the scale must be read from it.
 ///
-/// NB: still assumes `amount_in` and `amount_out` share the same token decimals.
-/// A mismatch bakes a `10^(out_decimals - in_decimals)` factor into the realised
-/// price; that pre-existing limitation is documented, not fixed, here.
+/// `amount_in` and `amount_out` are raw units of two different tokens, so they
+/// are put on a common basis before dividing — the oracle ratio is quoted per
+/// *whole* token, and without this a decimals mismatch bakes a
+/// `10^(out_decimals - in_decimals)` factor into the realised price (for a 7/8
+/// mismatch that is ±9000 bps of pure artefact, enough to make the caller's
+/// ceiling either reject everything or accept anything).
 ///
 /// Returns `None` when the inputs can't yield a meaningful comparison
 /// (non-positive `amount_in` or `oracle_price`, or arithmetic overflow), so the
@@ -489,6 +498,8 @@ fn compute_swap_price_impact(
     oracle_price: i128,
     amount_in: i128,
     amount_out: i128,
+    amount_in_decimals: u32,
+    amount_out_decimals: u32,
     oracle_price_decimals: u32,
 ) -> Option<SwapPriceImpact> {
     // Guard both divisions: `amount_in` scales the realised price, `oracle_price`
@@ -498,7 +509,16 @@ fn compute_swap_price_impact(
     }
 
     let scale = 10_i128.checked_pow(oracle_price_decimals)?;
-    let execution_price_scaled = amount_out.checked_mul(scale)?.checked_div(amount_in)?;
+
+    // Only the difference is applied, on whichever side keeps the intermediate
+    // product smallest.
+    let correction = 10_i128.checked_pow(amount_in_decimals.abs_diff(amount_out_decimals))?;
+    let (numerator, denominator) = if amount_in_decimals >= amount_out_decimals {
+        (amount_out.checked_mul(scale)?.checked_mul(correction)?, amount_in)
+    } else {
+        (amount_out.checked_mul(scale)?, amount_in.checked_mul(correction)?)
+    };
+    let execution_price_scaled = numerator.checked_div(denominator)?;
 
     // execution < oracle → positive impact (received less than oracle value)
     // execution > oracle → negative impact (did better than oracle)
@@ -521,4 +541,64 @@ fn compute_value_cents(token_amount: i128, info: &AssetInfo) -> i128 {
         return 0;
     }
     (token_amount.saturating_mul(info.oracle_price) / denom).max(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ORACLE_DECIMALS: u32 = 14;
+
+    /// Quote that exactly matches the oracle: 100 whole `in` tokens for 200
+    /// whole `out` tokens at a 2:1 oracle ratio.
+    fn perfect_swap(in_decimals: u32, out_decimals: u32) -> SwapPriceImpact {
+        let oracle_price = 2 * 10_i128.pow(ORACLE_DECIMALS);
+
+        compute_swap_price_impact(
+            oracle_price,
+            100 * 10_i128.pow(in_decimals),
+            200 * 10_i128.pow(out_decimals),
+            in_decimals,
+            out_decimals,
+            ORACLE_DECIMALS,
+        )
+        .expect("inputs are positive and in range")
+    }
+
+    #[test]
+    fn perfect_swap_across_mismatched_decimals_is_zero_impact() {
+        assert_eq!(perfect_swap(7, 7).bps, 0);
+        assert_eq!(perfect_swap(7, 8).bps, 0);
+        assert_eq!(perfect_swap(8, 7).bps, 0);
+    }
+
+    #[test]
+    fn realised_price_is_on_the_oracle_scale_regardless_of_decimals() {
+        let expected = 2 * 10_i128.pow(ORACLE_DECIMALS);
+
+        assert_eq!(perfect_swap(7, 8).execution_price_scaled, expected);
+        assert_eq!(perfect_swap(8, 7).execution_price_scaled, expected);
+    }
+
+    #[test]
+    fn worse_than_oracle_quote_is_positive_impact() {
+        let oracle_price = 2 * 10_i128.pow(ORACLE_DECIMALS);
+        let impact = compute_swap_price_impact(
+            oracle_price,
+            100 * 10_i128.pow(7),
+            180 * 10_i128.pow(8),
+            7,
+            8,
+            ORACLE_DECIMALS,
+        )
+        .expect("inputs are positive and in range");
+
+        assert_eq!(impact.bps, 1_000);
+    }
+
+    #[test]
+    fn non_positive_inputs_are_unviable() {
+        assert!(compute_swap_price_impact(1, 0, 1, 7, 7, ORACLE_DECIMALS).is_none());
+        assert!(compute_swap_price_impact(0, 1, 1, 7, 7, ORACLE_DECIMALS).is_none());
+    }
 }
