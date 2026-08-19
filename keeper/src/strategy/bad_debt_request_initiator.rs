@@ -255,9 +255,11 @@ impl BadDebtRequestInitiator {
             };
 
             let underlying_from_j = pool.j_tokens_to_tokens_ceil(deposit_pos.j_tokens)?;
-            let total_collateral = underlying_from_j + deposit_pos.collateral; // TODO: checked/saturating?
+            let total_collateral = underlying_from_j.checked_add(deposit_pos.collateral)?;
 
-            let collateral_value = total_collateral.checked_mul(pool.oracle_asset_price)?;
+            let collateral_value = total_collateral
+                .checked_mul(pool.oracle_asset_price)?
+                .saturating_div(10_i128.pow(pool.token_decimals));
             if collateral_value > min_collateral_threshold_value {
                 info!(
                     ?obl_key,
