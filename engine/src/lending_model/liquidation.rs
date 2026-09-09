@@ -116,6 +116,34 @@ pub fn compute_is_liquidatable(
     Ok(res)
 }
 
+/// The pools this obligation holds a position in that the snapshot could not
+/// read. [`compute_is_liquidatable`] skips unknown pools, so judging such an
+/// obligation would silently under-count its debt or its collateral — wrong in
+/// both directions. A non-empty result means the caller must skip it until
+/// those pools are priced again, and names them so the skip can be attributed
+/// to the pool at fault rather than to the whole market.
+///
+/// Iterating the snapshot's list rather than the obligation's positions keeps
+/// the result free of duplicates when a borrow and a deposit share one pool.
+pub fn unavailable_pools_touched<'a>(
+    obligation: &Obligation,
+    market_data: &'a MarketData,
+) -> Vec<&'a str> {
+    market_data
+        .unavailable_pools
+        .iter()
+        .filter(|unavailable| {
+            obligation
+                .borrows
+                .iter()
+                .map(|b| &b.pool_address)
+                .chain(obligation.deposits.iter().map(|d| &d.pool_address))
+                .any(|held| held == *unavailable)
+        })
+        .map(String::as_str)
+        .collect()
+}
+
 /// Cheap pre-filter used by [`compute_is_liquidatable`] to short-circuit
 /// obligations with no real collateral (`j_tokens × j_rate_floor + plain
 /// collateral == 0` across every deposit).
@@ -333,4 +361,84 @@ pub fn compute_is_insolvent(
     let is_insolvent = unparameterized_ltv >= market_data.insolvency_ltv_bps;
 
     Ok(is_insolvent)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lending_model::obligation::BorrowPosition;
+
+    fn snapshot(unavailable_pools: &[&str]) -> MarketData {
+        MarketData {
+            insolvency_ltv_bps: 10_000,
+            pools_data: Vec::new(),
+            oracle_price_decimals: 14,
+            min_collateral_value_cents: 0,
+            unavailable_pools: unavailable_pools.iter().map(|p| p.to_string()).collect(),
+        }
+    }
+
+    fn obligation(borrow_pool: &str, deposit_pool: &str) -> Obligation {
+        Obligation {
+            borrows: vec![BorrowPosition {
+                d_tokens: 1_000.into(),
+                pool_address: borrow_pool.to_string(),
+            }],
+            deposits: vec![DepositPosition {
+                j_tokens: 1_000.into(),
+                collateral: 0.into(),
+                pool_address: deposit_pool.to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn complete_snapshot_never_blocks_an_obligation() {
+        assert!(
+            unavailable_pools_touched(&obligation("POOL_A", "POOL_B"), &snapshot(&[])).is_empty()
+        );
+    }
+
+    #[test]
+    fn unavailable_borrow_pool_blocks_the_obligation() {
+        assert_eq!(
+            unavailable_pools_touched(&obligation("POOL_A", "POOL_B"), &snapshot(&["POOL_A"])),
+            ["POOL_A"]
+        );
+    }
+
+    #[test]
+    fn unavailable_deposit_pool_blocks_the_obligation() {
+        assert_eq!(
+            unavailable_pools_touched(&obligation("POOL_A", "POOL_B"), &snapshot(&["POOL_B"])),
+            ["POOL_B"]
+        );
+    }
+
+    #[test]
+    fn partial_snapshot_still_admits_untouched_obligations() {
+        assert!(
+            unavailable_pools_touched(&obligation("POOL_A", "POOL_B"), &snapshot(&["POOL_C"]))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn every_touched_pool_is_named_and_untouched_ones_are_not() {
+        assert_eq!(
+            unavailable_pools_touched(
+                &obligation("POOL_A", "POOL_B"),
+                &snapshot(&["POOL_B", "POOL_C", "POOL_A"])
+            ),
+            ["POOL_B", "POOL_A"]
+        );
+    }
+
+    #[test]
+    fn a_pool_held_on_both_sides_is_named_once() {
+        assert_eq!(
+            unavailable_pools_touched(&obligation("POOL_A", "POOL_A"), &snapshot(&["POOL_A"])),
+            ["POOL_A"]
+        );
+    }
 }

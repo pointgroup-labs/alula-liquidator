@@ -61,6 +61,7 @@ const START_TIME: &str = "keeper_start_time_seconds";
 const SCAN_COMPLETED: &str = "liquidator_scan_completed_total";
 const SCAN_DURATION: &str = "liquidator_market_scan_duration_seconds";
 const SKIP: &str = "liquidator_skip_total";
+const UNPRICED_POOL_SKIPS: &str = "liquidator_unpriced_pool_skips_total";
 const PLANS_DISPATCHED: &str = "liquidator_liquidation_plans_dispatched_total";
 const OBLIGATIONS: &str = "liquidator_obligations_total";
 const LIQUIDATABLE: &str = "liquidator_liquidatable_positions";
@@ -214,6 +215,7 @@ impl SimulateFailureKind {
 pub enum ScanOutcome {
     Ok,
     NoMarketData,
+    StaleMarketData,
     NoObligations,
 }
 
@@ -222,6 +224,7 @@ impl ScanOutcome {
         match self {
             Self::Ok => "ok",
             Self::NoMarketData => "no_market_data",
+            Self::StaleMarketData => "stale_market_data",
             Self::NoObligations => "no_obligations",
         }
     }
@@ -237,6 +240,7 @@ pub enum SkipReason {
     FlashSwapShortfall,
     InsufficientBalanceAfterReservations,
     OpBuildFailed,
+    UnpricedPool,
 }
 
 impl SkipReason {
@@ -249,12 +253,26 @@ impl SkipReason {
             Self::FlashSwapShortfall => "flash_swap_shortfall",
             Self::InsufficientBalanceAfterReservations => "insufficient_balance_after_reservations",
             Self::OpBuildFailed => "op_build_failed",
+            Self::UnpricedPool => "unpriced_pool",
         }
     }
 
     pub fn record(self) {
         counter!(SKIP, REASON => self.as_str()).increment(1);
     }
+}
+
+/// Attributes one [`SkipReason::UnpricedPool`] skip to a pool that blocked it.
+/// Separate from [`SKIP`] on purpose: an obligation touching several unpriced
+/// pools increments one of these per pool, which would over-count that
+/// counter's one-per-skipped-obligation meaning.
+pub fn record_unpriced_pool_skip(market: &str, pool_address: &str) {
+    counter!(
+        UNPRICED_POOL_SKIPS,
+        MARKET => market.to_string(),
+        POOL_ADDRESS => pool_address.to_string(),
+    )
+    .increment(1);
 }
 
 /// Execution mode of a dispatched liquidation plan.
@@ -580,6 +598,12 @@ pub(super) fn describe_all() {
         "Liquidation opportunities the strategy declined to act on, by reason."
     );
     describe_counter!(
+        UNPRICED_POOL_SKIPS,
+        "Obligation evaluations blocked by a pool the snapshot could not price, by market and \
+         pool. One increment per blocking pool, so an obligation touching several is counted once \
+         here per pool and once in total on liquidator_skip_total."
+    );
+    describe_counter!(
         PLANS_DISPATCHED,
         "Liquidation plans handed to the executor, by market and execution mode."
     );
@@ -656,6 +680,7 @@ mod tests {
         assert_eq!(SCAN_COMPLETED, "liquidator_scan_completed_total");
         assert_eq!(SCAN_DURATION, "liquidator_market_scan_duration_seconds");
         assert_eq!(SKIP, "liquidator_skip_total");
+        assert_eq!(UNPRICED_POOL_SKIPS, "liquidator_unpriced_pool_skips_total");
         assert_eq!(PLANS_DISPATCHED, "liquidator_liquidation_plans_dispatched_total");
         assert_eq!(EXPECTED_PROFIT, "liquidator_plan_expected_net_profit_oracle_units");
         assert_eq!(REALISED_PROFIT, "liquidator_plan_realised_net_profit_oracle_units");
@@ -702,6 +727,7 @@ mod tests {
     fn scan_outcome_labels_are_stable() {
         assert_eq!(ScanOutcome::Ok.as_str(), "ok");
         assert_eq!(ScanOutcome::NoMarketData.as_str(), "no_market_data");
+        assert_eq!(ScanOutcome::StaleMarketData.as_str(), "stale_market_data");
         assert_eq!(ScanOutcome::NoObligations.as_str(), "no_obligations");
     }
 
@@ -717,6 +743,7 @@ mod tests {
             "insufficient_balance_after_reservations"
         );
         assert_eq!(SkipReason::OpBuildFailed.as_str(), "op_build_failed");
+        assert_eq!(SkipReason::UnpricedPool.as_str(), "unpriced_pool");
     }
 
     #[test]
@@ -789,6 +816,7 @@ mod tests {
             emit_build_info(1_700_000_000.0);
             TxSubmitOutcome::Ok.record();
             SkipReason::UnprofitableSeizeZero.record();
+            record_unpriced_pool_skip("MARKET_A", "POOL_B");
             record_simulation(SimulationCall::Batch, SimulationOutcome::Failed);
             record_scan("MARKET_A", ScanOutcome::NoObligations, 0.01);
         });
@@ -806,6 +834,13 @@ mod tests {
         assert!(
             out.contains("liquidator_skip_total{reason=\"unprofitable_seize_zero\"} 1"),
             "wrong skip wire format:\n{out}"
+        );
+        assert!(
+            out.contains(
+                "liquidator_unpriced_pool_skips_total{market=\"MARKET_A\",pool_address=\"POOL_B\"\
+                 } 1"
+            ),
+            "wrong unpriced-pool-skip wire format:\n{out}"
         );
         assert!(
             out.contains("keeper_simulation_total{call=\"batch\",outcome=\"failed\"} 1"),

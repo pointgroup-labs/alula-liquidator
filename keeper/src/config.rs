@@ -120,6 +120,12 @@ pub struct CliConfig {
     #[validate(range(min = 1))]
     pub liquidator_refresh_interval_blocks: u32,
 
+    /// How old a cached market snapshot may be before the liquidator refuses to
+    /// judge obligations against it. Optional; defaults to 60.
+    #[serde(default = "default_liquidator_max_market_data_age_secs")]
+    #[validate(range(min = 1))]
+    pub liquidator_max_market_data_age_secs: u64,
+
     // Negative assumes the liquidator is run by the entity prioritizing the protocol safety over
     // profitability(like Alula team)
     #[validate(range(min = -10_00))]
@@ -161,6 +167,13 @@ pub struct CliConfig {
 
 fn default_readiness_staleness_budget_secs() -> u64 {
     120
+}
+
+/// Six refresh cycles at the default 2-ledger cadence (~10 s): enough to ride
+/// out a transient RPC blip without flapping, short enough that the keeper
+/// never commits capital against minute-old prices.
+fn default_liquidator_max_market_data_age_secs() -> u64 {
+    60
 }
 
 fn de_i128<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i128, D::Error> {

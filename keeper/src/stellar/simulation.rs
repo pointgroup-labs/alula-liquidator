@@ -1,6 +1,6 @@
 //! `LedgerReader` and `BatchSimulator` impls for `Gateway`.
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use engine::{
     lending_model::{MarketData, Obligation, ObligationKey, PoolData},
     ports::{BatchSimulator, LedgerReader},
@@ -14,8 +14,9 @@ use super::{
     errors::is_expected_liquidation_failure,
     xdr_codec::{
         address_to_scval, build_address_vec_scval, build_requests_vec_scval, i128_to_scval,
-        obligation_key_to_scval, parse_market_data, parse_obligation, parse_obligation_keys,
-        scval_to_i128,
+        obligation_key_to_scval, parse_global_state_thresholds, parse_market_data,
+        parse_obligation, parse_obligation_keys, parse_pool_addresses, parse_pool_data,
+        scval_to_i128, scval_to_u32,
     },
 };
 use crate::metrics::{self, SimulationCall, SimulationOutcome};
@@ -27,16 +28,28 @@ impl LedgerReader for Gateway {
     ) -> BoxFuture<'a, anyhow::Result<MarketData>> {
         Box::pin(async move {
             let start = std::time::Instant::now();
-            let sc_val = self
-                .simulate_contract_call(market_address, "get_market_data", &[])
-                .await
-                .context("simulate get_market_data")?;
-            debug!(
-                duration_ms = start.elapsed().as_millis() as u64,
-                market = market_address,
-                "get_market_data simulated",
-            );
-            parse_market_data(&sc_val)
+            match self.simulate_contract_call(market_address, "get_market_data", &[]).await {
+                Ok(sc_val) => {
+                    debug!(
+                        duration_ms = start.elapsed().as_millis() as u64,
+                        market = market_address,
+                        "get_market_data simulated",
+                    );
+                    parse_market_data(&sc_val)
+                }
+                // `get_market_data` iterates every pool and aborts the whole
+                // call on the first one it cannot price, so a single dead
+                // oracle would blind the keeper on every other asset. Rebuild
+                // the snapshot pool by pool instead.
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        market = market_address,
+                        "get_market_data failed; rebuilding snapshot per pool"
+                    );
+                    self.read_market_data_per_pool(market_address).await
+                }
+            }
         })
     }
 
@@ -46,14 +59,12 @@ impl LedgerReader for Gateway {
         pool_address: &'a str,
     ) -> BoxFuture<'a, anyhow::Result<PoolData>> {
         Box::pin(async move {
-            // The contract exposes pool state through `get_market_data`; pull
-            // the full market view and select the requested pool.
-            let market_data = self.read_market_data(market_address).await?;
-            market_data
-                .pools_data
-                .into_iter()
-                .find(|p| p.pool_address == pool_address)
-                .ok_or_else(|| anyhow!("pool {pool_address} not found in market {market_address}"))
+            let args = vec![address_to_scval(pool_address)?];
+            let sc_val = self
+                .simulate_contract_call(market_address, "get_pool_data", &args)
+                .await
+                .context("simulate get_pool_data")?;
+            parse_pool_data(&sc_val)
         })
     }
 
@@ -206,6 +217,77 @@ impl LedgerReader for Gateway {
     }
 }
 
+impl Gateway {
+    /// Rebuilds a market snapshot from the price-free `get_all_pools` plus one
+    /// `get_pool_data` per pool, tolerating per-pool failures. The market-wide
+    /// parameters come from `get_global_state` / `get_oracle_price_decimals`,
+    /// which read storage only — none of these four calls touch an oracle, so
+    /// they survive the outage that took the aggregate call down.
+    async fn read_market_data_per_pool(&self, market_address: &str) -> anyhow::Result<MarketData> {
+        let pools_sc_val = self
+            .simulate_contract_call(market_address, "get_all_pools", &[])
+            .await
+            .context("simulate get_all_pools")?;
+        let pool_addresses = parse_pool_addresses(&pools_sc_val)?;
+
+        let global_state_sc_val = self
+            .simulate_contract_call(market_address, "get_global_state", &[])
+            .await
+            .context("simulate get_global_state")?;
+        let (insolvency_ltv_bps, min_collateral_value_cents) =
+            parse_global_state_thresholds(&global_state_sc_val)?;
+
+        let decimals_sc_val = self
+            .simulate_contract_call(market_address, "get_oracle_price_decimals", &[])
+            .await
+            .context("simulate get_oracle_price_decimals")?;
+        let oracle_price_decimals = scval_to_u32(&decimals_sc_val)?;
+
+        let mut reads = Vec::with_capacity(pool_addresses.len());
+        for pool_address in pool_addresses {
+            let read = self.read_pool_data(market_address, &pool_address).await;
+            reads.push((pool_address, read));
+        }
+        let (pools_data, unavailable_pools) = partition_pool_reads(market_address, reads);
+
+        Ok(MarketData {
+            pools_data,
+            oracle_price_decimals,
+            insolvency_ltv_bps,
+            min_collateral_value_cents,
+            unavailable_pools,
+        })
+    }
+}
+
+/// Splits per-pool reads into the pools that resolved and the addresses that did
+/// not, so a partial snapshot arrives explicitly marked rather than silently
+/// short of a pool.
+fn partition_pool_reads(
+    market_address: &str,
+    reads: Vec<(String, anyhow::Result<PoolData>)>,
+) -> (Vec<PoolData>, Vec<String>) {
+    let mut pools_data = Vec::with_capacity(reads.len());
+    let mut unavailable_pools = Vec::new();
+
+    for (pool_address, read) in reads {
+        match read {
+            Ok(pool_data) => pools_data.push(pool_data),
+            Err(e) => {
+                warn!(
+                    ?e,
+                    market = market_address,
+                    pool = %pool_address,
+                    "pool unavailable; snapshot is partial"
+                );
+                unavailable_pools.push(pool_address);
+            }
+        }
+    }
+
+    (pools_data, unavailable_pools)
+}
+
 impl BatchSimulator for Gateway {
     type Request = ScVal;
 
@@ -246,5 +328,88 @@ impl BatchSimulator for Gateway {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::anyhow;
+
+    use super::*;
+
+    fn pool_data(pool_address: &str) -> PoolData {
+        PoolData {
+            pool_address: pool_address.to_string(),
+            token_address: pool_address.to_string(),
+            token_symbol: "TST".to_string(),
+            token_decimals: 7,
+            total_borrowed: 0.into(),
+            total_d_tokens: 0.into(),
+            total_j_tokens: 0.into(),
+            total_available: 0.into(),
+            total_available_adjusted: 0.into(),
+            total_supply: 0.into(),
+            total_collateral: 0.into(),
+            j_token_rate_floor_bps: 10_000,
+            d_token_rate_ceil_bps: 10_000,
+            oracle_asset_price: 1,
+            open_ltv_bps: 8_000,
+            close_ltv_bps: 8_500,
+            liability_factor_bps: 10_000,
+            liquidation_close_factor_bps: 5_000,
+            max_liquidation_incentive_bps: 1_000,
+            flash_loan_fee_bps: 5,
+            utilization_ratio_limit_bps: 9_000,
+        }
+    }
+
+    #[test]
+    fn every_pool_readable_yields_a_complete_snapshot() {
+        let (pools_data, unavailable_pools) = partition_pool_reads(
+            "MARKET_A",
+            vec![
+                ("POOL_A".to_string(), Ok(pool_data("POOL_A"))),
+                ("POOL_B".to_string(), Ok(pool_data("POOL_B"))),
+            ],
+        );
+
+        assert_eq!(pools_data.len(), 2);
+        assert!(unavailable_pools.is_empty(), "a complete snapshot must not be marked partial");
+    }
+
+    #[test]
+    fn one_unreadable_pool_degrades_only_itself_and_is_marked() {
+        let (pools_data, unavailable_pools) = partition_pool_reads(
+            "MARKET_A",
+            vec![
+                ("POOL_A".to_string(), Ok(pool_data("POOL_A"))),
+                ("POOL_B".to_string(), Err(anyhow!("oracle price unavailable"))),
+                ("POOL_C".to_string(), Ok(pool_data("POOL_C"))),
+            ],
+        );
+
+        let addresses: Vec<&str> = pools_data.iter().map(|p| p.pool_address.as_str()).collect();
+        assert_eq!(addresses, ["POOL_A", "POOL_C"]);
+        assert_eq!(unavailable_pools, ["POOL_B"]);
+    }
+
+    #[test]
+    fn a_partial_snapshot_is_distinguishable_from_a_short_complete_one() {
+        // Two pools, one unreadable, vs. a market that genuinely has one pool:
+        // both carry a single `PoolData`, so only `unavailable_pools` separates
+        // "we could not price POOL_B" from "POOL_B does not exist".
+        let (partial, unavailable) = partition_pool_reads(
+            "MARKET_A",
+            vec![
+                ("POOL_A".to_string(), Ok(pool_data("POOL_A"))),
+                ("POOL_B".to_string(), Err(anyhow!("oracle price unavailable"))),
+            ],
+        );
+        let (complete, none_missing) =
+            partition_pool_reads("MARKET_A", vec![("POOL_A".to_string(), Ok(pool_data("POOL_A")))]);
+
+        assert_eq!(partial.len(), complete.len());
+        assert!(!unavailable.is_empty());
+        assert!(none_missing.is_empty());
     }
 }

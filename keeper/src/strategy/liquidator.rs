@@ -1,7 +1,11 @@
 //! Liquidator strategy: scans cached obligations after every refresh interval,
 //! picks profitable (borrow, deposit) pairs, and submits liquidations.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use ed25519_dalek::SigningKey;
 use engine::{
@@ -37,7 +41,27 @@ pub struct LiquidatorConfig {
     pub swap_providers: Vec<String>,
     pub refresh_interval_blocks: u32,
     pub min_profit_margin_cents: i128,
+    pub max_market_data_age: Duration,
     pub max_allowed_swap_slippage_bps: i128,
+}
+
+/// A cached market view plus the moment it was read. A failed refresh keeps the
+/// previous view, so without the timestamp nothing downstream can tell a
+/// current snapshot from prices frozen an hour ago.
+struct MarketSnapshot {
+    data: MarketData,
+    /// Monotonic, so a wall-clock step cannot age a fresh snapshot.
+    refreshed_at: Instant,
+}
+
+impl MarketSnapshot {
+    fn new(data: MarketData) -> Self {
+        Self { data, refreshed_at: Instant::now() }
+    }
+
+    fn age(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.refreshed_at)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -90,7 +114,7 @@ pub struct Liquidator {
     config: LiquidatorConfig,
     obligations_repo: ObligationsRepo,
     ledger_reader: Arc<dyn LedgerReader>,
-    market_data: HashMap<String, MarketData>,
+    market_data: HashMap<String, MarketSnapshot>,
     liquidator_capital: Arc<LiquidatorCapital>,
     obligations: HashMap<String, HashMap<ObligationKey, Obligation>>,
 }
@@ -140,7 +164,7 @@ impl Strategy<Event, Action> for Liquidator {
                 match self.ledger_reader.read_market_data(market).await {
                     Ok(md) => {
                         info!(market, ?md);
-                        self.market_data.insert(market.clone(), md);
+                        self.market_data.insert(market.clone(), MarketSnapshot::new(md));
                     }
                     Err(e) => error!(?e, ?market, "get_market_data failed"),
                 }
@@ -264,9 +288,9 @@ impl Liquidator {
                     warn!(?e, %event_name, %market, "failed to save obligation");
                 }
                 if key.user == self.pkey
-                    && let Some(md) = self.market_data.get(market)
+                    && let Some(snapshot) = self.market_data.get(market)
                 {
-                    emit_keeper_position_metrics(market, &obligation, md);
+                    emit_keeper_position_metrics(market, &obligation, &snapshot.data);
                 }
 
                 self.obligations
@@ -321,16 +345,18 @@ impl Liquidator {
                         emit_keeper_position_metrics(&market, obl, &market_data);
                     }
 
-                    self.market_data.insert(market, market_data);
+                    self.market_data.insert(market, MarketSnapshot::new(market_data));
                 }
+                // The previous snapshot is kept but not re-stamped, so the age
+                // guard in `evaulate_market` decides when it stops being usable.
                 Err(e) => warn!(?e, %market, "refresh failed"),
             }
         }
     }
 
     async fn evaulate_market(&self, market: &str) -> Vec<Action> {
-        let started = std::time::Instant::now();
-        let Some(market_data) = self.market_data.get(market) else {
+        let started = Instant::now();
+        let Some(snapshot) = self.market_data.get(market) else {
             metrics::record_scan(
                 market,
                 ScanOutcome::NoMarketData,
@@ -339,6 +365,25 @@ impl Liquidator {
 
             return vec![];
         };
+
+        let age = snapshot.age(started);
+        if age > self.config.max_market_data_age {
+            warn!(
+                %market,
+                age_secs = age.as_secs(),
+                max_age_secs = self.config.max_market_data_age.as_secs(),
+                "market snapshot too old; refusing to judge obligations on stale prices"
+            );
+            metrics::record_scan(
+                market,
+                ScanOutcome::StaleMarketData,
+                started.elapsed().as_secs_f64(),
+            );
+
+            return vec![];
+        }
+        let market_data = &snapshot.data;
+
         let Some(obligations) = self.obligations.get(market).filter(|m| !m.is_empty()) else {
             metrics::record_scan(
                 market,
@@ -355,6 +400,22 @@ impl Liquidator {
             checked += 1;
             if obligation_key.user == self.pkey {
                 // NB: self liquidations are not supported on the market currently
+                continue;
+            }
+
+            let unpriced_pools = liquidation::unavailable_pools_touched(obligation, market_data);
+            if !unpriced_pools.is_empty() {
+                warn!(
+                    ?obligation_key,
+                    %market,
+                    ?unpriced_pools,
+                    "obligation touches a pool this snapshot could not price; skipping"
+                );
+                SkipReason::UnpricedPool.record();
+                for pool_address in &unpriced_pools {
+                    metrics::record_unpriced_pool_skip(market, pool_address);
+                }
+
                 continue;
             }
 
@@ -1511,5 +1572,226 @@ fn emit_keeper_position_metrics(market: &str, obligation: &Obligation, market_da
             borrow.d_tokens.0,
             d_tokens_underlying,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use engine::lending_model::BorrowPosition;
+    use metrics_exporter_prometheus::PrometheusBuilder;
+
+    use super::*;
+    use crate::{liquidator_capital::LiquidatorCapitalConfig, storage::SqliteStore};
+
+    const MARKET: &str = "MARKET_A";
+    const MAX_AGE: Duration = Duration::from_secs(60);
+
+    fn liquidator() -> Liquidator {
+        let pkey = "G".repeat(56);
+        let store = SqliteStore::open(":memory:").expect("in-memory sqlite");
+        let rpc_url = "http://127.0.0.1:1".parse().expect("valid url");
+        let gateway = Arc::new(Gateway::new(&rpc_url, pkey.clone()).expect("gateway"));
+
+        Liquidator::new(
+            pkey.clone(),
+            SigningKey::from_bytes(&[7_u8; 32]),
+            gateway.clone(),
+            store.cursor(),
+            LiquidatorConfig {
+                max_retries: 1,
+                xlm_address: "C".repeat(56),
+                markets: vec![MARKET.to_string()],
+                xlm_safety_margin: 0,
+                assets_to_hold: vec![],
+                swap_providers: vec![],
+                refresh_interval_blocks: 2,
+                min_profit_margin_cents: 0,
+                max_market_data_age: MAX_AGE,
+                max_allowed_swap_slippage_bps: 0,
+            },
+            store.obligations(),
+            gateway,
+            Arc::new(LiquidatorCapital::new(
+                &pkey,
+                LiquidatorCapitalConfig {
+                    xlm_address: "C".repeat(56),
+                    balance_cache_ttl: Duration::from_secs(1),
+                    reservation_ttl: Duration::from_secs(1),
+                },
+            )),
+        )
+    }
+
+    fn snapshot(age: Duration, unavailable_pools: &[&str]) -> MarketSnapshot {
+        let data = MarketData {
+            insolvency_ltv_bps: 10_000,
+            pools_data: Vec::new(),
+            oracle_price_decimals: 14,
+            min_collateral_value_cents: 0,
+            unavailable_pools: unavailable_pools.iter().map(|p| p.to_string()).collect(),
+        };
+        let refreshed_at =
+            Instant::now().checked_sub(age).expect("monotonic clock older than the test age");
+
+        MarketSnapshot { data, refreshed_at }
+    }
+
+    /// A borrow with no deposits: enough to make the obligation loop do real
+    /// work, not enough to reach the network-bound planning path.
+    fn borrower() -> HashMap<ObligationKey, Obligation> {
+        HashMap::from([(
+            ObligationKey::new("GBORROWER".to_string()),
+            Obligation {
+                borrows: vec![BorrowPosition {
+                    d_tokens: 1_000.into(),
+                    pool_address: "POOL_A".to_string(),
+                }],
+                deposits: Vec::new(),
+            },
+        )])
+    }
+
+    /// Borrows from POOL_A and deposits into POOL_Z, so a snapshot missing both
+    /// must name both — the case that separates per-pool attribution from
+    /// recording only the first offender.
+    fn two_pool_borrower() -> HashMap<ObligationKey, Obligation> {
+        HashMap::from([(
+            ObligationKey::new("GBORROWER".to_string()),
+            Obligation {
+                borrows: vec![BorrowPosition {
+                    d_tokens: 1_000.into(),
+                    pool_address: "POOL_A".to_string(),
+                }],
+                deposits: vec![DepositPosition {
+                    j_tokens: 1_000.into(),
+                    collateral: 0.into(),
+                    pool_address: "POOL_Z".to_string(),
+                }],
+            },
+        )])
+    }
+
+    /// Runs one market evaluation under a scoped recorder and returns the
+    /// rendered exposition alongside the actions produced.
+    fn evaluate_with_snapshot(
+        snapshot: MarketSnapshot,
+        obligations: HashMap<ObligationKey, Obligation>,
+    ) -> (Vec<Action>, String) {
+        let mut liquidator = liquidator();
+        liquidator.market_data.insert(MARKET.to_string(), snapshot);
+        liquidator.obligations.insert(MARKET.to_string(), obligations);
+
+        let runtime =
+            tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        // `::metrics` — the crate's own `metrics` module is in scope here.
+        let actions = ::metrics::with_local_recorder(&recorder, || {
+            runtime.block_on(liquidator.evaulate_market(MARKET))
+        });
+
+        (actions, handle.render())
+    }
+
+    #[test]
+    fn stale_snapshot_is_not_used_for_liquidation_decisions() {
+        let (actions, exposition) =
+            evaluate_with_snapshot(snapshot(MAX_AGE + Duration::from_secs(30), &[]), borrower());
+
+        assert!(actions.is_empty(), "a stale snapshot must not produce liquidations");
+        assert!(
+            exposition.contains(
+                "liquidator_scan_completed_total{market=\"MARKET_A\",outcome=\"stale_market_data\"\
+                 } 1"
+            ),
+            "stale scan not recorded:\n{exposition}"
+        );
+        // `set_scan_counts` only runs once the obligation loop completes, so its
+        // absence proves no obligation was judged against the stale prices.
+        assert!(
+            !exposition.contains("liquidator_obligations_total"),
+            "obligations were consulted despite a stale snapshot:\n{exposition}"
+        );
+    }
+
+    #[test]
+    fn fresh_snapshot_is_evaluated() {
+        let (actions, exposition) =
+            evaluate_with_snapshot(snapshot(MAX_AGE - Duration::from_secs(30), &[]), borrower());
+
+        assert!(actions.is_empty(), "the borrower has no collateral, so nothing is liquidatable");
+        assert!(
+            exposition
+                .contains("liquidator_scan_completed_total{market=\"MARKET_A\",outcome=\"ok\"} 1"),
+            "fresh scan did not complete:\n{exposition}"
+        );
+        assert!(
+            exposition.contains("liquidator_obligations_total{market=\"MARKET_A\"} 1"),
+            "fresh scan did not judge the obligation:\n{exposition}"
+        );
+    }
+
+    #[test]
+    fn partial_snapshot_skips_only_the_obligations_it_cannot_price() {
+        let (actions, exposition) =
+            evaluate_with_snapshot(snapshot(Duration::ZERO, &["POOL_A", "POOL_Z"]), borrower());
+
+        assert!(actions.is_empty());
+        assert!(
+            exposition.contains("liquidator_skip_total{reason=\"unpriced_pool\"} 1"),
+            "unpriced-pool skip not recorded:\n{exposition}"
+        );
+        // The market itself still scans — only the borrower touching POOL_A is
+        // withheld, which is the whole point of degrading per pool.
+        assert!(
+            exposition
+                .contains("liquidator_scan_completed_total{market=\"MARKET_A\",outcome=\"ok\"} 1"),
+            "a partial snapshot must not abort the whole market scan:\n{exposition}"
+        );
+        assert!(
+            exposition.contains(
+                "liquidator_unpriced_pool_skips_total{market=\"MARKET_A\",pool_address=\"POOL_A\"\
+                 } 1"
+            ),
+            "the skip was not attributed to the blocking pool:\n{exposition}"
+        );
+        // POOL_Z is unpriced too, but this borrower holds nothing in it — the
+        // series must follow what actually blocked an obligation, not the
+        // snapshot's list of gaps.
+        assert!(
+            !exposition.contains("pool_address=\"POOL_Z\""),
+            "an untouched unpriced pool was attributed a skip:\n{exposition}"
+        );
+    }
+
+    #[test]
+    fn every_unpriced_pool_touched_gets_its_own_series() {
+        let (_, exposition) = evaluate_with_snapshot(
+            snapshot(Duration::ZERO, &["POOL_A", "POOL_Z"]),
+            two_pool_borrower(),
+        );
+
+        for pool in ["POOL_A", "POOL_Z"] {
+            assert!(
+                exposition.contains(&format!(
+                    "liquidator_unpriced_pool_skips_total{{market=\"MARKET_A\",pool_address=\"\
+                     {pool}\"}} 1"
+                )),
+                "{pool} blocked the obligation but got no series:\n{exposition}"
+            );
+        }
+        // Two blocking pools, one withheld obligation: the aggregate skip
+        // counter must stay per-obligation or the *Skip reasons* panel starts
+        // over-reporting.
+        assert!(
+            exposition.contains("liquidator_skip_total{reason=\"unpriced_pool\"} 1"),
+            "per-pool attribution leaked into the aggregate skip count:\n{exposition}"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_exactly_at_the_budget_is_still_fresh() {
+        assert!(snapshot(MAX_AGE, &[]).age(Instant::now()) >= MAX_AGE);
+        assert!(snapshot(Duration::ZERO, &[]).age(Instant::now()) < MAX_AGE);
     }
 }

@@ -287,7 +287,7 @@ pub(super) fn parse_obligation_keys(val: &ScVal) -> anyhow::Result<Vec<Obligatio
     scval_as_vec(val)?.iter().map(parse_obligation_key).collect()
 }
 
-fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
+pub(super) fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
     let map = scval_as_map(val)?;
 
     let j_token_rate_floor_bps = map_get_i128(map, "j_token_rate_floor_bps")?;
@@ -350,14 +350,39 @@ fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
     })
 }
 
+/// The two `GlobalState` fields the lending model needs, as
+/// `(insolvency_ltv_bps, min_collateral_value_cents)`. Shared by the aggregate
+/// `get_market_data` parse and the per-pool `get_global_state` fallback.
+pub(super) fn parse_global_state_thresholds(val: &ScVal) -> anyhow::Result<(i128, i128)> {
+    let map = scval_as_map(val)?;
+
+    Ok((map_get_i128(map, "insolvency_ltv_bps")?, map_get_i128(map, "min_collateral_value_cents")?))
+}
+
+pub(super) fn parse_pool_addresses(val: &ScVal) -> anyhow::Result<Vec<String>> {
+    scval_as_vec(val)?
+        .iter()
+        .map(|v| match v {
+            ScVal::Address(addr) => Ok(addr.to_string()),
+            other => Err(anyhow!("expected Address in pool list, got {other:?}")),
+        })
+        .collect()
+}
+
+pub(super) fn scval_to_u32(val: &ScVal) -> anyhow::Result<u32> {
+    match val {
+        ScVal::U32(n) => Ok(*n),
+        other => Err(anyhow!("expected U32, got {other:?}")),
+    }
+}
+
 pub(super) fn parse_market_data(val: &ScVal) -> anyhow::Result<MarketData> {
     let map = scval_as_map(val)?;
     let oracle_price_decimals = map_get_u32(map, "oracle_price_decimals")?;
-    let global_state_map = map_get(map, "global_state")
-        .ok_or_else(|| anyhow!("global_state missing"))
-        .and_then(|v| scval_as_map(v).map_err(anyhow::Error::from))?;
-    let insolvency_ltv_bps = map_get_i128(global_state_map, "insolvency_ltv_bps")?;
-    let min_collateral_value_cents = map_get_i128(global_state_map, "min_collateral_value_cents")?;
+    let global_state =
+        map_get(map, "global_state").ok_or_else(|| anyhow!("global_state missing"))?;
+    let (insolvency_ltv_bps, min_collateral_value_cents) =
+        parse_global_state_thresholds(global_state)?;
     let pools_data = map_get(map, "pools_data")
         .ok_or_else(|| anyhow!("pools_data missing"))
         .and_then(|v| scval_as_vec(v).map_err(anyhow::Error::from))?
@@ -370,6 +395,7 @@ pub(super) fn parse_market_data(val: &ScVal) -> anyhow::Result<MarketData> {
         oracle_price_decimals,
         insolvency_ltv_bps,
         min_collateral_value_cents,
+        unavailable_pools: Vec::new(),
     })
 }
 

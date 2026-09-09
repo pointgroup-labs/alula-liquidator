@@ -95,6 +95,9 @@ withdrawer_utilization_safety_margin_bps = 500
 liquidator_max_retries = 3
 # Re-scan cadence in ledgers (≥ 1).
 liquidator_refresh_interval_blocks = 2
+# Max age of a cached market snapshot before the liquidator stops judging
+# obligations against it (seconds, ≥ 1). Optional (default 60).
+liquidator_max_market_data_age_secs = 60
 # Min acceptable profit (USD cents, ≥ -1000). Negative = run for protocol
 # safety over profit (e.g. the Alula team's own keeper).
 liquidator_min_profit_margin_cents = 0

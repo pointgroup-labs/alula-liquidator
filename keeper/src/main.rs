@@ -73,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
         liquidator_max_retries,
         liquidator_refresh_interval_blocks,
         liquidator_max_allowed_swap_slippage_bps,
+        liquidator_max_market_data_age_secs,
         liquidator_min_profit_margin_cents,
         // -- Balancer --
         balancer_max_retries,
@@ -137,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
             max_allowed_swap_slippage_bps: liquidator_max_allowed_swap_slippage_bps,
             max_retries: liquidator_max_retries,
             refresh_interval_blocks: liquidator_refresh_interval_blocks,
+            max_market_data_age: Duration::from_secs(liquidator_max_market_data_age_secs),
         },
         store.obligations(),
         Arc::clone(&ledger_reader),
