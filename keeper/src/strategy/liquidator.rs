@@ -468,10 +468,15 @@ impl Liquidator {
             }
 
             liquidatable += 1;
+            // Bailing out of the whole scan here dropped the plans already built
+            // and skipped the counters below, so the liveness gauge froze and
+            // KeeperScanStalled fired with nothing naming the obligation at fault.
             let Ok(is_insolvent) = liquidation::compute_is_insolvent(obligation, market_data)
-                .inspect_err(|e| error!(?e))
+                .inspect_err(|e| error!(?e, ?obligation_key, %market, "insolvency check failed"))
             else {
-                return vec![];
+                SkipReason::InsolvencyCheckFailed.record();
+
+                continue;
             };
 
             info!(?obligation_key, ?obligation, is_insolvent, "LIQUIDATABLE");
@@ -1969,6 +1974,99 @@ mod tests {
         assert!(
             exposition.contains("liquidator_obligations_total{market=\"MARKET_A\"} 0"),
             "a skipped obligation was counted as judged:\n{exposition}"
+        );
+    }
+
+    /// Two borrow pools valued just under `i128::MAX` plus one ordinary deposit
+    /// pool. `compute_is_liquidatable` shrinks each debt term through a
+    /// saturating bps scale before summing and answers `true`;
+    /// `compute_is_insolvent` sums the same terms unscaled and overflows. That
+    /// is the arithmetic route left open once the unpriced-pool guard closed the
+    /// missing-pool one.
+    fn market_data_overflowing_only_the_insolvency_check() -> MarketData {
+        let unscaled_near_max = |address: &str| PoolData {
+            token_decimals: 0,
+            oracle_asset_price: 10_000,
+            ..pool_data(address)
+        };
+
+        MarketData {
+            pools_data: vec![
+                unscaled_near_max("POOL_X"),
+                unscaled_near_max("POOL_Y"),
+                pool_data("POOL_C"),
+            ],
+            ..market_data(&[], &[])
+        }
+    }
+
+    /// The overflowing borrower alongside an ordinary one the scan must still
+    /// reach.
+    fn overflow_and_ordinary_borrowers() -> HashMap<ObligationKey, Obligation> {
+        let d_tokens = (i128::MAX / 10_000).into();
+
+        HashMap::from([
+            (
+                ObligationKey::new("GOVERFLOW".to_string()),
+                Obligation {
+                    borrows: vec![
+                        BorrowPosition { d_tokens, pool_address: "POOL_X".to_string() },
+                        BorrowPosition { d_tokens, pool_address: "POOL_Y".to_string() },
+                    ],
+                    deposits: vec![DepositPosition {
+                        j_tokens: 1_000.into(),
+                        collateral: 0.into(),
+                        pool_address: "POOL_C".to_string(),
+                    }],
+                },
+            ),
+            (
+                ObligationKey::new("GORDINARY".to_string()),
+                Obligation {
+                    borrows: vec![BorrowPosition {
+                        d_tokens: 1_000.into(),
+                        pool_address: "POOL_C".to_string(),
+                    }],
+                    deposits: Vec::new(),
+                },
+            ),
+        ])
+    }
+
+    #[test]
+    fn an_obligation_whose_arithmetic_fails_does_not_abort_the_market_scan() {
+        let (actions, exposition) = evaluate_with_snapshot(
+            MarketSnapshot::new(market_data_overflowing_only_the_insolvency_check()),
+            overflow_and_ordinary_borrowers(),
+        );
+
+        assert!(actions.is_empty());
+        // Aborting skipped `record_scan`, so the last-successful-scan gauge froze
+        // and KeeperScanStalled fired minutes later on a loop that was running.
+        assert!(
+            exposition
+                .contains("liquidator_scan_completed_total{market=\"MARKET_A\",outcome=\"ok\"} 1"),
+            "one obligation's arithmetic aborted the whole market scan:\n{exposition}"
+        );
+        assert!(
+            exposition
+                .contains("liquidator_last_successful_scan_timestamp_seconds{market=\"MARKET_A\"}"),
+            "the liveness gauge was never advanced:\n{exposition}"
+        );
+        assert!(
+            exposition.contains("liquidator_skip_total{reason=\"insolvency_check_failed\"} 1"),
+            "the withheld obligation left no skip reason for the not-dispatched \
+             alert:\n{exposition}"
+        );
+        // Both borrowers were judged, and the withheld one is still counted
+        // liquidatable — it is, and that is what the not-dispatched alert reads.
+        assert!(
+            exposition.contains("liquidator_obligations_total{market=\"MARKET_A\"} 2"),
+            "the scan stopped short of the obligations after the failure:\n{exposition}"
+        );
+        assert!(
+            exposition.contains("liquidator_liquidatable_positions{market=\"MARKET_A\"} 1"),
+            "the withheld opportunity vanished from the liquidatable count:\n{exposition}"
         );
     }
 

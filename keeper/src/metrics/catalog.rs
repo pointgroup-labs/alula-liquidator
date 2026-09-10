@@ -242,6 +242,7 @@ pub enum SkipReason {
     InsufficientBalanceAfterReservations,
     OpBuildFailed,
     UnpricedPool,
+    InsolvencyCheckFailed,
 }
 
 impl SkipReason {
@@ -255,6 +256,7 @@ impl SkipReason {
             Self::InsufficientBalanceAfterReservations => "insufficient_balance_after_reservations",
             Self::OpBuildFailed => "op_build_failed",
             Self::UnpricedPool => "unpriced_pool",
+            Self::InsolvencyCheckFailed => "insolvency_check_failed",
         }
     }
 
@@ -758,6 +760,7 @@ mod tests {
         );
         assert_eq!(SkipReason::OpBuildFailed.as_str(), "op_build_failed");
         assert_eq!(SkipReason::UnpricedPool.as_str(), "unpriced_pool");
+        assert_eq!(SkipReason::InsolvencyCheckFailed.as_str(), "insolvency_check_failed");
     }
 
     #[test]
