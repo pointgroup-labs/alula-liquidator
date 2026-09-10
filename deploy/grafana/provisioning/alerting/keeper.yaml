@@ -165,7 +165,7 @@ groups:
       severity: critical
     annotations:
       summary: Keeper is refusing to act on stale market data
-      description: The cached snapshot aged past liquidator_max_market_data_age_secs (default 60s), so the liquidator is taking no actions on this market — under-water positions are going unliquidated while it stays blind. Reaching this state already needs ~6 consecutive failed get_market_data refreshes, so there is no benign single occurrence — the RPC feed is down. This is the diagnosis for a flat KeeperScanStalled, which follows ~4m later since only ok scans advance the last-successful-scan gauge.
+      description: The cached snapshot aged past liquidator_max_market_data_age_secs (default 60s), so the liquidator is taking no actions on this market — under-water positions are going unliquidated while it stays blind. A failing aggregate get_market_data alone cannot get here — the per-pool rebuild replaces the snapshot — so reaching this state needs ~6 consecutive refreshes where the rebuild failed too (RPC unreachable, or the oracle contract unreachable so get_oracle_price_decimals traps) or priced no pool at all and was refused. Check liquidator_snapshot_unavailable_pools and the keeper log line "rebuilt snapshot priced no pool" to tell those apart. This is the diagnosis for a flat KeeperScanStalled, which follows ~4m later since only ok scans advance the last-successful-scan gauge.
   - uid: keeper_unpriced_pool_skips
     title: KeeperSkippingUnpricedPools
     condition: B
@@ -204,7 +204,7 @@ groups:
       severity: warning
     annotations:
       summary: Pool {{ $labels.pool_address }} is unpriced — obligations skipped in market {{ $labels.market }}
-      description: The aggregate get_market_data call is failing and the per-pool fallback cannot price pool {{ $labels.pool_address }} in market {{ $labels.market }}, so every obligation touching it is skipped at >1/min. Scans still report ok, so this is the only signal that decisions are coming off a partial snapshot — those borrowers cannot be liquidated at all. A one-off fallback tick decays out of the 5m window before the 10m hold elapses, so firing means that pool is persistently unreadable — check its contract address and the RPC's per-pool reads. One instance fires per blocking pool; the one-per-obligation count stays on liquidator_skip_total{reason="unpriced_pool"}.
+      description: The snapshot in use does not price pool {{ $labels.pool_address }} in market {{ $labels.market }} — either the per-pool fallback could not read it or the market never reported it — so every obligation touching it is skipped at >1/min. Scans still report ok, so this is the only signal that decisions are coming off a partial snapshot — those borrowers cannot be liquidated at all. A one-off fallback tick decays out of the 5m window before the 10m hold elapses, so firing means that pool is persistently unreadable — check its contract address and the RPC's per-pool reads. One instance fires per blocking pool; the one-per-obligation count stays on liquidator_skip_total{reason="unpriced_pool"}.
   - uid: keeper_rpc_simulate_transport_failing
     title: KeeperRpcSimulateTransportFailing
     condition: B
