@@ -218,11 +218,15 @@ impl LedgerReader for Gateway {
 }
 
 impl Gateway {
-    /// Rebuilds a market snapshot from the price-free `get_all_pools` plus one
-    /// `get_pool_data` per pool, tolerating per-pool failures. The market-wide
-    /// parameters come from `get_global_state` / `get_oracle_price_decimals`,
-    /// which read storage only — none of these four calls touch an oracle, so
-    /// they survive the outage that took the aggregate call down.
+    /// Rebuilds a market snapshot from `get_all_pools` plus one `get_pool_data`
+    /// per pool, tolerating per-pool failures: only `get_pool_data` prices an
+    /// asset, so one dead price feed costs one pool instead of the whole call.
+    ///
+    /// `get_all_pools` and `get_global_state` read storage only, but
+    /// `get_oracle_price_decimals` does call the oracle — `decimals()`, which
+    /// the aggregated oracle answers from its own storage without consulting a
+    /// feed. So this fallback survives a per-asset price outage and fails
+    /// closed, by design, when the oracle contract itself is unreachable.
     async fn read_market_data_per_pool(&self, market_address: &str) -> anyhow::Result<MarketData> {
         let pools_sc_val = self
             .simulate_contract_call(market_address, "get_all_pools", &[])
@@ -391,6 +395,29 @@ mod tests {
         let addresses: Vec<&str> = pools_data.iter().map(|p| p.pool_address.as_str()).collect();
         assert_eq!(addresses, ["POOL_A", "POOL_C"]);
         assert_eq!(unavailable_pools, ["POOL_B"]);
+    }
+
+    #[test]
+    fn every_pool_unreadable_yields_a_snapshot_that_prices_nothing() {
+        // The rebuild itself still succeeds structurally — `get_all_pools` and
+        // the global-state reads worked. It is the resulting view that is
+        // empty, which is what the liquidator refuses to install.
+        let (pools_data, unavailable_pools) = partition_pool_reads(
+            "MARKET_A",
+            vec![
+                ("POOL_A".to_string(), Err(anyhow!("oracle price unavailable"))),
+                ("POOL_B".to_string(), Err(anyhow!("oracle price unavailable"))),
+            ],
+        );
+        let market_data = MarketData {
+            pools_data,
+            oracle_price_decimals: 14,
+            insolvency_ltv_bps: 10_000,
+            min_collateral_value_cents: 0,
+            unavailable_pools,
+        };
+
+        assert!(market_data.prices_nothing());
     }
 
     #[test]

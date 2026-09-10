@@ -2,7 +2,7 @@
   "uid": "alula-liquidator",
   "title": "Alula :: Liquidator",
   "timezone": "browser",
-  "version": 6,
+  "version": 7,
   "weekStart": "",
   "refresh": "10s",
   "schemaVersion": 39,
@@ -582,7 +582,7 @@
       "id": 9,
       "type": "timeseries",
       "title": "Obligations vs liquidatable positions",
-      "description": "Borrowers being modelled vs the subset flagged liquidatable, per market. Sustained zero liquidatable against non-zero obligations is suspicious \u2014 usually engine or oracle drift.",
+      "description": "Borrowers actually judged vs the subset flagged liquidatable, per market. Obligations skipped for an unpriced pool are in neither \u2014 a drop in the obligations line with *Snapshot gaps* non-zero is degradation, not borrowers leaving. Sustained zero liquidatable against non-zero obligations is suspicious \u2014 usually engine or oracle drift.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -904,14 +904,14 @@
       "id": 43,
       "type": "timeseries",
       "title": "Stale market data \u2014 scans refused",
-      "description": "Scans the liquidator aborted because its cached snapshot aged past `liquidator_max_market_data_age_secs` (default 60s). Non-zero means the keeper is blind on that market and takes no actions \u2014 not the same as a quiet market, which reports `no_obligations`. Reaching this state needs ~6 consecutive failed refreshes, so any bar here is a real data-feed outage.",
+      "description": "Scans the liquidator aborted because its cached snapshot aged past `liquidator_max_market_data_age_secs` (default 60s). Non-zero means the keeper is blind on that market and takes no actions \u2014 not the same as a quiet market, which reports `no_obligations`. A failing aggregate `get_market_data` alone cannot get here (the per-pool rebuild replaces the snapshot), so any bar means ~6 consecutive refreshes where the rebuild failed too or priced nothing \u2014 check *Snapshot gaps* next to it.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 31
       },
@@ -965,15 +965,15 @@
       "id": 44,
       "type": "timeseries",
       "title": "Unpriced-pool skips by pool",
-      "description": "Obligations withheld because the per-pool fallback could not price a pool they touch, broken out by the market and pool at fault \u2014 the legend names what to go fix. The scan itself still succeeds, so *Scan outcomes* stays green; this is the only signal that liquidation decisions are being made from a partial snapshot. One series per blocking pool, so an obligation touching two unpriced pools appears on both; *Skip reasons* holds the one-per-obligation count.",
+      "description": "Obligations withheld because the snapshot does not price a pool they touch \u2014 the fallback could not read it, or the market never reported it \u2014 broken out by the market and pool at fault, so the legend names what to go fix. The scan itself still succeeds, so *Scan outcomes* stays green. One series per blocking pool, so an obligation touching two unpriced pools appears on both; *Skip reasons* holds the one-per-obligation count.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 31
       },
       "targets": [
@@ -1000,6 +1000,64 @@
             "showPoints": "never",
             "gradientMode": "opacity",
             "lineInterpolation": "linear",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 45,
+      "type": "timeseries",
+      "title": "Snapshot gaps \u2014 pools the rebuild could not read",
+      "description": "Pools the market snapshot in use could not read, per market (`liquidator_snapshot_unavailable_pools`, published on every install). Non-zero means liquidation decisions are coming off a partial rebuild; unlike *Unpriced-pool skips* this fires even when no obligation touches the gap yet. It drops back to 0 on the first complete refresh.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 31
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "liquidator_snapshot_unavailable_pools",
+          "legendFormat": "{{market}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "gradientMode": "opacity",
+            "lineInterpolation": "stepAfter",
             "spanNulls": true
           }
         },

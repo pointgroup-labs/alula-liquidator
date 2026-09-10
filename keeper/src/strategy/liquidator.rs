@@ -50,6 +50,12 @@ pub struct LiquidatorConfig {
 /// current snapshot from prices frozen an hour ago.
 struct MarketSnapshot {
     data: MarketData,
+    /// When the prices in `data` were read. Only a snapshot that priced at
+    /// least one pool is ever installed (see [`Liquidator::install_snapshot`]),
+    /// so this attests held prices, not merely a reachable RPC. Pools missing
+    /// from `data.pools_data` are not covered — obligations touching them are
+    /// skipped rather than judged.
+    ///
     /// Monotonic, so a wall-clock step cannot age a fresh snapshot.
     refreshed_at: Instant,
 }
@@ -160,17 +166,18 @@ impl Strategy<Event, Action> for Liquidator {
     fn sync_state(&mut self) -> BoxFuture<'_, anyhow::Result<()>> {
         Box::pin(async {
             info!(?self.config.markets, "sync_state: loading market(s)...");
-            for market in &self.config.markets {
-                match self.ledger_reader.read_market_data(market).await {
+            let markets = self.config.markets.clone();
+            for market in markets {
+                match self.ledger_reader.read_market_data(&market).await {
                     Ok(md) => {
                         info!(market, ?md);
-                        self.market_data.insert(market.clone(), MarketSnapshot::new(md));
+                        self.install_snapshot(&market, md);
                     }
                     Err(e) => error!(?e, ?market, "get_market_data failed"),
                 }
 
                 let cached_obligations =
-                    self.obligations_repo.load_all(market).unwrap_or_else(|e| {
+                    self.obligations_repo.load_all(&market).unwrap_or_else(|e| {
                         warn!(?e, ?market, "load_all obligations failed");
 
                         HashMap::new()
@@ -179,7 +186,7 @@ impl Strategy<Event, Action> for Liquidator {
                     info!(?market, "no cached obligations");
                 }
 
-                self.obligations.insert(market.clone(), cached_obligations);
+                self.obligations.insert(market, cached_obligations);
             }
             info!("sync_state: done");
 
@@ -340,18 +347,43 @@ impl Liquidator {
         for market in markets {
             match self.ledger_reader.read_market_data(&market).await {
                 Ok(market_data) => {
-                    let own_key = ObligationKey::new(self.pkey.clone());
-                    if let Some(obl) = self.obligations.get(&market).and_then(|m| m.get(&own_key)) {
-                        emit_keeper_position_metrics(&market, obl, &market_data);
+                    if !self.install_snapshot(&market, market_data) {
+                        continue;
                     }
 
-                    self.market_data.insert(market, MarketSnapshot::new(market_data));
+                    let own_key = ObligationKey::new(self.pkey.clone());
+                    if let Some(obl) = self.obligations.get(&market).and_then(|m| m.get(&own_key))
+                        && let Some(snapshot) = self.market_data.get(&market)
+                    {
+                        emit_keeper_position_metrics(&market, obl, &snapshot.data);
+                    }
                 }
                 // The previous snapshot is kept but not re-stamped, so the age
                 // guard in `evaulate_market` decides when it stops being usable.
                 Err(e) => warn!(?e, %market, "refresh failed"),
             }
         }
+    }
+
+    /// Installs a refreshed view, re-stamping its freshness, and reports whether
+    /// it was accepted. A rebuild that priced no pool is refused: the aggregate
+    /// call and every per-pool read failing is the oracle outage the age guard
+    /// exists for, and stamping an empty view fresh is what would hide it.
+    fn install_snapshot(&mut self, market: &str, market_data: MarketData) -> bool {
+        if market_data.prices_nothing() {
+            warn!(
+                %market,
+                unavailable_pools = market_data.unavailable_pools.len(),
+                "rebuilt snapshot priced no pool; keeping the previous one"
+            );
+
+            return false;
+        }
+
+        metrics::set_snapshot_unavailable_pools(market, market_data.unavailable_pools.len() as u64);
+        self.market_data.insert(market.to_string(), MarketSnapshot::new(market_data));
+
+        true
     }
 
     async fn evaulate_market(&self, market: &str) -> Vec<Action> {
@@ -397,13 +429,12 @@ impl Liquidator {
         let mut actions = Vec::new();
         let (mut checked, mut liquidatable) = (0_u64, 0_u64);
         for (obligation_key, obligation) in obligations {
-            checked += 1;
             if obligation_key.user == self.pkey {
                 // NB: self liquidations are not supported on the market currently
                 continue;
             }
 
-            let unpriced_pools = liquidation::unavailable_pools_touched(obligation, market_data);
+            let unpriced_pools = liquidation::unpriced_pools_touched(obligation, market_data);
             if !unpriced_pools.is_empty() {
                 warn!(
                     ?obligation_key,
@@ -419,6 +450,10 @@ impl Liquidator {
                 continue;
             }
 
+            // Counted here, past the skips: `checked` is the denominator of
+            // `liquidatable`, so an obligation the snapshot could not price must
+            // not read as one that was judged and found healthy.
+            checked += 1;
             match liquidation::compute_is_liquidatable(obligation, market_data) {
                 Ok(is_liquidatable) => {
                     if !is_liquidatable {
@@ -1622,18 +1657,135 @@ mod tests {
         )
     }
 
-    fn snapshot(age: Duration, unavailable_pools: &[&str]) -> MarketSnapshot {
-        let data = MarketData {
+    fn pool_data(pool_address: &str) -> PoolData {
+        PoolData {
+            pool_address: pool_address.to_string(),
+            token_address: pool_address.to_string(),
+            token_symbol: "TST".to_string(),
+            token_decimals: 7,
+            total_borrowed: 0.into(),
+            total_d_tokens: 0.into(),
+            total_j_tokens: 0.into(),
+            total_available: 0.into(),
+            total_available_adjusted: 0.into(),
+            total_supply: 0.into(),
+            total_collateral: 0.into(),
+            j_token_rate_floor_bps: 10_000,
+            d_token_rate_ceil_bps: 10_000,
+            oracle_asset_price: 1,
+            open_ltv_bps: 8_000,
+            close_ltv_bps: 8_500,
+            liability_factor_bps: 10_000,
+            liquidation_close_factor_bps: 5_000,
+            max_liquidation_incentive_bps: 1_000,
+            flash_loan_fee_bps: 5,
+            utilization_ratio_limit_bps: 9_000,
+        }
+    }
+
+    fn market_data(priced_pools: &[&str], unavailable_pools: &[&str]) -> MarketData {
+        MarketData {
             insolvency_ltv_bps: 10_000,
-            pools_data: Vec::new(),
+            pools_data: priced_pools.iter().map(|p| pool_data(p)).collect(),
             oracle_price_decimals: 14,
             min_collateral_value_cents: 0,
             unavailable_pools: unavailable_pools.iter().map(|p| p.to_string()).collect(),
-        };
+        }
+    }
+
+    fn snapshot(
+        age: Duration,
+        priced_pools: &[&str],
+        unavailable_pools: &[&str],
+    ) -> MarketSnapshot {
         let refreshed_at =
             Instant::now().checked_sub(age).expect("monotonic clock older than the test age");
 
-        MarketSnapshot { data, refreshed_at }
+        MarketSnapshot { data: market_data(priced_pools, unavailable_pools), refreshed_at }
+    }
+
+    /// A `LedgerReader` serving one canned market view. Only `read_market_data`
+    /// is on the refresh path these tests drive; the rest of the port is
+    /// unreachable from there.
+    struct StubReader(MarketData);
+
+    impl LedgerReader for StubReader {
+        fn read_market_data<'a>(
+            &'a self,
+            _market_address: &'a str,
+        ) -> BoxFuture<'a, anyhow::Result<MarketData>> {
+            Box::pin(async move { Ok(self.0.clone()) })
+        }
+
+        fn read_pool_data<'a>(
+            &'a self,
+            _market_address: &'a str,
+            _pool_address: &'a str,
+        ) -> BoxFuture<'a, anyhow::Result<PoolData>> {
+            unimplemented!("not on the refresh path")
+        }
+
+        fn read_user_obligation<'a>(
+            &'a self,
+            _market_address: &'a str,
+            _key: &'a ObligationKey,
+        ) -> BoxFuture<'a, anyhow::Result<Obligation>> {
+            unimplemented!("not on the refresh path")
+        }
+
+        fn read_all_obligations_keys<'a>(
+            &'a self,
+            _market_address: &'a str,
+        ) -> BoxFuture<'a, anyhow::Result<Vec<ObligationKey>>> {
+            unimplemented!("not on the refresh path")
+        }
+
+        fn read_token_balance<'a>(
+            &'a self,
+            _token_address: &'a str,
+            _account: &'a str,
+        ) -> BoxFuture<'a, anyhow::Result<i128>> {
+            unimplemented!("not on the refresh path")
+        }
+
+        fn read_account_token_balance<'a>(
+            &'a self,
+            _token_address: &'a str,
+            _account: &'a str,
+        ) -> BoxFuture<'a, anyhow::Result<i128>> {
+            unimplemented!("not on the refresh path")
+        }
+
+        fn get_amount_out<'a>(
+            &'a self,
+            _amount_in: i128,
+            _asset_in: &'a str,
+            _asset_out: &'a str,
+            _swap_provider_address: &'a str,
+        ) -> BoxFuture<'a, anyhow::Result<i128>> {
+            unimplemented!("not on the refresh path")
+        }
+
+        fn get_amount_in<'a>(
+            &'a self,
+            _amount_out: i128,
+            _asset_in: &'a str,
+            _asset_out: &'a str,
+            _swap_provider_address: &'a str,
+        ) -> BoxFuture<'a, anyhow::Result<i128>> {
+            unimplemented!("not on the refresh path")
+        }
+
+        fn get_is_obligation_liquidatable<'a>(
+            &'a self,
+            _market: &'a str,
+            _liquidator_address: &'a str,
+            _borrower: &'a ObligationKey,
+            _borrow_pool: &'a str,
+            _collateral_pool: &'a str,
+        ) -> BoxFuture<'a, anyhow::Result<bool>> {
+            unimplemented!("not on the refresh path")
+        }
     }
 
     /// A borrow with no deposits: enough to make the obligation loop do real
@@ -1671,6 +1823,17 @@ mod tests {
         )])
     }
 
+    /// Runs `f` under a scoped recorder (no global install) and returns its
+    /// value with the rendered exposition.
+    fn under_recorder<T>(f: impl FnOnce() -> T) -> (T, String) {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        // `::metrics` — the crate's own `metrics` module is in scope here.
+        let value = ::metrics::with_local_recorder(&recorder, f);
+
+        (value, handle.render())
+    }
+
     /// Runs one market evaluation under a scoped recorder and returns the
     /// rendered exposition alongside the actions produced.
     fn evaluate_with_snapshot(
@@ -1683,20 +1846,16 @@ mod tests {
 
         let runtime =
             tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
-        let recorder = PrometheusBuilder::new().build_recorder();
-        let handle = recorder.handle();
-        // `::metrics` — the crate's own `metrics` module is in scope here.
-        let actions = ::metrics::with_local_recorder(&recorder, || {
-            runtime.block_on(liquidator.evaulate_market(MARKET))
-        });
 
-        (actions, handle.render())
+        under_recorder(|| runtime.block_on(liquidator.evaulate_market(MARKET)))
     }
 
     #[test]
     fn stale_snapshot_is_not_used_for_liquidation_decisions() {
-        let (actions, exposition) =
-            evaluate_with_snapshot(snapshot(MAX_AGE + Duration::from_secs(30), &[]), borrower());
+        let (actions, exposition) = evaluate_with_snapshot(
+            snapshot(MAX_AGE + Duration::from_secs(30), &["POOL_A"], &[]),
+            borrower(),
+        );
 
         assert!(actions.is_empty(), "a stale snapshot must not produce liquidations");
         assert!(
@@ -1716,8 +1875,10 @@ mod tests {
 
     #[test]
     fn fresh_snapshot_is_evaluated() {
-        let (actions, exposition) =
-            evaluate_with_snapshot(snapshot(MAX_AGE - Duration::from_secs(30), &[]), borrower());
+        let (actions, exposition) = evaluate_with_snapshot(
+            snapshot(MAX_AGE - Duration::from_secs(30), &["POOL_A"], &[]),
+            borrower(),
+        );
 
         assert!(actions.is_empty(), "the borrower has no collateral, so nothing is liquidatable");
         assert!(
@@ -1733,8 +1894,10 @@ mod tests {
 
     #[test]
     fn partial_snapshot_skips_only_the_obligations_it_cannot_price() {
-        let (actions, exposition) =
-            evaluate_with_snapshot(snapshot(Duration::ZERO, &["POOL_A", "POOL_Z"]), borrower());
+        let (actions, exposition) = evaluate_with_snapshot(
+            snapshot(Duration::ZERO, &["POOL_M"], &["POOL_A", "POOL_Z"]),
+            borrower(),
+        );
 
         assert!(actions.is_empty());
         assert!(
@@ -1767,7 +1930,7 @@ mod tests {
     #[test]
     fn every_unpriced_pool_touched_gets_its_own_series() {
         let (_, exposition) = evaluate_with_snapshot(
-            snapshot(Duration::ZERO, &["POOL_A", "POOL_Z"]),
+            snapshot(Duration::ZERO, &["POOL_M"], &["POOL_A", "POOL_Z"]),
             two_pool_borrower(),
         );
 
@@ -1791,7 +1954,87 @@ mod tests {
 
     #[test]
     fn a_snapshot_exactly_at_the_budget_is_still_fresh() {
-        assert!(snapshot(MAX_AGE, &[]).age(Instant::now()) >= MAX_AGE);
-        assert!(snapshot(Duration::ZERO, &[]).age(Instant::now()) < MAX_AGE);
+        assert!(snapshot(MAX_AGE, &["POOL_A"], &[]).age(Instant::now()) >= MAX_AGE);
+        assert!(snapshot(Duration::ZERO, &["POOL_A"], &[]).age(Instant::now()) < MAX_AGE);
+    }
+
+    #[test]
+    fn an_obligation_skipped_for_price_is_not_counted_as_checked() {
+        let (_, exposition) =
+            evaluate_with_snapshot(snapshot(Duration::ZERO, &["POOL_M"], &["POOL_A"]), borrower());
+
+        // `checked` is the denominator `liquidatable` is read against: counting
+        // an obligation nobody could price makes a blind scan look like a scan
+        // that found everyone healthy.
+        assert!(
+            exposition.contains("liquidator_obligations_total{market=\"MARKET_A\"} 0"),
+            "a skipped obligation was counted as judged:\n{exposition}"
+        );
+    }
+
+    #[test]
+    fn a_pool_missing_from_the_snapshot_blocks_the_obligation() {
+        // Nothing is flagged unavailable — POOL_A is simply absent from
+        // `pools_data`, which is what the aggregate path produces when
+        // `get_all_pools` omits a pool the borrower holds.
+        let (actions, exposition) =
+            evaluate_with_snapshot(snapshot(Duration::ZERO, &["POOL_M"], &[]), borrower());
+
+        assert!(actions.is_empty());
+        assert!(
+            exposition.contains("liquidator_skip_total{reason=\"unpriced_pool\"} 1"),
+            "an unpriced pool on no list at all was judged anyway:\n{exposition}"
+        );
+    }
+
+    /// The junction of the two guards: the aggregate `get_market_data` failed
+    /// **and** every per-pool read failed, so the fallback returns `Ok` with no
+    /// prices and every pool flagged. Installing that would re-stamp freshness
+    /// over an empty view and the age guard would never fire again.
+    #[test]
+    fn a_rebuild_that_prices_nothing_leaves_the_age_guard_armed() {
+        let mut liquidator = liquidator();
+        liquidator.ledger_reader = Arc::new(StubReader(market_data(&[], &["POOL_A"])));
+        liquidator.market_data.insert(
+            MARKET.to_string(),
+            snapshot(MAX_AGE + Duration::from_secs(30), &["POOL_A"], &[]),
+        );
+        liquidator.obligations.insert(MARKET.to_string(), borrower());
+
+        let runtime =
+            tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        let (actions, exposition) = under_recorder(|| {
+            runtime.block_on(async {
+                liquidator.refresh_market_data().await;
+
+                liquidator.evaulate_market(MARKET).await
+            })
+        });
+
+        assert!(actions.is_empty());
+        assert!(
+            exposition.contains(
+                "liquidator_scan_completed_total{market=\"MARKET_A\",outcome=\"stale_market_data\"\
+                 } 1"
+            ),
+            "a snapshot that priced nothing passed as fresh:\n{exposition}"
+        );
+    }
+
+    #[test]
+    fn a_partial_rebuild_is_visible_before_any_obligation_trips_over_it() {
+        let mut liquidator = liquidator();
+        liquidator.ledger_reader = Arc::new(StubReader(market_data(&["POOL_A"], &["POOL_B"])));
+
+        let runtime =
+            tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        let (_, exposition) = under_recorder(|| runtime.block_on(liquidator.refresh_market_data()));
+
+        // No obligation touches POOL_B, so the skip counters stay silent — this
+        // gauge is the only evidence that decisions run off a partial rebuild.
+        assert!(
+            exposition.contains("liquidator_snapshot_unavailable_pools{market=\"MARKET_A\"} 1"),
+            "a partial rebuild left no trace:\n{exposition}"
+        );
     }
 }

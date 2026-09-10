@@ -62,6 +62,7 @@ const SCAN_COMPLETED: &str = "liquidator_scan_completed_total";
 const SCAN_DURATION: &str = "liquidator_market_scan_duration_seconds";
 const SKIP: &str = "liquidator_skip_total";
 const UNPRICED_POOL_SKIPS: &str = "liquidator_unpriced_pool_skips_total";
+const SNAPSHOT_UNAVAILABLE_POOLS: &str = "liquidator_snapshot_unavailable_pools";
 const PLANS_DISPATCHED: &str = "liquidator_liquidation_plans_dispatched_total";
 const OBLIGATIONS: &str = "liquidator_obligations_total";
 const LIQUIDATABLE: &str = "liquidator_liquidatable_positions";
@@ -273,6 +274,13 @@ pub fn record_unpriced_pool_skip(market: &str, pool_address: &str) {
         POOL_ADDRESS => pool_address.to_string(),
     )
     .increment(1);
+}
+
+/// How many pools the snapshot just installed could not read. Published on
+/// every install, so a partial rebuild is visible even when no obligation
+/// touches the gap — the skip counter only fires once one does.
+pub fn set_snapshot_unavailable_pools(market: &str, count: u64) {
+    gauge!(SNAPSHOT_UNAVAILABLE_POOLS, MARKET => market.to_string()).set(count as f64);
 }
 
 /// Execution mode of a dispatched liquidation plan.
@@ -603,6 +611,11 @@ pub(super) fn describe_all() {
          pool. One increment per blocking pool, so an obligation touching several is counted once \
          here per pool and once in total on liquidator_skip_total."
     );
+    describe_gauge!(
+        SNAPSHOT_UNAVAILABLE_POOLS,
+        "Pools the market snapshot in use could not read, by market. Non-zero means decisions \
+         come from a partial rebuild; obligations touching those pools are skipped."
+    );
     describe_counter!(
         PLANS_DISPATCHED,
         "Liquidation plans handed to the executor, by market and execution mode."
@@ -681,6 +694,7 @@ mod tests {
         assert_eq!(SCAN_DURATION, "liquidator_market_scan_duration_seconds");
         assert_eq!(SKIP, "liquidator_skip_total");
         assert_eq!(UNPRICED_POOL_SKIPS, "liquidator_unpriced_pool_skips_total");
+        assert_eq!(SNAPSHOT_UNAVAILABLE_POOLS, "liquidator_snapshot_unavailable_pools");
         assert_eq!(PLANS_DISPATCHED, "liquidator_liquidation_plans_dispatched_total");
         assert_eq!(EXPECTED_PROFIT, "liquidator_plan_expected_net_profit_oracle_units");
         assert_eq!(REALISED_PROFIT, "liquidator_plan_realised_net_profit_oracle_units");

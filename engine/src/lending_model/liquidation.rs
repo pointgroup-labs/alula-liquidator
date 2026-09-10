@@ -116,32 +116,35 @@ pub fn compute_is_liquidatable(
     Ok(res)
 }
 
-/// The pools this obligation holds a position in that the snapshot could not
-/// read. [`compute_is_liquidatable`] skips unknown pools, so judging such an
+/// The pools this obligation holds a position in that the snapshot does not
+/// price. [`compute_is_liquidatable`] skips unknown pools, so judging such an
 /// obligation would silently under-count its debt or its collateral — wrong in
 /// both directions. A non-empty result means the caller must skip it until
 /// those pools are priced again, and names them so the skip can be attributed
 /// to the pool at fault rather than to the whole market.
 ///
-/// Iterating the snapshot's list rather than the obligation's positions keeps
-/// the result free of duplicates when a borrow and a deposit share one pool.
-pub fn unavailable_pools_touched<'a>(
-    obligation: &Obligation,
-    market_data: &'a MarketData,
+/// The test is presence in `pools_data`, not membership of `unavailable_pools`:
+/// the latter is empty by construction on the aggregate path and never names a
+/// pool the market simply did not report, so it would let exactly the missing
+/// pools through. Deduplicated, since a borrow and a deposit may share a pool.
+pub fn unpriced_pools_touched<'a>(
+    obligation: &'a Obligation,
+    market_data: &MarketData,
 ) -> Vec<&'a str> {
-    market_data
-        .unavailable_pools
+    let mut unpriced: Vec<&str> = Vec::new();
+    for held in obligation
+        .borrows
         .iter()
-        .filter(|unavailable| {
-            obligation
-                .borrows
-                .iter()
-                .map(|b| &b.pool_address)
-                .chain(obligation.deposits.iter().map(|d| &d.pool_address))
-                .any(|held| held == *unavailable)
-        })
-        .map(String::as_str)
-        .collect()
+        .map(|b| &b.pool_address)
+        .chain(obligation.deposits.iter().map(|d| &d.pool_address))
+    {
+        let priced = market_data.pools_data.iter().any(|p| p.pool_address == *held);
+        if !priced && !unpriced.contains(&held.as_str()) {
+            unpriced.push(held);
+        }
+    }
+
+    unpriced
 }
 
 /// Cheap pre-filter used by [`compute_is_liquidatable`] to short-circuit
@@ -368,10 +371,41 @@ mod tests {
     use super::*;
     use crate::lending_model::obligation::BorrowPosition;
 
-    fn snapshot(unavailable_pools: &[&str]) -> MarketData {
+    fn pool_data(pool_address: &str) -> PoolData {
+        PoolData {
+            pool_address: pool_address.to_string(),
+            token_address: pool_address.to_string(),
+            token_symbol: "TST".to_string(),
+            token_decimals: 7,
+            total_borrowed: 0.into(),
+            total_d_tokens: 0.into(),
+            total_j_tokens: 0.into(),
+            total_available: 0.into(),
+            total_available_adjusted: 0.into(),
+            total_supply: 0.into(),
+            total_collateral: 0.into(),
+            j_token_rate_floor_bps: 10_000,
+            d_token_rate_ceil_bps: 10_000,
+            // 1.0 at the fixture's 14 oracle decimals.
+            oracle_asset_price: 100_000_000_000_000,
+            open_ltv_bps: 8_000,
+            close_ltv_bps: 8_500,
+            liability_factor_bps: 10_000,
+            liquidation_close_factor_bps: 5_000,
+            max_liquidation_incentive_bps: 1_000,
+            flash_loan_fee_bps: 5,
+            utilization_ratio_limit_bps: 9_000,
+        }
+    }
+
+    /// A snapshot that prices `priced_pools` and flags `unavailable_pools` as
+    /// unread. The two lists are independent on purpose: the aggregate path
+    /// always leaves the second empty, so tests must be able to price nothing
+    /// while flagging nothing.
+    fn snapshot(priced_pools: &[&str], unavailable_pools: &[&str]) -> MarketData {
         MarketData {
             insolvency_ltv_bps: 10_000,
-            pools_data: Vec::new(),
+            pools_data: priced_pools.iter().map(|p| pool_data(p)).collect(),
             oracle_price_decimals: 14,
             min_collateral_value_cents: 0,
             unavailable_pools: unavailable_pools.iter().map(|p| p.to_string()).collect(),
@@ -395,14 +429,21 @@ mod tests {
     #[test]
     fn complete_snapshot_never_blocks_an_obligation() {
         assert!(
-            unavailable_pools_touched(&obligation("POOL_A", "POOL_B"), &snapshot(&[])).is_empty()
+            unpriced_pools_touched(
+                &obligation("POOL_A", "POOL_B"),
+                &snapshot(&["POOL_A", "POOL_B"], &[])
+            )
+            .is_empty()
         );
     }
 
     #[test]
     fn unavailable_borrow_pool_blocks_the_obligation() {
         assert_eq!(
-            unavailable_pools_touched(&obligation("POOL_A", "POOL_B"), &snapshot(&["POOL_A"])),
+            unpriced_pools_touched(
+                &obligation("POOL_A", "POOL_B"),
+                &snapshot(&["POOL_B"], &["POOL_A"])
+            ),
             ["POOL_A"]
         );
     }
@@ -410,7 +451,10 @@ mod tests {
     #[test]
     fn unavailable_deposit_pool_blocks_the_obligation() {
         assert_eq!(
-            unavailable_pools_touched(&obligation("POOL_A", "POOL_B"), &snapshot(&["POOL_B"])),
+            unpriced_pools_touched(
+                &obligation("POOL_A", "POOL_B"),
+                &snapshot(&["POOL_A"], &["POOL_B"])
+            ),
             ["POOL_B"]
         );
     }
@@ -418,27 +462,75 @@ mod tests {
     #[test]
     fn partial_snapshot_still_admits_untouched_obligations() {
         assert!(
-            unavailable_pools_touched(&obligation("POOL_A", "POOL_B"), &snapshot(&["POOL_C"]))
-                .is_empty()
+            unpriced_pools_touched(
+                &obligation("POOL_A", "POOL_B"),
+                &snapshot(&["POOL_A", "POOL_B"], &["POOL_C"])
+            )
+            .is_empty()
         );
     }
 
     #[test]
     fn every_touched_pool_is_named_and_untouched_ones_are_not() {
         assert_eq!(
-            unavailable_pools_touched(
+            unpriced_pools_touched(
                 &obligation("POOL_A", "POOL_B"),
-                &snapshot(&["POOL_B", "POOL_C", "POOL_A"])
+                &snapshot(&[], &["POOL_B", "POOL_C", "POOL_A"])
             ),
-            ["POOL_B", "POOL_A"]
+            ["POOL_A", "POOL_B"]
         );
     }
 
     #[test]
     fn a_pool_held_on_both_sides_is_named_once() {
         assert_eq!(
-            unavailable_pools_touched(&obligation("POOL_A", "POOL_A"), &snapshot(&["POOL_A"])),
+            unpriced_pools_touched(&obligation("POOL_A", "POOL_A"), &snapshot(&[], &["POOL_A"])),
             ["POOL_A"]
         );
+    }
+
+    #[test]
+    fn a_pool_missing_from_both_lists_still_blocks_the_obligation() {
+        // The aggregate path always reports `unavailable_pools` empty, so a pool
+        // `get_all_pools` never returned is on no list at all. Judging that
+        // obligation would silently drop its debt or its collateral.
+        assert_eq!(
+            unpriced_pools_touched(&obligation("POOL_A", "POOL_B"), &snapshot(&["POOL_A"], &[])),
+            ["POOL_B"]
+        );
+    }
+
+    #[test]
+    fn a_missing_deposit_pool_would_have_judged_a_healthy_position_liquidatable() {
+        // Most of the collateral sits in POOL_C. Dropping it — what
+        // `compute_is_liquidatable` does with an unknown pool — flips a
+        // comfortably healthy obligation to liquidatable, so the guard has to
+        // catch it before the verdict is computed. POOL_B keeps
+        // `has_any_collateral` satisfied, which is what makes the wrong verdict
+        // reachable at all.
+        let obligation = Obligation {
+            borrows: vec![BorrowPosition { d_tokens: 1_000.into(), pool_address: "POOL_A".into() }],
+            deposits: vec![
+                DepositPosition {
+                    j_tokens: 100.into(),
+                    collateral: 0.into(),
+                    pool_address: "POOL_B".into(),
+                },
+                DepositPosition {
+                    j_tokens: 10_000.into(),
+                    collateral: 0.into(),
+                    pool_address: "POOL_C".into(),
+                },
+            ],
+        };
+        let full = snapshot(&["POOL_A", "POOL_B", "POOL_C"], &[]);
+        let missing_collateral = snapshot(&["POOL_A", "POOL_B"], &[]);
+
+        assert!(!compute_is_liquidatable(&obligation, &full).expect("healthy verdict"));
+        assert!(
+            compute_is_liquidatable(&obligation, &missing_collateral).expect("degraded verdict"),
+            "the degraded snapshot must be the dangerous one this guard exists to block"
+        );
+        assert_eq!(unpriced_pools_touched(&obligation, &missing_collateral), ["POOL_C"]);
     }
 }
