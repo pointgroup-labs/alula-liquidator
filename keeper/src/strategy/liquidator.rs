@@ -1684,6 +1684,7 @@ mod tests {
             liquidation_close_factor_bps: 5_000,
             max_liquidation_incentive_bps: 1_000,
             flash_loan_fee_bps: 5,
+            status_flags: u32::MAX,
             utilization_ratio_limit_bps: 9_000,
         }
     }

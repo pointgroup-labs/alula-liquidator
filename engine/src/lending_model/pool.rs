@@ -6,6 +6,10 @@ use crate::lending_model::{
     error::{LMError, MapArithmeticError},
 };
 
+/// Bit of the contract's `PoolStatus.flags` (`POOL_STATUS_FLASH_LOAN_ENABLED`)
+/// that gates `FlashBorrow` and `flash_loan`.
+const POOL_STATUS_FLASH_LOAN_ENABLED: u32 = 1 << 3;
+
 #[derive(Debug, Clone)]
 pub struct PoolData {
     pub total_supply: Underlying,
@@ -22,6 +26,8 @@ pub struct PoolData {
     pub total_collateral: Underlying,
     pub oracle_asset_price: i128,
     pub flash_loan_fee_bps: i128,
+    /// The pool's `config.status.flags`.
+    pub status_flags: u32,
     pub liability_factor_bps: i128,
     pub d_token_rate_ceil_bps: i128,
     pub j_token_rate_floor_bps: i128,
@@ -32,6 +38,10 @@ pub struct PoolData {
 }
 
 impl PoolData {
+    pub fn is_flash_loan_enabled(&self) -> bool {
+        self.status_flags & POOL_STATUS_FLASH_LOAN_ENABLED != 0
+    }
+
     pub fn utilization_ratio_bps(&self) -> Result<i128, LMError> {
         if self.total_supply == Underlying::ZERO {
             Ok(0)
@@ -246,6 +256,7 @@ mod tests {
             liquidation_close_factor_bps: 5000,
             max_liquidation_incentive_bps: 1000,
             flash_loan_fee_bps: 5,
+            status_flags: u32::MAX,
             utilization_ratio_limit_bps: 9000,
         }
     }

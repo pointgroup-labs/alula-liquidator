@@ -325,6 +325,16 @@ pub(super) fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
     let fee_map = scval_as_map(fee_val)?;
     let flash_loan_fee_bps = map_get_i128(fee_map, "flash_loan_fee_bps")?;
 
+    // Unreadable flags fail closed to "nothing enabled" rather than failing the
+    // whole snapshot over a field only flash planning reads.
+    let status_flags = map_get(config_map, "status")
+        .context("missing status")
+        .and_then(|status| map_get_u32(scval_as_map(status)?, "flags"))
+        .unwrap_or_else(|e| {
+            warn!(%pool_address, %e, "unreadable pool status flags; treating flash loans as disabled");
+            0
+        });
+
     Ok(PoolData {
         pool_address,
         token_address,
@@ -346,6 +356,7 @@ pub(super) fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
         liquidation_close_factor_bps,
         max_liquidation_incentive_bps,
         flash_loan_fee_bps,
+        status_flags,
         utilization_ratio_limit_bps,
     })
 }
@@ -454,5 +465,92 @@ pub fn scval_display(val: &ScVal) -> String {
         }
         ScVal::Void => "None".into(),
         other => format!("{other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(entries: Vec<(&str, ScVal)>) -> ScVal {
+        let entries: Vec<ScMapEntry> = entries
+            .into_iter()
+            .map(|(key, val)| ScMapEntry {
+                key: ScVal::Symbol(ScSymbol(key.try_into().expect("valid symbol"))),
+                val,
+            })
+            .collect();
+
+        ScVal::Map(Some(ScMap(entries.try_into().expect("map fits"))))
+    }
+
+    fn address(seed: u8) -> ScVal {
+        ScVal::Address(ScAddress::Contract(ContractId(Hash([seed; 32]))))
+    }
+
+    /// A `get_pool_data` result shaped like market v1.1.0 and dev: `status`
+    /// sits beside `fee_config` in `pool.config`. `None` omits it entirely.
+    fn pool_data_scval(status_flags: Option<u32>) -> ScVal {
+        let mut config = vec![
+            (
+                "health_config",
+                map(vec![
+                    ("open_ltv_bps", i128_to_scval(8_000)),
+                    ("close_ltv_bps", i128_to_scval(8_500)),
+                    ("liability_factor_bps", i128_to_scval(10_000)),
+                    ("liquidation_close_factor_bps", i128_to_scval(5_000)),
+                    ("max_liquidation_incentive_bps", i128_to_scval(1_000)),
+                    ("utilization_ratio_limit_bps", i128_to_scval(9_000)),
+                ]),
+            ),
+            ("fee_config", map(vec![("flash_loan_fee_bps", ScVal::U32(5))])),
+        ];
+        if let Some(flags) = status_flags {
+            config.push(("status", map(vec![("flags", ScVal::U32(flags))])));
+        }
+
+        map(vec![
+            ("j_token_rate_floor_bps", i128_to_scval(10_000)),
+            ("d_token_rate_ceil_bps", i128_to_scval(10_000)),
+            ("oracle_asset_price", i128_to_scval(100_000_000_000_000)),
+            ("total_available_adjusted", i128_to_scval(0)),
+            ("total_supply", i128_to_scval(0)),
+            (
+                "pool",
+                map(vec![
+                    ("pool_address", address(1)),
+                    ("token_address", address(2)),
+                    ("token_decimals", ScVal::U32(7)),
+                    ("total_borrowed", i128_to_scval(0)),
+                    ("total_d_tokens", i128_to_scval(0)),
+                    ("total_j_tokens", i128_to_scval(0)),
+                    ("total_available", i128_to_scval(0)),
+                    ("total_collateral", i128_to_scval(0)),
+                    ("config", map(config)),
+                ]),
+            ),
+        ])
+    }
+
+    #[test]
+    fn a_pool_with_only_the_flash_bit_cleared_decodes_flash_disabled() {
+        let pool = parse_pool_data(&pool_data_scval(Some(0xFFFF_FFF7))).expect("pool parses");
+
+        assert_eq!(pool.status_flags, 0xFFFF_FFF7);
+        assert!(!pool.is_flash_loan_enabled());
+    }
+
+    #[test]
+    fn a_pool_with_every_flag_set_decodes_flash_enabled() {
+        let pool = parse_pool_data(&pool_data_scval(Some(0xFFFF_FFFF))).expect("pool parses");
+
+        assert!(pool.is_flash_loan_enabled());
+    }
+
+    #[test]
+    fn a_pool_without_status_flags_still_parses_with_flash_disabled() {
+        let pool = parse_pool_data(&pool_data_scval(None)).expect("pool parses");
+
+        assert!(!pool.is_flash_loan_enabled());
     }
 }
