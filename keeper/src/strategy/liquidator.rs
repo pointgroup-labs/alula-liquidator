@@ -758,7 +758,11 @@ impl Liquidator {
 
         // -- FLASH LIQUIDATION --
 
-        let flash_repay = {
+        // With the flag off the contract refuses FlashBorrow (OperationForbiddenOnPool,
+        // 110); skipping here also keeps the early returns below from dropping Direct.
+        let flash_repay = if !borrow_pool.is_flash_loan_enabled() {
+            0
+        } else {
             let all_liquidated_position_deposit = collateral_pool
                 .j_tokens_to_tokens_floor(deposit_position.j_tokens)
                 .inspect_err(|e| error!(%e))
@@ -1710,9 +1714,12 @@ mod tests {
         MarketSnapshot { data: market_data(priced_pools, unavailable_pools), refreshed_at }
     }
 
-    /// A `LedgerReader` serving one canned market view. Only `read_market_data`
-    /// is on the refresh path these tests drive; the rest of the port is
-    /// unreachable from there.
+    const UNIT: i128 = 10_000_000;
+    const WALLET_BALANCE: i128 = 1_000 * UNIT;
+
+    /// A `LedgerReader` serving one canned market view, a [`WALLET_BALANCE`] of
+    /// every token and 1:1 swap quotes. The rest of the port is unreachable from
+    /// the refresh and planning paths these tests drive.
     struct StubReader(MarketData);
 
     impl LedgerReader for StubReader {
@@ -1751,7 +1758,7 @@ mod tests {
             _token_address: &'a str,
             _account: &'a str,
         ) -> BoxFuture<'a, anyhow::Result<i128>> {
-            unimplemented!("not on the refresh path")
+            Box::pin(async { Ok(WALLET_BALANCE) })
         }
 
         fn read_account_token_balance<'a>(
@@ -1764,12 +1771,12 @@ mod tests {
 
         fn get_amount_out<'a>(
             &'a self,
-            _amount_in: i128,
+            amount_in: i128,
             _asset_in: &'a str,
             _asset_out: &'a str,
             _swap_provider_address: &'a str,
         ) -> BoxFuture<'a, anyhow::Result<i128>> {
-            unimplemented!("not on the refresh path")
+            Box::pin(async move { Ok(amount_in) })
         }
 
         fn get_amount_in<'a>(
@@ -2135,5 +2142,103 @@ mod tests {
             exposition.contains("liquidator_snapshot_unavailable_pools{market=\"MARKET_A\"} 1"),
             "a partial rebuild left no trace:\n{exposition}"
         );
+    }
+
+    fn contract_address(seed: u8) -> String {
+        stellar_strkey::Contract([seed; 32]).to_string().as_str().to_owned()
+    }
+
+    /// A pool priced at 1.0 with 10% utilization, so neither the borrow nor the
+    /// withdraw side is liquidity-bound. Real strkeys, since request building
+    /// rejects placeholder addresses.
+    fn planning_pool(seed: u8, status_flags: u32) -> PoolData {
+        PoolData {
+            total_borrowed: (1_000 * UNIT).into(),
+            total_d_tokens: (1_000 * UNIT).into(),
+            total_j_tokens: (10_000 * UNIT).into(),
+            total_supply: (10_000 * UNIT).into(),
+            total_available: (9_000 * UNIT).into(),
+            total_available_adjusted: (9_000 * UNIT).into(),
+            oracle_asset_price: 100_000_000_000_000,
+            status_flags,
+            ..pool_data(&contract_address(seed))
+        }
+    }
+
+    /// A solvent borrower owing 100 of the borrow pool against 105 of plain
+    /// collateral. The wallet covers the whole repay and swaps quote 1:1, so
+    /// Direct and Flash tie on `repay_amount` — the tie the old `max_by_key`
+    /// pick handed to Flash.
+    struct PlanningCase {
+        liquidator: Liquidator,
+        market_data: MarketData,
+        borrower_key: ObligationKey,
+        obligation: Obligation,
+    }
+
+    fn planning_case(borrow_pool_flags: u32) -> PlanningCase {
+        let market_data = MarketData {
+            pools_data: vec![planning_pool(1, borrow_pool_flags), planning_pool(2, u32::MAX)],
+            ..market_data(&[], &[])
+        };
+        let obligation = Obligation {
+            borrows: vec![BorrowPosition {
+                d_tokens: (100 * UNIT).into(),
+                pool_address: contract_address(1),
+            }],
+            deposits: vec![DepositPosition {
+                j_tokens: 0.into(),
+                collateral: (105 * UNIT).into(),
+                pool_address: contract_address(2),
+            }],
+        };
+
+        let mut liquidator = liquidator();
+        liquidator.config.swap_providers = vec![contract_address(9)];
+        liquidator.ledger_reader = Arc::new(StubReader(market_data.clone()));
+
+        PlanningCase {
+            liquidator,
+            market_data,
+            borrower_key: ObligationKey::new(
+                stellar_strkey::ed25519::PublicKey([3; 32]).to_string().as_str().to_owned(),
+            ),
+            obligation,
+        }
+    }
+
+    fn plan_for(borrow_pool_flags: u32) -> Option<LiquidationPlan> {
+        let PlanningCase { liquidator, market_data, borrower_key, obligation } =
+            planning_case(borrow_pool_flags);
+        let runtime =
+            tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+
+        runtime.block_on(liquidator.build_liquidation_plan_for_asset_pool_pair(
+            false,
+            obligation.borrows[0].d_tokens.0,
+            &market_data.pools_data[0],
+            &market_data,
+            &market_data.pools_data[1],
+            &obligation,
+            &obligation.deposits[0],
+            &borrower_key,
+        ))
+    }
+
+    #[test]
+    fn a_flash_disabled_borrow_pool_gets_a_direct_plan_not_a_flash_one() {
+        // The new market's XLM and USDC pools: every flag but flash loans.
+        let plan = plan_for(0xFFFF_FFF7).expect("Direct is affordable and profitable");
+
+        assert!(matches!(plan.liquidation_type, LiquidationType::Direct), "{plan:?}");
+    }
+
+    #[test]
+    fn a_flash_enabled_borrow_pool_still_gets_a_flash_plan() {
+        // Control for the test above: the same position does plan Flash when the
+        // pool allows it, so a Direct pick there is the flag at work.
+        let plan = plan_for(u32::MAX).expect("Flash is profitable");
+
+        assert!(matches!(plan.liquidation_type, LiquidationType::Flash { .. }), "{plan:?}");
     }
 }
