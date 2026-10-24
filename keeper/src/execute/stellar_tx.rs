@@ -303,12 +303,13 @@ async fn build_and_send(
 
     if sim_response.results.is_empty() {
         error!(
+            sim_error = ?sim_response.error,
             ?sim_response,
             "simulation returned no results — contract execution likely failed, skipping \
              submission"
         );
 
-        return Err(anyhow::anyhow!("simulation returned no results"));
+        return Err(empty_simulation_error(sim_response.error.as_deref()));
     }
 
     let mut assembled_tx = tx.clone();
@@ -370,6 +371,15 @@ async fn build_and_send(
     Ok(hash_hex)
 }
 
+/// Keeps the RPC's diagnostic, the only place the `Error(Contract, #N)` code
+/// survives; the prefix still classifies it as an empty simulation.
+fn empty_simulation_error(sim_error: Option<&str>) -> anyhow::Error {
+    match sim_error {
+        Some(detail) => anyhow::anyhow!("simulation returned no results: {detail}"),
+        None => anyhow::anyhow!("simulation returned no results"),
+    }
+}
+
 fn sign_transaction(
     tx: &Transaction,
     signing_key: &SigningKey,
@@ -394,4 +404,17 @@ fn sign_transaction(
         tx: tx.clone(),
         signatures: vec![decorated].try_into()?,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_simulation_keeps_its_contract_code_and_still_gives_up() {
+        let err = empty_simulation_error(Some("HostError: Error(Contract, #200)"));
+
+        assert!(format!("{err:#}").contains("Error(Contract, #200)"));
+        assert!(is_no_simulation_results_error(&err), "must stay SimEmpty, not be retried");
+    }
 }

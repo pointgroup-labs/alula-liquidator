@@ -78,17 +78,19 @@ impl SorobanRpcError {
     /// hold a `String` (e.g. simulation responses that surface the error
     /// directly).
     pub fn classify_str(msg: &str) -> Self {
+        let lower = msg.to_lowercase();
+
+        // Checked before the code: an empty simulation carries its contract error
+        // as detail, and the executor gives up on it rather than retrying.
+        if lower.contains("simulation returned no results") {
+            return Self::NoSimulationResults;
+        }
         if let Some(code) = extract_contract_code(msg) {
             return Self::Contract { code };
         }
 
-        let lower = msg.to_lowercase();
-
         if lower.contains("tx_bad_seq") || lower.contains("bad_seq") || lower.contains("bad seq") {
             return Self::BadSequence;
-        }
-        if lower.contains("simulation returned no results") {
-            return Self::NoSimulationResults;
         }
         if lower.contains("cursor not found")
             || lower.contains("invalid cursor")
