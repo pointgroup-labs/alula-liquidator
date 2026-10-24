@@ -58,7 +58,7 @@ The `engine` crate contains the lending model, the reactor loop, and the trait d
 
 ### Strategies in detail
 
-**`bad_debt_request_initiator`** listens for `Liquidate` events and inspects the borrower's residual obligation. When the obligation has no viable collateral left but still carries debt, it submits `issue_cover_bad_debt` so the insurance fund can socialize the loss. Stateless; no startup sync needed.
+**`bad_debt_request_initiator`** checks the cached obligations every `bad_debt_request_initiator_refresh_interval_blocks` ledgers. When an obligation has no viable collateral left, still carries debt and has no open cover request, it re-reads the obligation from chain and submits `issue_cover_bad_debt` so the insurance fund can cover the loss. An obligation the market no longer holds is dropped from the cache.
 
 **`liquidator`** models obligations and oracle prices per market, estimates net profit after gas, swap costs, and `liquidator_min_profit_margin_cents`, and picks the most profitable (borrow, deposit) pair to liquidate. It chooses between three execution modes based on the keeper's on-hand liquidity: `Direct` (the keeper already holds enough of the repayment asset), `PreSwap` (swap a held asset into the repayment asset first, then liquidate), or `Flash` (flash-borrow the repayment asset from the pool, seize the collateral, swap it back, and repay the flash loan atomically). Non-target collateral received from liquidations is later swapped by the rebalancer; assets in `assets_to_hold` are kept.
 
