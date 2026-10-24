@@ -153,6 +153,19 @@ pub fn is_expected_liquidation_failure(err: &anyhow::Error) -> bool {
     EXPECTED_LIQUIDATION_FAILURE_NAMES.iter().any(|n| rendered.contains(n))
 }
 
+/// `MCError::ObligationDoesNotExist`, raised by `get_user_obligation` and
+/// `issue_cover_bad_debt` for a key absent from market storage.
+const OBLIGATION_DOES_NOT_EXIST_CODE: u32 = 200;
+
+/// `true` if the market reports the obligation gone. Same resolution order as
+/// [`is_expected_liquidation_failure`]: numeric code first, name as fallback.
+pub fn is_obligation_does_not_exist(err: &anyhow::Error) -> bool {
+    if let SorobanRpcError::Contract { code } = SorobanRpcError::classify(err) {
+        return code == OBLIGATION_DOES_NOT_EXIST_CODE;
+    }
+    format!("{err:#}").contains("ObligationDoesNotExist")
+}
+
 pub fn is_bad_seq_error(err: &anyhow::Error) -> bool {
     matches!(SorobanRpcError::classify(err), SorobanRpcError::BadSequence)
 }
@@ -163,4 +176,23 @@ pub fn is_no_simulation_results_error(err: &anyhow::Error) -> bool {
 
 pub fn is_terminal_cursor_error<E: std::fmt::Display>(err: &E) -> bool {
     matches!(SorobanRpcError::classify(err), SorobanRpcError::TerminalCursor)
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::anyhow;
+
+    use super::*;
+
+    #[test]
+    fn only_code_200_means_the_obligation_is_gone() {
+        let gone =
+            anyhow!("simulation failed for get_user_obligation: HostError: Error(Contract, #200)")
+                .context("simulate get_user_obligation");
+        let open_request = anyhow!("HostError: Error(Contract, #602)");
+
+        assert!(is_obligation_does_not_exist(&gone));
+        assert!(!is_obligation_does_not_exist(&open_request));
+        assert!(!is_obligation_does_not_exist(&anyhow!("connection refused")));
+    }
 }

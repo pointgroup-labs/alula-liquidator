@@ -28,7 +28,7 @@ use crate::{
     },
     liquidator_capital::{LiquidatorCapital, random_id},
     metrics::{self, LiquidationKind, ScanOutcome, SkipReason},
-    stellar::client::Gateway,
+    stellar::{client::Gateway, errors::is_obligation_does_not_exist},
     storage::{cursor::CursorRepo, obligations::ObligationsRepo},
 };
 
@@ -270,6 +270,30 @@ impl Liquidator {
                     &event.value,
                 );
             }
+            OperationEvent::IssueCoverBadDebt | OperationEvent::ClaimCoverBadDebtResults => {
+                let obl_display = self.gateway.decode_topic(&event, 1);
+                info!(%event_name, ledger = event.ledger, %market, %obl_display, "bad-debt event");
+
+                let Ok(key) = self.gateway.parse_obligation_key_from_topic(&event, 1) else {
+                    error!(%event_name, "cannot parse obligation key");
+
+                    return vec![];
+                };
+
+                if let OperationEvent::ClaimCoverBadDebtResults = operation_event {
+                    self.apply_obligation_snapshot(
+                        &market,
+                        "obligation",
+                        event_name,
+                        &key,
+                        &event.value,
+                    );
+                } else {
+                    // The issue event carries no obligation; the request may
+                    // have left it open or closed it outright.
+                    self.reread_obligation(&market, &key, event_name).await;
+                }
+            }
         }
 
         if let Err(e) = self.cursor_repo.set(&event.id, event.ledger) {
@@ -291,31 +315,58 @@ impl Liquidator {
         match self.gateway.parse_obligation_from_event_value(value_xdr_base64, field_name, key) {
             Ok(Some(obligation)) => {
                 debug!(?key, ?obligation, %event_name, %market, "obligation snapshot");
-                if let Err(e) = self.obligations_repo.put(market, key, &obligation) {
-                    warn!(?e, %event_name, %market, "failed to save obligation");
-                }
-                if key.user == self.pkey
-                    && let Some(snapshot) = self.market_data.get(market)
-                {
-                    emit_keeper_position_metrics(market, &obligation, &snapshot.data);
-                }
-
-                self.obligations
-                    .entry(market.to_string())
-                    .or_default()
-                    .insert(key.clone(), obligation);
+                self.upsert_obligation(market, key, obligation, event_name);
             }
             Ok(None) => {
                 // TODO: This is liquidator's obligation, not a borrower's
                 info!(?key, %event_name, %market, "obligation deleted on the market");
-                if let Err(e) = self.obligations_repo.delete(market, key) {
-                    warn!(?e, %event_name, %market, "failed to delete obligation");
-                }
-                if let Some(map) = self.obligations.get_mut(market) {
-                    map.remove(key);
-                }
+                self.delete_obligation(market, key, event_name);
             }
             Err(e) => warn!(%event_name, %field_name, %market, ?e, "parse error"),
+        }
+    }
+
+    async fn reread_obligation(&mut self, market: &str, key: &ObligationKey, event_name: &str) {
+        match self.ledger_reader.read_user_obligation(market, key).await {
+            Ok(obligation) => {
+                debug!(?key, ?obligation, %event_name, %market, "obligation re-read");
+                self.upsert_obligation(market, key, obligation, event_name);
+            }
+            Err(e) if is_obligation_does_not_exist(&e) => {
+                info!(?key, %event_name, %market, "obligation gone on chain");
+                self.delete_obligation(market, key, event_name);
+            }
+            Err(e) => {
+                warn!(?e, ?key, %event_name, %market, "obligation re-read failed; cache untouched");
+            }
+        }
+    }
+
+    fn upsert_obligation(
+        &mut self,
+        market: &str,
+        key: &ObligationKey,
+        obligation: Obligation,
+        event_name: &str,
+    ) {
+        if let Err(e) = self.obligations_repo.put(market, key, &obligation) {
+            warn!(?e, %event_name, %market, "failed to save obligation");
+        }
+        if key.user == self.pkey
+            && let Some(snapshot) = self.market_data.get(market)
+        {
+            emit_keeper_position_metrics(market, &obligation, &snapshot.data);
+        }
+
+        self.obligations.entry(market.to_string()).or_default().insert(key.clone(), obligation);
+    }
+
+    fn delete_obligation(&mut self, market: &str, key: &ObligationKey, event_name: &str) {
+        if let Err(e) = self.obligations_repo.delete(market, key) {
+            warn!(?e, %event_name, %market, "failed to delete obligation");
+        }
+        if let Some(map) = self.obligations.get_mut(market) {
+            map.remove(key);
         }
     }
 
@@ -1620,9 +1671,10 @@ fn emit_keeper_position_metrics(market: &str, obligation: &Obligation, market_da
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use engine::lending_model::BorrowPosition;
     use metrics_exporter_prometheus::PrometheusBuilder;
+    use stellar_xdr::{Limits, ScMap, ScMapEntry, ScSymbol, ScVal, WriteXdr as _};
 
     use super::*;
     use crate::{liquidator_capital::LiquidatorCapitalConfig, storage::SqliteStore};
@@ -1693,7 +1745,7 @@ mod tests {
         }
     }
 
-    fn market_data(priced_pools: &[&str], unavailable_pools: &[&str]) -> MarketData {
+    pub(crate) fn market_data(priced_pools: &[&str], unavailable_pools: &[&str]) -> MarketData {
         MarketData {
             insolvency_ltv_bps: 10_000,
             pools_data: priced_pools.iter().map(|p| pool_data(p)).collect(),
@@ -1717,17 +1769,37 @@ mod tests {
     const UNIT: i128 = 10_000_000;
     const WALLET_BALANCE: i128 = 1_000 * UNIT;
 
-    /// A `LedgerReader` serving one canned market view, a [`WALLET_BALANCE`] of
-    /// every token and 1:1 swap quotes. The rest of the port is unreachable from
-    /// the refresh and planning paths these tests drive.
-    struct StubReader(MarketData);
+    /// How `get_user_obligation` fails for a key the market no longer stores.
+    pub(crate) const OBLIGATION_GONE: &str =
+        "simulation failed for get_user_obligation: HostError: Error(Contract, #200)";
+
+    /// A `LedgerReader` serving one canned market view, one canned obligation
+    /// read, a [`WALLET_BALANCE`] of every token and 1:1 swap quotes. The rest of
+    /// the port is unreachable from the paths these tests drive.
+    pub(crate) struct StubReader {
+        market_data: MarketData,
+        /// `Err` holds the rendered simulation failure, e.g. `Error(Contract, #200)`.
+        obligation: Result<Obligation, String>,
+    }
+
+    impl StubReader {
+        pub(crate) fn new(market_data: MarketData) -> Self {
+            Self { market_data, obligation: Err("no obligation stubbed".to_string()) }
+        }
+
+        pub(crate) fn with_obligation(mut self, obligation: Result<Obligation, String>) -> Self {
+            self.obligation = obligation;
+
+            self
+        }
+    }
 
     impl LedgerReader for StubReader {
         fn read_market_data<'a>(
             &'a self,
             _market_address: &'a str,
         ) -> BoxFuture<'a, anyhow::Result<MarketData>> {
-            Box::pin(async move { Ok(self.0.clone()) })
+            Box::pin(async move { Ok(self.market_data.clone()) })
         }
 
         fn read_pool_data<'a>(
@@ -1743,7 +1815,7 @@ mod tests {
             _market_address: &'a str,
             _key: &'a ObligationKey,
         ) -> BoxFuture<'a, anyhow::Result<Obligation>> {
-            unimplemented!("not on the refresh path")
+            Box::pin(async move { self.obligation.clone().map_err(anyhow::Error::msg) })
         }
 
         fn read_all_obligations_keys<'a>(
@@ -2104,7 +2176,7 @@ mod tests {
     #[test]
     fn a_rebuild_that_prices_nothing_leaves_the_age_guard_armed() {
         let mut liquidator = liquidator();
-        liquidator.ledger_reader = Arc::new(StubReader(market_data(&[], &["POOL_A"])));
+        liquidator.ledger_reader = Arc::new(StubReader::new(market_data(&[], &["POOL_A"])));
         liquidator.market_data.insert(
             MARKET.to_string(),
             snapshot(MAX_AGE + Duration::from_secs(30), &["POOL_A"], &[]),
@@ -2134,7 +2206,7 @@ mod tests {
     #[test]
     fn a_partial_rebuild_is_visible_before_any_obligation_trips_over_it() {
         let mut liquidator = liquidator();
-        liquidator.ledger_reader = Arc::new(StubReader(market_data(&["POOL_A"], &["POOL_B"])));
+        liquidator.ledger_reader = Arc::new(StubReader::new(market_data(&["POOL_A"], &["POOL_B"])));
 
         let runtime =
             tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
@@ -2200,7 +2272,7 @@ mod tests {
 
         let mut liquidator = liquidator();
         liquidator.config.swap_providers = vec![contract_address(9)];
-        liquidator.ledger_reader = Arc::new(StubReader(market_data.clone()));
+        liquidator.ledger_reader = Arc::new(StubReader::new(market_data.clone()));
 
         PlanningCase {
             liquidator,
@@ -2245,5 +2317,124 @@ mod tests {
         let plan = plan_for(u32::MAX).expect("Flash is profitable");
 
         assert!(matches!(plan.liquidation_type, LiquidationType::Flash { .. }), "{plan:?}");
+    }
+
+    /// Mainnet market CBP76…: the obligation the keeper kept re-issuing for,
+    /// and the topics of its 2026-09-27 issue and 2026-09-29 claim events.
+    /// Market v1.2.0 publishes both events with the same topic layout.
+    const BAD_DEBT_USER: &str = "GDGRMW55DHLHUBOCM6OFWAKCQWASJTBCFYC3NRW3NAHLPR7QVPR6JXQI";
+    const BAD_DEBT_USER_TOPIC: &str = "AAAAEQAAAAEAAAACAAAADwAAAARzZWVkAAAAAQAAAA8AAAAEdXNlcgAAABIAAAAAAAAAAM0WW70Z1noFwmecWwFChYEkzCIuBbbG22gOt8fwq+Pk";
+    const ISSUE_TOPIC: &str = "AAAADwAAABRpc3N1ZV9jb3Zlcl9iYWRfZGVidA==";
+    const CLAIM_TOPIC: &str = "AAAADwAAABxjbGFpbV9jb3Zlcl9iYWRfZGVidF9yZXN1bHRz";
+
+    fn market_event(topic: [&str; 2], value: &str) -> SorobanEvent {
+        serde_json::from_value(serde_json::json!({
+            "type": "contract",
+            "ledger": 64_680_213,
+            "ledgerClosedAt": "2026-09-29T13:00:46Z",
+            "contractId": MARKET,
+            "id": "0277799399535005697-0000000002",
+            "topic": topic,
+            "value": value,
+        }))
+        .expect("getEvents record")
+    }
+
+    /// A liquidator caching [`BAD_DEBT_USER`]'s residual debt, whose chain
+    /// re-reads answer `on_chain`.
+    fn liquidator_caching_bad_debt(
+        on_chain: Result<Obligation, String>,
+    ) -> (Liquidator, ObligationKey) {
+        let key = ObligationKey::new(BAD_DEBT_USER.to_string());
+        let obligation = borrower().into_values().next().expect("one borrower");
+
+        let mut liquidator = liquidator();
+        liquidator.ledger_reader =
+            Arc::new(StubReader::new(market_data(&[], &[])).with_obligation(on_chain));
+        liquidator.obligations_repo.put(MARKET, &key, &obligation).expect("seed row");
+        liquidator
+            .obligations
+            .insert(MARKET.to_string(), HashMap::from([(key.clone(), obligation)]));
+
+        (liquidator, key)
+    }
+
+    fn apply_event(liquidator: &mut Liquidator, event: SorobanEvent) {
+        let runtime =
+            tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+
+        assert!(runtime.block_on(liquidator.handle_soroban_event(event)).is_empty());
+    }
+
+    /// The row as the repo and the in-memory cache hold it; they must agree.
+    fn cached(liquidator: &Liquidator, key: &ObligationKey) -> Option<Obligation> {
+        let stored = liquidator.obligations_repo.load_all(MARKET).expect("load").remove(key);
+        let in_memory = liquidator.obligations.get(MARKET).and_then(|m| m.get(key)).cloned();
+        assert_eq!(stored.is_some(), in_memory.is_some(), "repo and memory diverged");
+
+        stored
+    }
+
+    #[test]
+    fn the_mainnet_claim_event_drops_the_closed_obligation() {
+        // Event 277799399535005697-0002, body `{obligation: void}` (market v1.1.0).
+        // The claim carries its own verdict, so the chain is never asked.
+        let (mut liquidator, key) = liquidator_caching_bad_debt(Err("not consulted".to_string()));
+
+        apply_event(
+            &mut liquidator,
+            market_event(
+                [CLAIM_TOPIC, BAD_DEBT_USER_TOPIC],
+                "AAAAEQAAAAEAAAABAAAADwAAAApvYmxpZ2F0aW9uAAAAAAAB",
+            ),
+        );
+
+        assert!(cached(&liquidator, &key).is_none());
+    }
+
+    #[test]
+    fn a_v1_2_claim_event_with_settled_drops_the_closed_obligation() {
+        let field = |name: &str, val| ScMapEntry {
+            key: ScVal::Symbol(ScSymbol(name.try_into().expect("symbol"))),
+            val,
+        };
+        let body = ScVal::Map(Some(ScMap(
+            vec![field("obligation", ScVal::Void), field("settled", ScVal::U32(1))]
+                .try_into()
+                .expect("map"),
+        )))
+        .to_xdr_base64(Limits::none())
+        .expect("xdr");
+        let (mut liquidator, key) = liquidator_caching_bad_debt(Err("not consulted".to_string()));
+
+        apply_event(&mut liquidator, market_event([CLAIM_TOPIC, BAD_DEBT_USER_TOPIC], &body));
+
+        assert!(cached(&liquidator, &key).is_none());
+    }
+
+    /// The mainnet issue event; its body is the empty map in both market versions.
+    fn issue_event() -> SorobanEvent {
+        market_event([ISSUE_TOPIC, BAD_DEBT_USER_TOPIC], "AAAAEQAAAAEAAAAA")
+    }
+
+    #[test]
+    fn an_issue_event_that_closed_the_obligation_drops_it() {
+        let (mut liquidator, key) = liquidator_caching_bad_debt(Err(OBLIGATION_GONE.to_string()));
+
+        apply_event(&mut liquidator, issue_event());
+
+        assert!(cached(&liquidator, &key).is_none());
+    }
+
+    #[test]
+    fn an_issue_event_that_left_a_request_open_caches_it() {
+        let mut open = borrower().into_values().next().expect("one borrower");
+        open.open_bad_debt_requests = 1;
+        let (mut liquidator, key) = liquidator_caching_bad_debt(Ok(open));
+
+        apply_event(&mut liquidator, issue_event());
+
+        let row = cached(&liquidator, &key).expect("obligation still open");
+        assert_eq!(row.open_bad_debt_requests, 1);
     }
 }

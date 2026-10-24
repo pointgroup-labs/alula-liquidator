@@ -15,6 +15,8 @@ pub enum OperationEvent {
     Liquidate,
     AddCollateral,
     RemoveCollateral,
+    IssueCoverBadDebt,
+    ClaimCoverBadDebtResults,
 }
 
 #[derive(Debug, Error)]
@@ -37,7 +39,27 @@ impl TryFrom<&str> for OperationEvent {
             "liquidate_event" => Liquidate,
             "add_collateral_event" => AddCollateral,
             "remove_collateral_event" => RemoveCollateral,
+            "issue_cover_bad_debt" => IssueCoverBadDebt,
+            "claim_cover_bad_debt_results" => ClaimCoverBadDebtResults,
             other => return Err(OperationEventError::Unknown(other.to_string())),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Market v1.1.0 and v1.2.0 publish both under the same snake_case struct name.
+    #[test]
+    fn bad_debt_event_names_decode() {
+        assert!(matches!(
+            OperationEvent::try_from("issue_cover_bad_debt"),
+            Ok(OperationEvent::IssueCoverBadDebt)
+        ));
+        assert!(matches!(
+            OperationEvent::try_from("claim_cover_bad_debt_results"),
+            Ok(OperationEvent::ClaimCoverBadDebtResults)
+        ));
     }
 }
