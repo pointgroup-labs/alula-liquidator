@@ -17,7 +17,7 @@ use crate::{
     collect::{Event, stellar_ledger::NewLedger},
     execute::{Action, stellar_tx::SubmitStellarTx},
     metrics::BadDebtOutcome,
-    stellar::client::Gateway,
+    stellar::{client::Gateway, errors::is_obligation_does_not_exist},
     storage::obligations::ObligationsRepo,
 };
 
@@ -91,23 +91,35 @@ impl BadDebtRequestInitiator {
             // - Check eligibility for every obligation on a market -
 
             for (obligation_key, obligation) in &loaded_obligations {
-                let Ok(eligible) = self
-                    .is_eligible_for_bad_debt_request_issuance(
-                        obligation_key,
-                        obligation,
-                        &market_data,
-                    )
-                    .inspect_err(|e| {
-                        warn!(?e, ?obligation_key, "bad debt eligibility check failed");
-                        BadDebtOutcome::EligibilityError.record();
-                    })
-                else {
+                if !self.judge_eligibility(obligation_key, obligation, &market_data) {
                     continue;
+                }
+
+                // The cache is only as fresh as the last event applied to it, and
+                // events behind the saved cursor are never replayed.
+                let fresh = match self
+                    .ledger_reader
+                    .read_user_obligation(&market, obligation_key)
+                    .await
+                {
+                    Ok(fresh) => fresh,
+                    Err(e) if is_obligation_does_not_exist(&e) => {
+                        info!(?obligation_key, %market, "obligation gone on chain; dropping row");
+                        if let Err(e) = self.obligations_repo.delete(&market, obligation_key) {
+                            warn!(?e, ?obligation_key, %market, "failed to delete obligation");
+                        }
+                        BadDebtOutcome::ObligationCleared.record();
+
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!(?e, ?obligation_key, %market, "obligation re-read failed; skipping");
+                        BadDebtOutcome::EligibilityError.record();
+
+                        continue;
+                    }
                 };
-
-                if !eligible {
-                    BadDebtOutcome::Ineligible.record();
-
+                if !self.judge_eligibility(obligation_key, &fresh, &market_data) {
                     continue;
                 }
                 info!(?obligation_key, "obligation eligible for bad debt request issuance");
@@ -218,6 +230,29 @@ impl BadDebtRequestInitiator {
         }
     }
 
+    /// Eligibility with its outcome recorded; an evaluation error counts as ineligible.
+    fn judge_eligibility(
+        &self,
+        obl_key: &ObligationKey,
+        obligation: &Obligation,
+        market_data: &MarketData,
+    ) -> bool {
+        match self.is_eligible_for_bad_debt_request_issuance(obl_key, obligation, market_data) {
+            Ok(true) => true,
+            Ok(false) => {
+                BadDebtOutcome::Ineligible.record();
+
+                false
+            }
+            Err(e) => {
+                warn!(?e, ?obl_key, "bad debt eligibility check failed");
+                BadDebtOutcome::EligibilityError.record();
+
+                false
+            }
+        }
+    }
+
     fn is_eligible_for_bad_debt_request_issuance(
         &self,
         obl_key: &ObligationKey,
@@ -302,5 +337,101 @@ impl BadDebtRequestInitiator {
             signing_key: self.skey.clone(),
             max_submission_retries: self.config.max_retries,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use engine::lending_model::BorrowPosition;
+
+    use super::*;
+    use crate::{
+        storage::SqliteStore,
+        strategy::liquidator::tests::{OBLIGATION_GONE, StubReader, market_data},
+    };
+
+    const MARKET: &str = "CBP76I2FRMUKYKIYYBKN3DH7TSWMFAJF2WTDC7Q2OHQFBIVWP7CAAI5Q";
+    const USER: &str = "GDGRMW55DHLHUBOCM6OFWAKCQWASJTBCFYC3NRW3NAHLPR7QVPR6JXQI";
+
+    /// Debt with no collateral left: eligible on its face.
+    fn residual_debt(open_bad_debt_requests: u32) -> Obligation {
+        Obligation {
+            borrows: vec![BorrowPosition {
+                d_tokens: 1_000.into(),
+                pool_address: "POOL_A".to_string(),
+            }],
+            deposits: Vec::new(),
+            open_bad_debt_requests,
+        }
+    }
+
+    /// An initiator whose cache holds [`USER`]'s residual debt as the keeper last
+    /// saw it, and whose chain read answers `on_chain`.
+    fn initiator(on_chain: Result<Obligation, String>) -> BadDebtRequestInitiator {
+        let store = SqliteStore::open(":memory:").expect("in-memory sqlite");
+        let rpc_url = "http://127.0.0.1:1".parse().expect("valid url");
+        let gateway = Arc::new(Gateway::new(&rpc_url, "G".repeat(56)).expect("gateway"));
+        let obligations_repo = store.obligations();
+        obligations_repo
+            .put(MARKET, &ObligationKey::new(USER.to_string()), &residual_debt(0))
+            .expect("seed row");
+
+        BadDebtRequestInitiator::new(
+            SigningKey::from_bytes(&[7_u8; 32]),
+            gateway,
+            obligations_repo,
+            Arc::new(StubReader::new(market_data(&[], &[])).with_obligation(on_chain)),
+            BadDebtRequestInitiatorConfig {
+                max_retries: 1,
+                markets: vec![MARKET.to_string()],
+                refresh_interval_blocks: 5,
+            },
+        )
+    }
+
+    fn sweep(initiator: &mut BadDebtRequestInitiator) -> Vec<Action> {
+        let runtime =
+            tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+
+        runtime.block_on(initiator.handle_new_ledger(NewLedger { seq_num: 5 }))
+    }
+
+    fn is_cached(initiator: &BadDebtRequestInitiator) -> bool {
+        let rows = initiator.obligations_repo.load_all(MARKET).expect("load");
+
+        rows.contains_key(&ObligationKey::new(USER.to_string()))
+    }
+
+    #[test]
+    fn an_obligation_gone_on_chain_is_dropped_not_dispatched() {
+        // Mainnet since 2026-09-29: the claim closed it, the cache never heard.
+        let mut initiator = initiator(Err(OBLIGATION_GONE.to_string()));
+
+        assert!(sweep(&mut initiator).is_empty());
+        assert!(!is_cached(&initiator));
+    }
+
+    #[test]
+    fn a_still_eligible_obligation_is_dispatched_once() {
+        let mut initiator = initiator(Ok(residual_debt(0)));
+
+        assert_eq!(sweep(&mut initiator).len(), 1);
+        assert!(is_cached(&initiator));
+    }
+
+    #[test]
+    fn an_open_request_on_chain_holds_dispatch() {
+        let mut initiator = initiator(Ok(residual_debt(1)));
+
+        assert!(sweep(&mut initiator).is_empty());
+        assert!(is_cached(&initiator));
+    }
+
+    #[test]
+    fn a_failed_reread_holds_dispatch_and_keeps_the_row() {
+        let mut initiator = initiator(Err("connection refused".to_string()));
+
+        assert!(sweep(&mut initiator).is_empty());
+        assert!(is_cached(&initiator));
     }
 }
