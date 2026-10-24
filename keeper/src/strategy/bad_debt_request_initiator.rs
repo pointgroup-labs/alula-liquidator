@@ -230,6 +230,15 @@ impl BadDebtRequestInitiator {
 
             return Ok(false);
         }
+        if obligation.open_bad_debt_requests > 0 {
+            debug!(
+                ?obl_key,
+                open = obligation.open_bad_debt_requests,
+                "bad debt request already open, not eligible until claimed"
+            );
+
+            return Ok(false);
+        }
         if obligation.deposits.is_empty() {
             info!(?obl_key, "obligation eligible: debt with no collateral");
 

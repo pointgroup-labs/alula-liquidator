@@ -424,6 +424,7 @@ mod tests {
                 collateral: 0.into(),
                 pool_address: deposit_pool.to_string(),
             }],
+            open_bad_debt_requests: 0,
         }
     }
 
@@ -523,6 +524,7 @@ mod tests {
                     pool_address: "POOL_C".into(),
                 },
             ],
+            open_bad_debt_requests: 0,
         };
         let full = snapshot(&["POOL_A", "POOL_B", "POOL_C"], &[]);
         let missing_collateral = snapshot(&["POOL_A", "POOL_B"], &[]);

@@ -41,4 +41,8 @@ pub struct BorrowPosition {
 pub struct Obligation {
     pub borrows: Vec<BorrowPosition>,
     pub deposits: Vec<DepositPosition>,
+    /// Open insurance-fund requests (`insurance_fund_requests_ids`). While any is
+    /// open the market rejects `issue_cover_bad_debt` with #602.
+    #[serde(default)]
+    pub open_bad_debt_requests: u32,
 }

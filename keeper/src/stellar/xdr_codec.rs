@@ -280,7 +280,11 @@ pub(super) fn parse_obligation(val: &ScVal, _key: &ObligationKey) -> anyhow::Res
         Some(borrow_val) => parse_borrow_positions(borrow_val)?,
         None => Vec::new(),
     };
-    Ok(Obligation { deposits, borrows })
+    let open_bad_debt_requests = match map_get(map, "insurance_fund_requests_ids") {
+        Some(requests) => u32::try_from(scval_as_map(requests)?.len())?,
+        None => 0,
+    };
+    Ok(Obligation { deposits, borrows, open_bad_debt_requests })
 }
 
 pub(super) fn parse_obligation_keys(val: &ScVal) -> anyhow::Result<Vec<ObligationKey>> {
@@ -552,5 +556,41 @@ mod tests {
         let pool = parse_pool_data(&pool_data_scval(None)).expect("pool parses");
 
         assert!(!pool.is_flash_loan_enabled());
+    }
+
+    /// An obligation shaped like market v1.1.0 and v1.2.0, with one open
+    /// `(pool, request_id) -> deadline` entry per id in `request_ids`.
+    fn obligation_scval(request_ids: &[u64]) -> ScVal {
+        let empty = || ScVal::Map(Some(ScMap(VecM::default())));
+        let requests: Vec<ScMapEntry> = request_ids
+            .iter()
+            .map(|id| ScMapEntry {
+                key: ScVal::Vec(Some(ScVec(
+                    vec![address(1), ScVal::U64(*id)].try_into().expect("vec fits"),
+                ))),
+                val: ScVal::U64(1_790_548_841),
+            })
+            .collect();
+
+        map(vec![
+            ("borrows", empty()),
+            ("deposits", empty()),
+            (
+                "insurance_fund_requests_ids",
+                ScVal::Map(Some(ScMap(requests.try_into().expect("map fits")))),
+            ),
+            ("positions_count", ScVal::U32(1)),
+        ])
+    }
+
+    #[test]
+    fn open_insurance_fund_requests_are_counted() {
+        let key = ObligationKey::new("G".repeat(56));
+
+        let none = parse_obligation(&obligation_scval(&[]), &key).expect("obligation parses");
+        let two = parse_obligation(&obligation_scval(&[7, 8]), &key).expect("obligation parses");
+
+        assert_eq!(none.open_bad_debt_requests, 0);
+        assert_eq!(two.open_bad_debt_requests, 2);
     }
 }

@@ -1812,6 +1812,7 @@ mod tests {
                     pool_address: "POOL_A".to_string(),
                 }],
                 deposits: Vec::new(),
+                open_bad_debt_requests: 0,
             },
         )])
     }
@@ -1832,6 +1833,7 @@ mod tests {
                     collateral: 0.into(),
                     pool_address: "POOL_Z".to_string(),
                 }],
+                open_bad_debt_requests: 0,
             },
         )])
     }
@@ -2026,6 +2028,7 @@ mod tests {
                         collateral: 0.into(),
                         pool_address: "POOL_C".to_string(),
                     }],
+                    open_bad_debt_requests: 0,
                 },
             ),
             (
@@ -2036,6 +2039,7 @@ mod tests {
                         pool_address: "POOL_C".to_string(),
                     }],
                     deposits: Vec::new(),
+                    open_bad_debt_requests: 0,
                 },
             ),
         ])
@@ -2191,6 +2195,7 @@ mod tests {
                 collateral: (105 * UNIT).into(),
                 pool_address: contract_address(2),
             }],
+            open_bad_debt_requests: 0,
         };
 
         let mut liquidator = liquidator();
