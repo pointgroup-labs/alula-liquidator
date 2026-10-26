@@ -4,17 +4,19 @@
 use std::{
     collections::HashMap,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use ed25519_dalek::SigningKey;
 use engine::{
     lending_model::{
         DepositPosition, MarketData, Obligation, ObligationKey, PoolData, Underlying,
-        liquidation::{self, DustRules, LiquidationPair, Seizure},
+        liquidation::{self, ClearingMargin, DustRules, LiquidationPair, Seizure},
         profitability,
     },
-    ports::{BatchSimulator, EventCodec, LedgerReader, OperationBuilder, OperationEvent},
+    ports::{
+        BatchSimulation, BatchSimulator, EventCodec, LedgerReader, OperationBuilder, OperationEvent,
+    },
     reactor::{BoxFuture, Strategy},
 };
 use stellar_rpc_client::Event as SorobanEvent;
@@ -29,7 +31,10 @@ use crate::{
     },
     liquidator_capital::{LiquidatorCapital, random_id},
     metrics::{self, LiquidationKind, ScanOutcome, SkipReason},
-    stellar::{client::Gateway, errors::is_obligation_does_not_exist},
+    stellar::{
+        client::Gateway,
+        errors::{LIQUIDATION_LEAVES_DUST_CODE, is_obligation_does_not_exist},
+    },
     storage::{cursor::CursorRepo, obligations::ObligationsRepo},
 };
 
@@ -100,6 +105,14 @@ enum LiquidationType {
         /// flash loan. Zero when plain collateral covers the whole seizure.
         immediate_withdraw_amount: i128,
     },
+}
+
+/// Why a plan was not handed to the executor.
+#[derive(Debug)]
+enum Undispatched {
+    /// Its batch simulation raised `LiquidationLeavesDust`.
+    LeavesDust,
+    Other,
 }
 
 #[derive(Debug)]
@@ -617,6 +630,7 @@ impl Liquidator {
                         borrower_obligation,
                         deposit_position,
                         borrower_obligation_key,
+                        ClearingMargin::INITIAL,
                     )
                     .await
                 else {
@@ -643,13 +657,71 @@ impl Liquidator {
             metrics::record_expected_profit(market, plan.net_profit_value);
             info!(?plan, "selected best (borrow, deposit) pair",);
 
-            self.execute_liquidation_plan(market, plan, &liquidator_obl_key).await
+            let (borrow_pool_address, collateral_pool_address) =
+                (plan.borrow_pool_address.clone(), plan.collateral_pool_address.clone());
+            match self.execute_liquidation_plan(market, plan, &liquidator_obl_key).await {
+                Ok(action) => Some(action),
+                // The chain moved past the plan's margin since the snapshot.
+                Err(Undispatched::LeavesDust) if self.config.dust_rules == DustRules::NoDust => {
+                    info!(
+                        ?borrower_obligation_key,
+                        "market refused the plan as dust; replanning with a wider margin"
+                    );
+                    let plan = self
+                        .replan_pair(
+                            is_insolvent,
+                            market_data,
+                            borrower_obligation,
+                            borrower_obligation_key,
+                            &borrow_pool_address,
+                            &collateral_pool_address,
+                        )
+                        .await?;
+
+                    self.execute_liquidation_plan(market, plan, &liquidator_obl_key).await.ok()
+                }
+                Err(_) => None,
+            }
         } else {
             warn!("failed to come up with a liquidation plan");
             // TODO: Add metric?
 
             None
         }
+    }
+
+    /// The pair's plan again, with [`ClearingMargin::RETRY`].
+    #[allow(clippy::too_many_arguments)]
+    async fn replan_pair(
+        &self,
+        is_insolvent: bool,
+        market_data: &MarketData,
+        borrower_obligation: &Obligation,
+        borrower_obligation_key: &ObligationKey,
+        borrow_pool_address: &str,
+        collateral_pool_address: &str,
+    ) -> Option<LiquidationPlan> {
+        let pool =
+            |address: &str| market_data.pools_data.iter().find(|p| p.pool_address == address);
+        let borrow_position =
+            borrower_obligation.borrows.iter().find(|b| b.pool_address == borrow_pool_address)?;
+        let deposit_position = borrower_obligation
+            .deposits
+            .iter()
+            .find(|d| d.pool_address == collateral_pool_address)?;
+
+        self.build_liquidation_plan_for_asset_pool_pair(
+            is_insolvent,
+            borrow_position.d_tokens.0,
+            pool(borrow_pool_address)?,
+            market_data,
+            pool(collateral_pool_address)?,
+            borrower_obligation,
+            deposit_position,
+            borrower_obligation_key,
+            ClearingMargin::RETRY,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -663,6 +735,7 @@ impl Liquidator {
         borrower_obligation: &Obligation,
         deposit_position: &DepositPosition,
         borrower_obligation_key: &ObligationKey,
+        margin: ClearingMargin,
     ) -> Option<LiquidationPlan> {
         let borrow_token = borrow_pool.token_address.as_str();
 
@@ -720,14 +793,17 @@ impl Liquidator {
         .map(|u| u.0)
         .unwrap_or(0); // TODO: error?
 
-        let pair = self.liquidation_pair(
-            is_insolvent,
-            borrow_pool,
-            borrower_obligation,
-            market_data,
-            collateral_pool,
-            deposit_position,
-        )?;
+        let pair = self
+            .liquidation_pair(
+                is_insolvent,
+                borrow_pool,
+                borrower_obligation,
+                market_data,
+                collateral_pool,
+                deposit_position,
+            )?
+            .accruing_until(unix_now())
+            .with_margin(margin);
         let lifts_close_factor = pair.lifts_close_factor().inspect_err(|e| error!(%e)).ok()?;
         let close_factor_cap = liquidation::compute_close_factor_repay_cap(
             lifts_close_factor,
@@ -892,6 +968,7 @@ impl Liquidator {
         if let Some(preswap_repay) = self.fit_repay(&pair, max_profitable_repay, i128::MAX)
             && let Some(plan) = self
                 .try_preswap_plan(
+                    &pair,
                     is_insolvent,
                     borrow_pool,
                     borrower_obligation,
@@ -1107,6 +1184,7 @@ impl Liquidator {
     #[allow(clippy::too_many_arguments)]
     async fn try_preswap_plan(
         &self,
+        pair: &LiquidationPair<'_>,
         is_insolvent: bool,
         borrow_pool: &PoolData,
         obligation: &Obligation,
@@ -1118,14 +1196,6 @@ impl Liquidator {
         deposit_position: &DepositPosition,
     ) -> Option<LiquidationPlan> {
         let borrow_token = borrow_pool.token_address.as_str();
-        let pair = self.liquidation_pair(
-            is_insolvent,
-            borrow_pool,
-            obligation,
-            market_data,
-            collateral_pool,
-            deposit_position,
-        )?;
 
         let mut best_plan: Option<LiquidationPlan> = None;
         for source_asset in &self.config.assets_to_hold {
@@ -1190,7 +1260,7 @@ impl Liquidator {
 
                     (new_best_provider, swappable_balance, min_amount_in_minus_slippage)
                 };
-            let Some(repay_amount) = self.fit_repay(&pair, amount_out, amount_out) else {
+            let Some(repay_amount) = self.fit_repay(pair, amount_out, amount_out) else {
                 continue;
             };
 
@@ -1399,27 +1469,31 @@ impl Liquidator {
         market: &str,
         plan: LiquidationPlan,
         liquidator_obl_key: &ObligationKey,
-    ) -> Option<Action> {
-        let requests = self.build_batch_requests(&plan)?;
+    ) -> Result<Action, Undispatched> {
+        let requests = self.build_batch_requests(&plan).ok_or(Undispatched::Other)?;
 
         match self.gateway.simulate_batch(market, liquidator_obl_key, &requests).await {
-            Ok(true) => {
+            Ok(BatchSimulation::Ok) => {
                 info!(
                     ?plan.borrower_key,
                     "batch simulation OK"
                 );
             }
-            Ok(false) => {
-                warn!(?plan.borrower_key, "batch simulation failed, dropping plan");
+            Ok(BatchSimulation::Failed { contract_code }) => {
+                warn!(?plan.borrower_key, ?contract_code, "batch simulation failed, dropping plan");
                 SkipReason::BatchSimFailed.record();
 
-                return None;
+                return Err(if contract_code == Some(LIQUIDATION_LEAVES_DUST_CODE) {
+                    Undispatched::LeavesDust
+                } else {
+                    Undispatched::Other
+                });
             }
             Err(e) => {
                 warn!(?e, ?plan.borrower_key, "batch simulation error");
                 SkipReason::BatchSimFailed.record();
 
-                return None;
+                return Err(Undispatched::Other);
             }
         }
 
@@ -1464,7 +1538,7 @@ impl Liquidator {
                     warn!(?e, %reserve_token, "balance query failed at reservation time");
                     SkipReason::BalanceQueryFailed.record();
 
-                    return None;
+                    return Err(Undispatched::Other);
                 }
             };
             let available = if reserve_token == self.config.xlm_address {
@@ -1484,7 +1558,7 @@ impl Liquidator {
                     );
                     SkipReason::InsufficientBalanceAfterReservations.record();
 
-                    return None;
+                    return Err(Undispatched::Other);
                 }
             }
         } else {
@@ -1503,7 +1577,7 @@ impl Liquidator {
                     LiquidationType::Flash { .. } => LiquidationKind::Flash,
                 };
                 metrics::record_plan_dispatched(market, kind);
-                Some(Action::SubmitTx(SubmitStellarTx {
+                Ok(Action::SubmitTx(SubmitStellarTx {
                     op,
                     signing_key: self.skey.clone(),
                     max_submission_retries: self.config.max_retries,
@@ -1522,7 +1596,7 @@ impl Liquidator {
                 SkipReason::OpBuildFailed.record();
                 self.liquidator_capital.release(op_id);
 
-                None
+                Err(Undispatched::Other)
             }
         }
     }
@@ -1692,6 +1766,10 @@ impl Liquidator {
     }
 }
 
+fn unix_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
 fn emit_keeper_position_metrics(market: &str, obligation: &Obligation, market_data: &MarketData) {
     for deposit in &obligation.deposits {
         let Some(pool) =
@@ -1806,6 +1884,9 @@ pub(super) mod tests {
             flash_loan_fee_bps: 5,
             status_flags: u32::MAX,
             utilization_ratio_limit_bps: 9_000,
+            last_accrual_timestamp: 0,
+            borrow_apy_bps: 0,
+            supply_apy_bps: 0,
         }
     }
 
@@ -2363,6 +2444,7 @@ pub(super) mod tests {
             &obligation,
             &obligation.deposits[0],
             &borrower_key,
+            ClearingMargin::INITIAL,
         ))
     }
 
@@ -2404,6 +2486,7 @@ pub(super) mod tests {
             &obligation,
             &obligation.deposits[0],
             &borrower_key,
+            ClearingMargin::INITIAL,
         ))
     }
 

@@ -65,6 +65,16 @@ pub trait OperationBuilder: Send + Sync {
     ) -> Result<Self::Op>;
 }
 
+/// How a batch dry-run ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchSimulation {
+    Ok,
+    /// Refused; `contract_code` is the contract's error code when it raised one.
+    Failed {
+        contract_code: Option<u32>,
+    },
+}
+
 /// Dry-run a batch of requests against the contract before paying gas to
 /// submit it for real.
 pub trait BatchSimulator: Send + Sync {
@@ -75,5 +85,5 @@ pub trait BatchSimulator: Send + Sync {
         market: &'a str,
         liquidator: &'a ObligationKey,
         requests: &'a [Self::Request],
-    ) -> BoxFuture<'a, Result<bool>>;
+    ) -> BoxFuture<'a, Result<BatchSimulation>>;
 }

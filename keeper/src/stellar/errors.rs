@@ -62,6 +62,9 @@ const EXPECTED_LIQUIDATION_FAILURE_NAMES: &[&str] = &[
 /// will be surfaced as a real failure (warning + retry), which is what we
 /// want for genuine bugs; a code that wrongly *does* belong here gets
 /// silently swallowed, which we want to avoid.
+/// `MCError::LiquidationLeavesDust`, raised by a no-dust market.
+pub const LIQUIDATION_LEAVES_DUST_CODE: u32 = 606;
+
 const KNOWN_LIQUIDATION_FAILURE_CODES: &[u32] = &[
     105, // BorrowPoolDoesNotExist
     106, // CollateralPoolDoesNotExist
@@ -69,7 +72,7 @@ const KNOWN_LIQUIDATION_FAILURE_CODES: &[u32] = &[
     600, // InvalidLiquidationInputs
     601, // ObligationIsHealthy
     605, // LiquidationExcessiveDemandedCollateral
-    606, // LiquidationLeavesDust
+    LIQUIDATION_LEAVES_DUST_CODE,
 ];
 
 impl SorobanRpcError {
@@ -155,6 +158,11 @@ pub fn is_expected_liquidation_failure(err: &anyhow::Error) -> bool {
     }
     let rendered = format!("{err:#}");
     EXPECTED_LIQUIDATION_FAILURE_NAMES.iter().any(|n| rendered.contains(n))
+}
+
+/// The contract's error code in a rendered failure, if it raised one.
+pub fn contract_error_code(err: &anyhow::Error) -> Option<u32> {
+    extract_contract_code(&format!("{err:#}"))
 }
 
 /// `MCError::ObligationDoesNotExist`, raised by `get_user_obligation` and

@@ -42,14 +42,23 @@ pub enum DustRules {
     NoDust,
 }
 
-/// Pool views report totals as of the pool's last update, so the debt an
-/// offer must clear keeps growing until it lands; the excess is refunded.
-/// 100 bps covers ~12 idle days at 30 % APR.
-const DEBT_ACCRUAL_MARGIN_BPS: i128 = 100;
+/// Margin on an offer that clears a side of a pair, for prices that move and
+/// interest that accrues past the keeper's estimate before it lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClearingMargin {
+    /// Where the market refunds the excess: past the debt, or past a small
+    /// position's whole collateral.
+    pub refunded_bps: i128,
+    /// Where it does not: past a larger position's whole collateral, so the
+    /// excess buys no collateral.
+    pub unrefunded_bps: i128,
+}
 
-/// Supplied collateral grows too, but an offer that over-buys it is refunded
-/// only on a small position.
-const SUPPLY_ACCRUAL_MARGIN_BPS: i128 = 10;
+impl ClearingMargin {
+    pub const INITIAL: Self = Self { refunded_bps: 100, unrefunded_bps: 0 };
+    /// For the one retry after the market refused the initial offer as dust.
+    pub const RETRY: Self = Self { refunded_bps: 500, unrefunded_bps: 100 };
+}
 
 /// `floor(amount * bps / BPS_FACTOR)` with saturating intermediates.
 fn fixed_mul_floor(amount: i128, bps: i128) -> i128 {
@@ -397,6 +406,11 @@ pub struct LiquidationPair<'a> {
     pub is_insolvent: bool,
     pub min_collateral_value_cents: i128,
     pub oracle_price_decimals: u32,
+    /// Interest accrued on chain since the pools' last update, in bps of the
+    /// debt and of the supplied collateral; see [`Self::accruing_until`].
+    pub debt_accrual_bps: i128,
+    pub supply_accrual_bps: i128,
+    pub margin: ClearingMargin,
 }
 
 /// The smallest repay that clears a side of a pair at the snapshot, and the
@@ -436,7 +450,24 @@ impl<'a> LiquidationPair<'a> {
             is_insolvent,
             min_collateral_value_cents: market_data.min_collateral_value_cents,
             oracle_price_decimals: market_data.oracle_price_decimals,
+            debt_accrual_bps: 0,
+            supply_accrual_bps: 0,
+            margin: ClearingMargin::INITIAL,
         })
+    }
+
+    /// Sizes clearing offers for the interest both pools accrue on chain from
+    /// their last update until `now` (unix seconds).
+    pub fn accruing_until(self, now: u64) -> Self {
+        Self {
+            debt_accrual_bps: self.borrow_pool.accrual_since_update_bps(now).0,
+            supply_accrual_bps: self.collateral_pool.accrual_since_update_bps(now).1,
+            ..self
+        }
+    }
+
+    pub fn with_margin(self, margin: ClearingMargin) -> Self {
+        Self { margin, ..self }
     }
 
     /// Whether the market lifts the close factor and the LTV cap for this pair.
@@ -632,7 +663,7 @@ impl<'a> LiquidationPair<'a> {
             return Ok(None);
         }
         let lifted = self.lifts_close_factor()?;
-        let repay_buying = |target: i128| -> Result<Option<i128>, LMError> {
+        let repay_buying = |target: i128, debt: i128| -> Result<Option<i128>, LMError> {
             if self.buys(debt, lifted)? < target {
                 return Ok(None);
             }
@@ -648,15 +679,22 @@ impl<'a> LiquidationPair<'a> {
 
             Ok(Some(high))
         };
-        let grown_collateral = collateral
-            .checked_add(fixed_mul_ceil(self.supplied_tokens()?, SUPPLY_ACCRUAL_MARGIN_BPS))
+        let grown =
+            |amount: i128, bps: i128| amount.checked_add(fixed_mul_ceil(amount, bps)).m_ou();
+        let grown_debt = grown(debt, self.debt_accrual_bps)?;
+        let grown_collateral = self
+            .deposit
+            .collateral
+            .0
+            .checked_add(grown(self.supplied_tokens()?, self.supply_accrual_bps)?)
             .m_ou()?;
-        let grown_debt = debt.checked_add(fixed_mul_ceil(debt, DEBT_ACCRUAL_MARGIN_BPS)).m_ou()?;
+        let offer = match repay_buying(grown_collateral, grown_debt)? {
+            Some(repay) if self.is_small_position()? => grown(repay, self.margin.refunded_bps)?,
+            Some(repay) => grown(repay, self.margin.unrefunded_bps)?,
+            None => grown(grown_debt, self.margin.refunded_bps)?,
+        };
 
-        Ok(Some(Clearing {
-            at_snapshot: repay_buying(collateral)?.unwrap_or(debt),
-            offer: repay_buying(grown_collateral)?.unwrap_or(grown_debt),
-        }))
+        Ok(Some(Clearing { at_snapshot: repay_buying(collateral, debt)?.unwrap_or(debt), offer }))
     }
 
     fn largest_partial_repay(&self, upper: i128) -> Result<Option<i128>, LMError> {
@@ -825,6 +863,9 @@ mod tests {
             flash_loan_fee_bps: 5,
             status_flags: u32::MAX,
             utilization_ratio_limit_bps: 9_000,
+            last_accrual_timestamp: 0,
+            borrow_apy_bps: 0,
+            supply_apy_bps: 0,
         }
     }
 
@@ -1198,6 +1239,85 @@ mod tests {
             let pair = gold_pair(DustRules::NoDust, &obligation, &market);
             assert_eq!(pair.fit_repay(UNIT, UNIT).unwrap(), Some(UNIT));
             assert_eq!(pair.fit_repay(UNIT / 2, UNIT / 2).unwrap(), None);
+        }
+
+        const THIRTY_DAYS: u64 = 30 * 86_400;
+        /// The keeper's collateral cap on $3 of GOLD: $3 / 1.1, rounded down.
+        const CAP_ON_THREE_DOLLARS: i128 = 27_272_727;
+
+        #[test]
+        fn no_dust_sizes_a_collateral_clear_for_supply_accrued_since_the_pool_update() {
+            // 20 GOLD of supply shares at $0.15 against $3; the GOLD pool idled
+            // 30 days at an 18.25 % supply APY, so the shares are worth 1.49 %
+            // more on chain than its view says, past the 1 % margin.
+            let mut stale = market(USD * 15 / 100);
+            stale.pools_data[1].supply_apy_bps = 1_825;
+            let mut obligation = borrower(3 * UNIT, 0, vec![]);
+            obligation.deposits[0].j_tokens = (20 * UNIT).into();
+            let mut chain = stale.clone();
+            chain.pools_data[1].total_supply = (1_014_900 * UNIT).into();
+            let on_chain = gold_pair(DustRules::NoDust, &obligation, &chain);
+
+            let pair =
+                gold_pair(DustRules::NoDust, &obligation, &stale).accruing_until(THIRTY_DAYS);
+            assert_eq!(pair.supply_accrual_bps, 150);
+            let offer = pair.fit_repay(CAP_ON_THREE_DOLLARS, i128::MAX).unwrap().expect("offer");
+            assert!(matches!(
+                on_chain.quote(offer).unwrap(),
+                Seizure::Accepted { seized: 202_980_000, .. }
+            ));
+
+            let unaware = gold_pair(DustRules::NoDust, &obligation, &stale);
+            let offer = unaware.fit_repay(CAP_ON_THREE_DOLLARS, i128::MAX).unwrap().expect("offer");
+            assert_eq!(on_chain.quote(offer).unwrap(), Seizure::LeavesDust);
+        }
+
+        #[test]
+        fn no_dust_sizes_a_debt_clear_for_borrow_interest_accrued_since_the_pool_update() {
+            // $4.50 / $1 with the USDC pool idle 30 days at a 20 % borrow APY:
+            // the debt is 1.64 % above the view, past the 1 % margin.
+            let mut stale = market(USD);
+            stale.pools_data[0].borrow_apy_bps = 2_000;
+            let obligation = borrower(UNIT, 45 * UNIT / 10, vec![]);
+            let mut chain = stale.clone();
+            chain.pools_data[0].total_borrowed = (1_016_400 * UNIT).into();
+            let on_chain = gold_pair(DustRules::NoDust, &obligation, &chain);
+
+            let pair =
+                gold_pair(DustRules::NoDust, &obligation, &stale).accruing_until(THIRTY_DAYS);
+            let offer = pair.fit_repay(UNIT, i128::MAX).unwrap().expect("offer");
+            assert_eq!(on_chain.quote(offer).unwrap(), accepted(11_180_400, 10_164_000));
+
+            let unaware = gold_pair(DustRules::NoDust, &obligation, &stale);
+            let offer = unaware.fit_repay(UNIT, i128::MAX).unwrap().expect("offer");
+            assert_eq!(on_chain.quote(offer).unwrap(), Seizure::LeavesDust);
+        }
+
+        #[test]
+        fn no_dust_pads_a_small_collateral_clear_for_a_price_tick() {
+            // 20 plain GOLD at $0.15 against $3: the exact clear is refused once
+            // GOLD rises a basis point; the refunded 1 % margin is not.
+            let gold_price = USD * 15 / 100;
+            let obligation = borrower(3 * UNIT, 20 * UNIT, vec![]);
+            let snapshot = market(gold_price);
+            let pair = gold_pair(DustRules::NoDust, &obligation, &snapshot);
+            let ticked = market(gold_price + gold_price / 10_000);
+            let on_chain = gold_pair(DustRules::NoDust, &obligation, &ticked);
+
+            let offer = pair.fit_repay(CAP_ON_THREE_DOLLARS, i128::MAX).unwrap().expect("offer");
+            assert!(matches!(
+                on_chain.quote(offer).unwrap(),
+                Seizure::Accepted { seized, .. } if seized == 20 * UNIT
+            ));
+            assert_eq!(on_chain.quote(27_272_728).unwrap(), Seizure::LeavesDust);
+
+            // A 3 % move outruns the initial margin; the retry's covers it.
+            let jumped = market(gold_price + gold_price * 3 / 100);
+            let on_chain = gold_pair(DustRules::NoDust, &obligation, &jumped);
+            assert_eq!(on_chain.quote(offer).unwrap(), Seizure::LeavesDust);
+            let retry = pair.clone().with_margin(ClearingMargin::RETRY);
+            let offer = retry.fit_repay(CAP_ON_THREE_DOLLARS, i128::MAX).unwrap().expect("offer");
+            assert!(matches!(on_chain.quote(offer).unwrap(), Seizure::Accepted { .. }));
         }
 
         #[test]

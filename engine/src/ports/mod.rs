@@ -11,5 +11,5 @@ pub mod ledger_reader;
 
 pub use event_codec::EventCodec;
 pub use ledger_reader::LedgerReader;
-pub use operation_builder::{BatchSimulator, OperationBuilder};
+pub use operation_builder::{BatchSimulation, BatchSimulator, OperationBuilder};
 pub use operation_event::{OperationEvent, OperationEventError};

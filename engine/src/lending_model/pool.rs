@@ -10,6 +10,9 @@ use crate::lending_model::{
 /// that gates `FlashBorrow` and `flash_loan`.
 const POOL_STATUS_FLASH_LOAN_ENABLED: u32 = 1 << 3;
 
+/// The market's `SECONDS_IN_YEAR`.
+const SECONDS_IN_YEAR: i128 = 31_556_926;
+
 #[derive(Debug, Clone)]
 pub struct PoolData {
     pub total_supply: Underlying,
@@ -35,11 +38,29 @@ pub struct PoolData {
     pub utilization_ratio_limit_bps: i128,
     pub liquidation_close_factor_bps: i128,
     pub max_liquidation_incentive_bps: i128,
+    /// When the pool last accrued interest; pool views report its totals as
+    /// of then, not as of the read.
+    pub last_accrual_timestamp: u64,
+    pub borrow_apy_bps: i128,
+    pub supply_apy_bps: i128,
 }
 
 impl PoolData {
     pub fn is_flash_loan_enabled(&self) -> bool {
         self.status_flags & POOL_STATUS_FLASH_LOAN_ENABLED != 0
+    }
+
+    /// Interest accrued on chain between the pool's last update and `now`
+    /// (unix seconds), at its current APYs: bps of its borrowed and of its
+    /// supplied totals, rounded up. Linear in the APY, which overstates the
+    /// compounding inside a year.
+    pub fn accrual_since_update_bps(&self, now: u64) -> (i128, i128) {
+        let elapsed = i128::from(now.saturating_sub(self.last_accrual_timestamp));
+        let accrued = |apy_bps: i128| {
+            apy_bps.saturating_mul(elapsed).saturating_add(SECONDS_IN_YEAR - 1) / SECONDS_IN_YEAR
+        };
+
+        (accrued(self.borrow_apy_bps), accrued(self.supply_apy_bps))
     }
 
     pub fn utilization_ratio_bps(&self) -> Result<i128, LMError> {
@@ -258,6 +279,9 @@ mod tests {
             flash_loan_fee_bps: 5,
             status_flags: u32::MAX,
             utilization_ratio_limit_bps: 9000,
+            last_accrual_timestamp: 0,
+            borrow_apy_bps: 0,
+            supply_apy_bps: 0,
         }
     }
 
