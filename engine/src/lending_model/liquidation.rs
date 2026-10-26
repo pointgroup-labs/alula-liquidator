@@ -283,6 +283,8 @@ pub fn compute_close_factor_repay_cap(
     }
 }
 
+const SCALAR_9: i128 = 1_000_000_000;
+
 /// Mirror the contract's seized-collateral computation for a given `repay_amount`
 /// on a sweep market.
 #[allow(clippy::too_many_arguments)]
@@ -337,11 +339,15 @@ fn compute_expected_seized_collateral(
         if obligation_debt_value <= 0 || obligation_collateral_value <= 0 {
             return Ok(0);
         }
-        let max_value_recv = liquidated_value
-            .checked_mul(obligation_collateral_value)
+        // The market's two steps through a 1e9 health factor: the direct product overflowed i128 past
+        // ~$1.7e10 USD² and rounded a unit above the market's cap (605).
+        let health_factor_sc9 = obligation_collateral_value
+            .checked_mul(SCALAR_9)
             .m_ou()?
             .checked_div(obligation_debt_value)
             .m_ou()?;
+        let max_value_recv =
+            liquidated_value.checked_mul(health_factor_sc9).m_ou()?.checked_div(SCALAR_9).m_ou()?;
 
         let strict_max_value_recv =
             max_value_recv.checked_mul(999).m_ou()?.checked_div(1000).m_ou()?;
@@ -1481,5 +1487,32 @@ mod tests {
             let obligation = borrower(3 * UNIT, 0, vec![deposit(BTC, 100 * UNIT)]);
             assert!(!seizable_collateral_covers_debt(&obligation, &supply_only).unwrap());
         }
+    }
+
+    #[test]
+    fn a_large_solvent_liquidation_gets_the_markets_ltv_cap() {
+        let (borrow_pool, collateral_pool) = (pool_data("USDC"), pool_data("GOLD"));
+        let deposit = DepositPosition {
+            j_tokens: 0.into(),
+            collateral: 2_000_000_000_000.into(),
+            pool_address: "GOLD".to_string(),
+        };
+
+        // $95k repaid against $200k of collateral and $190k of debt.
+        let seized = compute_expected_seized_collateral(
+            950_000_000_000,
+            &borrow_pool,
+            &collateral_pool,
+            &deposit,
+            19_000_000_000_000_000_000,
+            20_000_000_000_000_000_000,
+            false,
+            0,
+            14,
+        )
+        .unwrap();
+
+        // floor(floor(2e19 * 1e9 / 1.9e19) * 9.5e18 / 1e9) * 999 / 1000, at $1 a GOLD.
+        assert_eq!(seized, 998_999_999_100);
     }
 }
