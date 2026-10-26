@@ -45,6 +45,8 @@ const EXPECTED_LIQUIDATION_FAILURE_NAMES: &[&str] = &[
     "InvalidLiquidationInputs",
     "BorrowPoolDoesNotExist",
     "CollateralPoolDoesNotExist",
+    "LiquidationExcessiveDemandedCollateral",
+    "LiquidationLeavesDust",
 ];
 
 /// Numeric `#[contracterror]` codes from the Alula lending-market contract
@@ -60,12 +62,17 @@ const EXPECTED_LIQUIDATION_FAILURE_NAMES: &[&str] = &[
 /// will be surfaced as a real failure (warning + retry), which is what we
 /// want for genuine bugs; a code that wrongly *does* belong here gets
 /// silently swallowed, which we want to avoid.
+/// `MCError::LiquidationLeavesDust`, raised by a no-dust market.
+pub const LIQUIDATION_LEAVES_DUST_CODE: u32 = 606;
+
 const KNOWN_LIQUIDATION_FAILURE_CODES: &[u32] = &[
     105, // BorrowPoolDoesNotExist
     106, // CollateralPoolDoesNotExist
     200, // ObligationDoesNotExist
     600, // InvalidLiquidationInputs
     601, // ObligationIsHealthy
+    605, // LiquidationExcessiveDemandedCollateral
+    LIQUIDATION_LEAVES_DUST_CODE,
 ];
 
 impl SorobanRpcError {
@@ -153,6 +160,11 @@ pub fn is_expected_liquidation_failure(err: &anyhow::Error) -> bool {
     EXPECTED_LIQUIDATION_FAILURE_NAMES.iter().any(|n| rendered.contains(n))
 }
 
+/// The contract's error code in a rendered failure, if it raised one.
+pub fn contract_error_code(err: &anyhow::Error) -> Option<u32> {
+    extract_contract_code(&format!("{err:#}"))
+}
+
 /// `MCError::ObligationDoesNotExist`, raised by `get_user_obligation` and
 /// `issue_cover_bad_debt` for a key absent from market storage.
 const OBLIGATION_DOES_NOT_EXIST_CODE: u32 = 200;
@@ -194,5 +206,15 @@ mod tests {
         assert!(is_obligation_does_not_exist(&gone));
         assert!(!is_obligation_does_not_exist(&open_request));
         assert!(!is_obligation_does_not_exist(&anyhow!("connection refused")));
+    }
+
+    #[test]
+    fn a_dust_or_demand_refusal_is_an_expected_liquidation_failure() {
+        for code in [605, 606] {
+            let refused = anyhow!("HostError: Error(Contract, #{code})");
+
+            assert!(is_expected_liquidation_failure(&refused), "#{code}");
+        }
+        assert!(!is_expected_liquidation_failure(&anyhow!("HostError: Error(Contract, #603)")));
     }
 }

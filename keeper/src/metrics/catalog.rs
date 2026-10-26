@@ -243,6 +243,8 @@ pub enum SkipReason {
     OpBuildFailed,
     UnpricedPool,
     InsolvencyCheckFailed,
+    /// A no-dust market would refuse every offer the keeper can afford (#606).
+    LeavesDust,
 }
 
 impl SkipReason {
@@ -257,6 +259,7 @@ impl SkipReason {
             Self::OpBuildFailed => "op_build_failed",
             Self::UnpricedPool => "unpriced_pool",
             Self::InsolvencyCheckFailed => "insolvency_check_failed",
+            Self::LeavesDust => "leaves_dust",
         }
     }
 
@@ -761,6 +764,7 @@ mod tests {
         assert_eq!(SkipReason::OpBuildFailed.as_str(), "op_build_failed");
         assert_eq!(SkipReason::UnpricedPool.as_str(), "unpriced_pool");
         assert_eq!(SkipReason::InsolvencyCheckFailed.as_str(), "insolvency_check_failed");
+        assert_eq!(SkipReason::LeavesDust.as_str(), "leaves_dust");
     }
 
     #[test]

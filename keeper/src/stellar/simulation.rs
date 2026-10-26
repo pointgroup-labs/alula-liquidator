@@ -3,7 +3,7 @@
 use anyhow::Context;
 use engine::{
     lending_model::{MarketData, Obligation, ObligationKey, PoolData},
-    ports::{BatchSimulator, LedgerReader},
+    ports::{BatchSimulation, BatchSimulator, LedgerReader},
     reactor::BoxFuture,
 };
 use stellar_xdr::ScVal;
@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 
 use super::{
     client::Gateway,
-    errors::is_expected_liquidation_failure,
+    errors::{contract_error_code, is_expected_liquidation_failure},
     xdr_codec::{
         address_to_scval, build_address_vec_scval, build_requests_vec_scval, i128_to_scval,
         obligation_key_to_scval, parse_global_state_thresholds, parse_market_data,
@@ -300,7 +300,7 @@ impl BatchSimulator for Gateway {
         market: &'a str,
         liquidator: &'a ObligationKey,
         requests: &'a [Self::Request],
-    ) -> BoxFuture<'a, anyhow::Result<bool>> {
+    ) -> BoxFuture<'a, anyhow::Result<BatchSimulation>> {
         Box::pin(async move {
             let requests_vec = build_requests_vec_scval(requests)?;
             let args: Vec<ScVal> = vec![
@@ -314,7 +314,7 @@ impl BatchSimulator for Gateway {
             match self.simulate_contract_call(market, "submit_requests_batch", &args).await {
                 Ok(_) => {
                     metrics::record_simulation(SimulationCall::Batch, SimulationOutcome::Ok);
-                    Ok(true)
+                    Ok(BatchSimulation::Ok)
                 }
                 Err(e) => {
                     let msg = format!("{e:#}");
@@ -324,11 +324,11 @@ impl BatchSimulator for Gateway {
                         msg.chars().take(300).collect::<String>(),
                     );
                     // Batch simulation collapses every failure mode (contract
-                    // precondition, RPC error, malformed args) into `Ok(false)`,
+                    // precondition, RPC error, malformed args) into `Failed`,
                     // so the metric uses a single `failed` bucket. If the
                     // taxonomy ever splits, mirror simulate_liquidate's enum.
                     metrics::record_simulation(SimulationCall::Batch, SimulationOutcome::Failed);
-                    Ok(false)
+                    Ok(BatchSimulation::Failed { contract_code: contract_error_code(&e) })
                 }
             }
         })
@@ -365,6 +365,9 @@ mod tests {
             flash_loan_fee_bps: 5,
             status_flags: u32::MAX,
             utilization_ratio_limit_bps: 9_000,
+            last_accrual_timestamp: 0,
+            borrow_apy_bps: 0,
+            supply_apy_bps: 0,
         }
     }
 

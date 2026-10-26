@@ -5,7 +5,9 @@ use std::sync::Arc;
 use ed25519_dalek::SigningKey;
 use engine::{
     lending_model::{
-        MarketData, Obligation, ObligationKey, profitability::cents_to_oracle_value_ceil,
+        MarketData, Obligation, ObligationKey,
+        liquidation::{DustRules, has_acceptable_liquidation, seizable_collateral_covers_debt},
+        profitability::cents_to_oracle_value_ceil,
     },
     ports::{EventCodec, LedgerReader, OperationEvent},
     reactor::{BoxFuture, Strategy},
@@ -19,12 +21,16 @@ use crate::{
     metrics::BadDebtOutcome,
     stellar::{client::Gateway, errors::is_obligation_does_not_exist},
     storage::obligations::ObligationsRepo,
+    strategy::liquidator::unix_now,
 };
 
 pub struct BadDebtRequestInitiatorConfig {
     pub max_retries: u32,
     pub markets: Vec<String>,
     pub refresh_interval_blocks: u32,
+    pub dust_rules: DustRules,
+    /// The liquidator's acceptance floor, `liquidator_min_profit_margin_cents`.
+    pub min_profit_margin_cents: i128,
 }
 
 pub struct BadDebtRequestInitiator {
@@ -316,6 +322,26 @@ impl BadDebtRequestInitiator {
             }
         }
 
+        if self.config.dust_rules == DustRules::NoDust {
+            if seizable_collateral_covers_debt(obligation, market_data)? {
+                info!(?obl_key, "solvent, left to liquidation; not eligible");
+
+                return Ok(false);
+            }
+            // Measured on $2.40 against $3: covering first costs the debt's
+            // lenders $3.00, liquidating first $0.82.
+            if has_acceptable_liquidation(
+                obligation,
+                market_data,
+                self.config.min_profit_margin_cents,
+                unix_now(),
+            )? {
+                info!(?obl_key, "collateral the liquidator would still take; not eligible");
+
+                return Ok(false);
+            }
+        }
+
         info!(?obl_key, "obligation eligible: all deposits below dust threshold");
 
         Ok(true)
@@ -342,7 +368,7 @@ impl BadDebtRequestInitiator {
 
 #[cfg(test)]
 mod tests {
-    use engine::lending_model::BorrowPosition;
+    use engine::lending_model::{BorrowPosition, DepositPosition};
 
     use super::*;
     use crate::{
@@ -368,25 +394,63 @@ mod tests {
     /// An initiator whose cache holds [`USER`]'s residual debt as the keeper last
     /// saw it, and whose chain read answers `on_chain`.
     fn initiator(on_chain: Result<Obligation, String>) -> BadDebtRequestInitiator {
+        initiator_with(DustRules::Sweep, 0, residual_debt(0), market_data(&[], &[]), on_chain)
+    }
+
+    fn initiator_with(
+        dust_rules: DustRules,
+        min_profit_margin_cents: i128,
+        cached: Obligation,
+        market_data: MarketData,
+        on_chain: Result<Obligation, String>,
+    ) -> BadDebtRequestInitiator {
         let store = SqliteStore::open(":memory:").expect("in-memory sqlite");
         let rpc_url = "http://127.0.0.1:1".parse().expect("valid url");
         let gateway = Arc::new(Gateway::new(&rpc_url, "G".repeat(56)).expect("gateway"));
         let obligations_repo = store.obligations();
         obligations_repo
-            .put(MARKET, &ObligationKey::new(USER.to_string()), &residual_debt(0))
+            .put(MARKET, &ObligationKey::new(USER.to_string()), &cached)
             .expect("seed row");
 
         BadDebtRequestInitiator::new(
             SigningKey::from_bytes(&[7_u8; 32]),
             gateway,
             obligations_repo,
-            Arc::new(StubReader::new(market_data(&[], &[])).with_obligation(on_chain)),
+            Arc::new(StubReader::new(market_data).with_obligation(on_chain)),
             BadDebtRequestInitiatorConfig {
                 max_retries: 1,
                 markets: vec![MARKET.to_string()],
                 refresh_interval_blocks: 5,
+                dust_rules,
+                min_profit_margin_cents,
             },
         )
+    }
+
+    /// The measured $4.50 / $1 obligation: its one deposit is under the $5
+    /// floor, yet it covers its debt.
+    fn solvent_dust() -> (Obligation, MarketData) {
+        let mut market_data = market_data(&["POOL_A", "POOL_B"], &[]);
+        market_data.min_collateral_value_cents = 500;
+        for pool in &mut market_data.pools_data {
+            pool.oracle_asset_price = 100_000_000_000_000;
+            pool.total_borrowed = 1_000_000_000.into();
+            pool.total_d_tokens = 1_000_000_000.into();
+        }
+        let obligation = Obligation {
+            borrows: vec![BorrowPosition {
+                d_tokens: 10_000_000.into(),
+                pool_address: "POOL_A".to_string(),
+            }],
+            deposits: vec![DepositPosition {
+                j_tokens: 0.into(),
+                collateral: 45_000_000.into(),
+                pool_address: "POOL_B".to_string(),
+            }],
+            open_bad_debt_requests: 0,
+        };
+
+        (obligation, market_data)
     }
 
     fn sweep(initiator: &mut BadDebtRequestInitiator) -> Vec<Action> {
@@ -425,6 +489,67 @@ mod tests {
 
         assert!(sweep(&mut initiator).is_empty());
         assert!(is_cached(&initiator));
+    }
+
+    #[test]
+    fn a_no_dust_market_leaves_solvent_dust_to_liquidation() {
+        for (dust_rules, dispatched) in [(DustRules::Sweep, 1), (DustRules::NoDust, 0)] {
+            let (obligation, market_data) = solvent_dust();
+            let mut initiator =
+                initiator_with(dust_rules, 0, obligation.clone(), market_data, Ok(obligation));
+
+            assert_eq!(sweep(&mut initiator).len(), dispatched, "{dust_rules:?}");
+        }
+    }
+
+    /// The measured $2.40 / $3 obligation: under the floor and insolvent.
+    fn insolvent_dust() -> (Obligation, MarketData) {
+        let (mut obligation, market_data) = solvent_dust();
+        obligation.borrows[0].d_tokens = 30_000_000.into();
+        obligation.deposits[0].collateral = 24_000_000.into();
+
+        (obligation, market_data)
+    }
+
+    #[test]
+    fn a_no_dust_market_liquidates_insolvent_dust_before_covering_it() {
+        for (dust_rules, dispatched) in [(DustRules::Sweep, 1), (DustRules::NoDust, 0)] {
+            let (obligation, market_data) = insolvent_dust();
+            let mut initiator =
+                initiator_with(dust_rules, 0, obligation.clone(), market_data, Ok(obligation));
+
+            assert_eq!(sweep(&mut initiator).len(), dispatched, "{dust_rules:?}");
+        }
+    }
+
+    #[test]
+    fn a_no_dust_cover_waits_only_for_a_liquidation_the_liquidator_accepts() {
+        // The $2.40 / $3 liquidation nets $0.22.
+        for (min_profit_margin_cents, dispatched) in [(0, 0), (50, 1)] {
+            let (obligation, market_data) = insolvent_dust();
+            let mut initiator = initiator_with(
+                DustRules::NoDust,
+                min_profit_margin_cents,
+                obligation.clone(),
+                market_data,
+                Ok(obligation),
+            );
+
+            assert_eq!(sweep(&mut initiator).len(), dispatched, "{min_profit_margin_cents}");
+        }
+    }
+
+    #[test]
+    fn collateral_too_small_to_liquidate_is_covered() {
+        // Worth one stroop of debt at most, which burns no d-token at a 1.1
+        // d-rate (`NonPositiveSharesAmount`).
+        let (obligation, mut market_data) = insolvent_dust();
+        market_data.pools_data[0].total_borrowed = 1_100_000_000.into();
+        market_data.pools_data[1].oracle_asset_price = 1;
+        let mut initiator =
+            initiator_with(DustRules::NoDust, 0, obligation.clone(), market_data, Ok(obligation));
+
+        assert_eq!(sweep(&mut initiator).len(), 1);
     }
 
     #[test]

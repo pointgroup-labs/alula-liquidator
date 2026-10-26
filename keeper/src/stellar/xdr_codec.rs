@@ -117,6 +117,14 @@ fn map_get_u32(entries: &[ScMapEntry], key: &str) -> anyhow::Result<u32> {
     }
 }
 
+fn map_get_u64(entries: &[ScMapEntry], key: &str) -> anyhow::Result<u64> {
+    match map_get(entries, key) {
+        Some(ScVal::U64(n)) => Ok(*n),
+        Some(other) => Err(anyhow!("expected U64 for '{key}', got {other:?}")),
+        None => Err(anyhow!("missing field '{key}'")),
+    }
+}
+
 fn map_get_i128(entries: &[ScMapEntry], key: &str) -> anyhow::Result<i128> {
     match map_get(entries, key) {
         Some(ScVal::I128(parts)) => Ok(i128_from_parts(parts)),
@@ -339,6 +347,22 @@ pub(super) fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
             0
         });
 
+    // Unreadable accrual inputs estimate no accrual, leaving the offer to its margin.
+    let (last_accrual_timestamp, borrow_apy_bps, supply_apy_bps) = map_get(map, "apy")
+        .context("missing apy")
+        .and_then(|apy| {
+            let apy = scval_as_map(apy)?;
+            Ok((
+                map_get_u64(pool_map, "last_accrual_timestamp")?,
+                i128::from(map_get_u32(apy, "borrow_bps")?),
+                i128::from(map_get_u32(apy, "supply_bps")?),
+            ))
+        })
+        .unwrap_or_else(|e| {
+            warn!(%pool_address, %e, "unreadable pool accrual inputs; estimating no accrual");
+            (0, 0, 0)
+        });
+
     Ok(PoolData {
         pool_address,
         token_address,
@@ -362,6 +386,9 @@ pub(super) fn parse_pool_data(val: &ScVal) -> anyhow::Result<PoolData> {
         flash_loan_fee_bps,
         status_flags,
         utilization_ratio_limit_bps,
+        last_accrual_timestamp,
+        borrow_apy_bps,
+        supply_apy_bps,
     })
 }
 
@@ -519,6 +546,7 @@ mod tests {
             ("oracle_asset_price", i128_to_scval(100_000_000_000_000)),
             ("total_available_adjusted", i128_to_scval(0)),
             ("total_supply", i128_to_scval(0)),
+            ("apy", map(vec![("borrow_bps", ScVal::U32(1_200)), ("supply_bps", ScVal::U32(700))])),
             (
                 "pool",
                 map(vec![
@@ -530,6 +558,7 @@ mod tests {
                     ("total_j_tokens", i128_to_scval(0)),
                     ("total_available", i128_to_scval(0)),
                     ("total_collateral", i128_to_scval(0)),
+                    ("last_accrual_timestamp", ScVal::U64(1_761_000_000)),
                     ("config", map(config)),
                 ]),
             ),
@@ -542,6 +571,10 @@ mod tests {
 
         assert_eq!(pool.status_flags, 0xFFFF_FFF7);
         assert!(!pool.is_flash_loan_enabled());
+        assert_eq!(
+            (pool.last_accrual_timestamp, pool.borrow_apy_bps, pool.supply_apy_bps),
+            (1_761_000_000, 1_200, 700)
+        );
     }
 
     #[test]

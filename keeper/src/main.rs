@@ -61,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
         keeper_capital_balance_ttl_secs,
         keeper_capital_reservation_ttl_secs,
         ledger_collector_polling_interval_secs,
+        market_dust_rules,
         // -- Bad Debt Request Initiator --
         bad_debt_request_initiator_max_retries,
         bad_debt_request_initiator_refresh_interval_blocks,
@@ -120,6 +121,8 @@ async fn main() -> anyhow::Result<()> {
             markets: markets.clone(),
             max_retries: bad_debt_request_initiator_max_retries,
             refresh_interval_blocks: bad_debt_request_initiator_refresh_interval_blocks,
+            dust_rules: market_dust_rules,
+            min_profit_margin_cents: liquidator_min_profit_margin_cents,
         },
     );
 
@@ -139,6 +142,7 @@ async fn main() -> anyhow::Result<()> {
             max_retries: liquidator_max_retries,
             refresh_interval_blocks: liquidator_refresh_interval_blocks,
             max_market_data_age: Duration::from_secs(liquidator_max_market_data_age_secs),
+            dust_rules: market_dust_rules,
         },
         store.obligations(),
         Arc::clone(&ledger_reader),
