@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::lending_model::{
-    amount::{BPS_FACTOR, bps_fixed_div_ceil},
+    amount::{BPS_FACTOR, Underlying, bps_fixed_div_ceil},
     error::{LMError, LendingModelError, MapArithmeticError},
     market::MarketData,
     obligation::{DepositPosition, Obligation},
@@ -763,6 +763,58 @@ fn amount_ceil(value: i128, pool: &PoolData) -> Result<i128, LMError> {
         .m_ou()
 }
 
+/// Whether a liquidation on a no-dust market can still take seizable
+/// collateral from this obligation: some pair's whole-position repay burns a
+/// debt share. Collateral worth less than one unit of the debt asset cannot be
+/// taken (`NonPositiveSharesAmount`), nor can any in a pool the snapshot does
+/// not price.
+pub fn has_liquidatable_collateral(
+    obligation: &Obligation,
+    market_data: &MarketData,
+) -> Result<bool, LMError> {
+    if !unpriced_pools_touched(obligation, market_data).is_empty() {
+        return Ok(false);
+    }
+    let is_insolvent = compute_is_insolvent(obligation, market_data)?;
+    let pool_of = |address: &str| {
+        market_data
+            .pools_data
+            .iter()
+            .find(|p| p.pool_address == address)
+            .ok_or(LMError::InternalError)
+    };
+
+    for borrow in &obligation.borrows {
+        let borrow_pool = pool_of(&borrow.pool_address)?;
+        for deposit in &obligation.deposits {
+            let collateral_pool = pool_of(&deposit.pool_address)?;
+            if collateral_pool.pool_address == borrow_pool.pool_address
+                || collateral_pool.close_ltv_bps <= 0
+            {
+                continue;
+            }
+            let pair = LiquidationPair::new(
+                DustRules::NoDust,
+                obligation,
+                market_data,
+                borrow_pool,
+                collateral_pool,
+                deposit,
+                is_insolvent,
+            )?;
+            if let Seizure::Accepted { seized, repaid } = pair.quote(pair.position_debt)?
+                && seized > 0
+                && (repaid == pair.position_debt
+                    || borrow_pool.tokens_to_d_tokens_floor(Underlying(repaid))?.0 > 0)
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
 /// Whether a no-dust market refuses to cover this obligation's bad debt
 /// (#603): its seizable collateral, deposits with a positive close LTV, is
 /// worth something and at least its debt, so liquidation has to clear it. Debt
@@ -1318,6 +1370,27 @@ mod tests {
             let retry = pair.clone().with_margin(ClearingMargin::RETRY);
             let offer = retry.fit_repay(CAP_ON_THREE_DOLLARS, i128::MAX).unwrap().expect("offer");
             assert!(matches!(on_chain.quote(offer).unwrap(), Seizure::Accepted { .. }));
+        }
+
+        #[test]
+        fn no_dust_collateral_is_liquidated_unless_too_small_to_burn_a_debt_share() {
+            // $2.40 of GOLD against $3: a liquidation can take it.
+            let obligation = borrower(3 * UNIT, 30 * UNIT, vec![]);
+            assert!(has_liquidatable_collateral(&obligation, &market(USD * 8 / 100)).unwrap());
+
+            // GOLD at one price unit: the whole position costs one stroop of
+            // USDC, which burns no d-token once the d-rate is above 1.
+            let mut worthless = market(1);
+            worthless.pools_data[0].total_borrowed = (1_100_000 * UNIT).into();
+            assert!(!has_liquidatable_collateral(&obligation, &worthless).unwrap());
+
+            let mut supply_only = market(USD * 8 / 100);
+            supply_only.pools_data[1].close_ltv_bps = 0;
+            assert!(!has_liquidatable_collateral(&obligation, &supply_only).unwrap());
+
+            let mut no_deposits = obligation.clone();
+            no_deposits.deposits.clear();
+            assert!(!has_liquidatable_collateral(&no_deposits, &market(USD)).unwrap());
         }
 
         #[test]

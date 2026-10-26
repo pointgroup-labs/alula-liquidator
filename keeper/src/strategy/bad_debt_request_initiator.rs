@@ -6,7 +6,7 @@ use ed25519_dalek::SigningKey;
 use engine::{
     lending_model::{
         MarketData, Obligation, ObligationKey,
-        liquidation::{DustRules, seizable_collateral_covers_debt},
+        liquidation::{DustRules, has_liquidatable_collateral, seizable_collateral_covers_debt},
         profitability::cents_to_oracle_value_ceil,
     },
     ports::{EventCodec, LedgerReader, OperationEvent},
@@ -319,12 +319,19 @@ impl BadDebtRequestInitiator {
             }
         }
 
-        if self.config.dust_rules == DustRules::NoDust
-            && seizable_collateral_covers_debt(obligation, market_data)?
-        {
-            info!(?obl_key, "solvent, left to liquidation; not eligible");
+        if self.config.dust_rules == DustRules::NoDust {
+            if seizable_collateral_covers_debt(obligation, market_data)? {
+                info!(?obl_key, "solvent, left to liquidation; not eligible");
 
-            return Ok(false);
+                return Ok(false);
+            }
+            // Measured on $2.40 against $3: covering first costs the debt's
+            // lenders $3.00, liquidating first $0.82.
+            if has_liquidatable_collateral(obligation, market_data)? {
+                info!(?obl_key, "collateral a liquidation can still take; not eligible");
+
+                return Ok(false);
+            }
         }
 
         info!(?obl_key, "obligation eligible: all deposits below dust threshold");
@@ -483,6 +490,39 @@ mod tests {
 
             assert_eq!(sweep(&mut initiator).len(), dispatched, "{dust_rules:?}");
         }
+    }
+
+    /// The measured $2.40 / $3 obligation: under the floor and insolvent.
+    fn insolvent_dust() -> (Obligation, MarketData) {
+        let (mut obligation, market_data) = solvent_dust();
+        obligation.borrows[0].d_tokens = 30_000_000.into();
+        obligation.deposits[0].collateral = 24_000_000.into();
+
+        (obligation, market_data)
+    }
+
+    #[test]
+    fn a_no_dust_market_liquidates_insolvent_dust_before_covering_it() {
+        for (dust_rules, dispatched) in [(DustRules::Sweep, 1), (DustRules::NoDust, 0)] {
+            let (obligation, market_data) = insolvent_dust();
+            let mut initiator =
+                initiator_with(dust_rules, obligation.clone(), market_data, Ok(obligation));
+
+            assert_eq!(sweep(&mut initiator).len(), dispatched, "{dust_rules:?}");
+        }
+    }
+
+    #[test]
+    fn collateral_too_small_to_liquidate_is_covered() {
+        // Worth one stroop of debt at most, which burns no d-token at a 1.1
+        // d-rate (`NonPositiveSharesAmount`).
+        let (obligation, mut market_data) = insolvent_dust();
+        market_data.pools_data[0].total_borrowed = 1_100_000_000.into();
+        market_data.pools_data[1].oracle_asset_price = 1;
+        let mut initiator =
+            initiator_with(DustRules::NoDust, obligation.clone(), market_data, Ok(obligation));
+
+        assert_eq!(sweep(&mut initiator).len(), 1);
     }
 
     #[test]
