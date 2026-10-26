@@ -7,6 +7,7 @@ use std::{
 
 use ::config::{Config, Environment, File};
 use clap::Parser;
+use engine::lending_model::liquidation::DustRules;
 use serde::{Deserialize, Deserializer};
 use url::Url;
 use validator::{Validate, ValidationError};
@@ -84,6 +85,12 @@ pub struct CliConfig {
         message = "Ledger collector's polling interval must be at least 1 second"
     ))]
     pub ledger_collector_polling_interval_secs: u64,
+
+    /// The `liquidate` rules the markets enforce at their dust floor; see
+    /// `docs/configuration.md`. Optional; defaults to `sweep`, the market as
+    /// deployed through v1.2.0.
+    #[serde(default)]
+    pub market_dust_rules: DustRules,
 
     // -------------------------------------------------------------------------
     // Bad Debt Request Initiator

@@ -68,6 +68,11 @@ keeper_capital_reservation_ttl_secs = 30
 # 2 polls a bit faster than block time. Paces every strategy's refresh.
 ledger_collector_polling_interval_secs = 2
 
+# The markets' liquidation rules at their dust floor: "sweep" (the market as
+# deployed through v1.2.0) or "no_dust" (the upgrade that refuses dust, #606).
+# Optional (default "sweep"); switch it together with the market upgrade.
+market_dust_rules = "sweep"
+
 # --- Bad Debt Request Initiator ---
 # Submits `cover_bad_debt` when a borrower has debt but no viable collateral.
 

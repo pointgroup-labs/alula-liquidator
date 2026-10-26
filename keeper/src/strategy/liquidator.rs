@@ -10,7 +10,8 @@ use std::{
 use ed25519_dalek::SigningKey;
 use engine::{
     lending_model::{
-        DepositPosition, MarketData, Obligation, ObligationKey, PoolData, Underlying, liquidation,
+        DepositPosition, MarketData, Obligation, ObligationKey, PoolData, Underlying,
+        liquidation::{self, DustRules, LiquidationPair, Seizure},
         profitability,
     },
     ports::{BatchSimulator, EventCodec, LedgerReader, OperationBuilder, OperationEvent},
@@ -43,6 +44,7 @@ pub struct LiquidatorConfig {
     pub min_profit_margin_cents: i128,
     pub max_market_data_age: Duration,
     pub max_allowed_swap_slippage_bps: i128,
+    pub dust_rules: DustRules,
 }
 
 /// A cached market view plus the moment it was read. A failed refresh keeps the
@@ -505,7 +507,11 @@ impl Liquidator {
             // `liquidatable`, so an obligation the snapshot could not price must
             // not read as one that was judged and found healthy.
             checked += 1;
-            match liquidation::compute_is_liquidatable(obligation, market_data) {
+            match liquidation::compute_is_liquidatable(
+                obligation,
+                market_data,
+                self.config.dust_rules,
+            ) {
                 Ok(is_liquidatable) => {
                     if !is_liquidatable {
                         continue;
@@ -670,12 +676,6 @@ impl Liquidator {
             return None;
         }
 
-        let close_factor_cap = liquidation::compute_close_factor_repay_cap(
-            is_insolvent,
-            position_debt_tokens.0,
-            borrow_pool.liquidation_close_factor_bps,
-        );
-
         let position_j_tokens_as_tokens = collateral_pool
             .j_tokens_to_tokens_floor(deposit_position.j_tokens)
             .inspect_err(|e| error!(%e))
@@ -694,8 +694,11 @@ impl Liquidator {
             .saturating_mul(10_i128.pow(market_data.oracle_price_decimals))
             .saturating_div(100);
 
+        // A no-dust market refuses to cover a solvent obligation, so there only
+        // liquidation clears a position under the floor.
         if !position_collateral_sum.is_positive()
-            || position_collateral_value < min_collateral_threshold_value
+            || (self.config.dust_rules == DustRules::Sweep
+                && position_collateral_value < min_collateral_threshold_value)
         {
             warn!(
                 position_collateral_sum,
@@ -717,6 +720,21 @@ impl Liquidator {
         .map(|u| u.0)
         .unwrap_or(0); // TODO: error?
 
+        let pair = self.liquidation_pair(
+            is_insolvent,
+            borrow_pool,
+            borrower_obligation,
+            market_data,
+            collateral_pool,
+            deposit_position,
+        )?;
+        let lifts_close_factor = pair.lifts_close_factor().inspect_err(|e| error!(%e)).ok()?;
+        let close_factor_cap = liquidation::compute_close_factor_repay_cap(
+            lifts_close_factor,
+            position_debt_tokens.0,
+            borrow_pool.liquidation_close_factor_bps,
+        );
+
         let max_feasible_repay = position_debt_tokens.0.min(close_factor_cap);
         if !max_feasible_repay.is_positive() {
             error!(max_feasible_repay, "non-positive max_feasible_repay");
@@ -727,17 +745,11 @@ impl Liquidator {
         // The solvent-path repay cap needs the obligation-wide debt and
         // collateral values to bound the seizure to an LTV-improving amount
         // (mirrors the contract's `liquidate`).
-        let (obligation_debt_value, obligation_collateral_value) = (
-            liquidation::compute_obligation_debt_value(borrower_obligation, market_data)
-                .inspect_err(|e| error!(%e))
-                .ok()?,
-            liquidation::compute_obligation_collateral_value(borrower_obligation, market_data)
-                .inspect_err(|e| error!(%e))
-                .ok()?,
-        );
+        let (obligation_debt_value, obligation_collateral_value) =
+            (pair.obligation_debt_value, pair.obligation_collateral_value);
 
         let max_profitable_repay = profitability::compute_repay_cap_from_collateral(
-            !is_insolvent,
+            !lifts_close_factor,
             borrow_pool,
             max_feasible_repay,
             collateral_pool,
@@ -790,6 +802,7 @@ impl Liquidator {
 
         let direct_repay = max_profitable_repay.min(usable_borrow);
         if direct_repay.is_positive()
+            && let Some(direct_repay) = self.fit_repay(&pair, direct_repay, usable_borrow)
             && let Some(plan) = self
                 .try_direct_plan(
                     is_insolvent,
@@ -832,7 +845,7 @@ impl Liquidator {
                 instantly_available_plain_collateral + instantly_available_withdrawable_deposit;
 
             let updated_max_profitable_repay = profitability::compute_repay_cap_from_collateral(
-                !is_insolvent,
+                !lifts_close_factor,
                 borrow_pool,
                 max_feasible_repay,
                 collateral_pool,
@@ -854,6 +867,8 @@ impl Liquidator {
         };
 
         if flash_repay.is_positive()
+            && let Some(flash_repay) =
+                self.fit_repay(&pair, flash_repay, borrow_pool.total_available_adjusted.0)
             && let Some(plan) = self
                 .try_flash_plan(
                     is_insolvent,
@@ -873,19 +888,21 @@ impl Liquidator {
 
         // -- PRESWAP LIQUIDATION --
 
-        if let Some(plan) = self
-            .try_preswap_plan(
-                is_insolvent,
-                borrow_pool,
-                borrower_obligation,
-                market_data,
-                collateral_pool,
-                max_profitable_repay,
-                borrower_obligation_key,
-                min_profit_margin_value,
-                deposit_position,
-            )
-            .await
+        // The swap is sized afterwards, so the offer here is bounded by nothing yet.
+        if let Some(preswap_repay) = self.fit_repay(&pair, max_profitable_repay, i128::MAX)
+            && let Some(plan) = self
+                .try_preswap_plan(
+                    is_insolvent,
+                    borrow_pool,
+                    borrower_obligation,
+                    market_data,
+                    collateral_pool,
+                    preswap_repay,
+                    borrower_obligation_key,
+                    min_profit_margin_value,
+                    deposit_position,
+                )
+                .await
         {
             candidates.push(plan);
         }
@@ -907,7 +924,7 @@ impl Liquidator {
         min_profit_margin_value: i128,
         deposit_position: &DepositPosition,
     ) -> Option<LiquidationPlan> {
-        let expected_seized_collateral = self.compute_seized(
+        let (expected_seized_collateral, repaid) = self.compute_seized(
             repay_amount,
             is_insolvent,
             borrow_pool,
@@ -918,7 +935,7 @@ impl Liquidator {
         )?;
 
         let (repay_value, expected_received_value) = (
-            repay_amount
+            repaid
                 .saturating_mul(borrow_pool.oracle_asset_price)
                 .saturating_div(10_i128.pow(borrow_pool.token_decimals)),
             expected_seized_collateral
@@ -970,7 +987,7 @@ impl Liquidator {
         min_profit_margin_value: i128,
         deposit_position: &DepositPosition,
     ) -> Option<LiquidationPlan> {
-        let seized_amount = self.compute_seized(
+        let (seized_amount, repaid) = self.compute_seized(
             repay_amount,
             is_insolvent,
             borrow_pool,
@@ -1035,8 +1052,11 @@ impl Liquidator {
             return None;
         }
 
+        // The swap still has to cover the whole flash repayment; the refund only
+        // lowers what the liquidation costs.
         let (flash_repay_value, received_collateral_value) = (
             flash_repay_amount
+                .saturating_sub(repay_amount.saturating_sub(repaid))
                 .saturating_mul(borrow_pool.oracle_asset_price)
                 .saturating_div(10_i128.pow(borrow_pool.token_decimals)),
             de_facto_seized_amount
@@ -1098,6 +1118,14 @@ impl Liquidator {
         deposit_position: &DepositPosition,
     ) -> Option<LiquidationPlan> {
         let borrow_token = borrow_pool.token_address.as_str();
+        let pair = self.liquidation_pair(
+            is_insolvent,
+            borrow_pool,
+            obligation,
+            market_data,
+            collateral_pool,
+            deposit_position,
+        )?;
 
         let mut best_plan: Option<LiquidationPlan> = None;
         for source_asset in &self.config.assets_to_hold {
@@ -1162,9 +1190,11 @@ impl Liquidator {
 
                     (new_best_provider, swappable_balance, min_amount_in_minus_slippage)
                 };
-            let repay_amount = amount_out;
+            let Some(repay_amount) = self.fit_repay(&pair, amount_out, amount_out) else {
+                continue;
+            };
 
-            let expected_seized = self.compute_seized(
+            let (expected_seized, repaid) = self.compute_seized(
                 repay_amount,
                 is_insolvent,
                 borrow_pool,
@@ -1182,10 +1212,15 @@ impl Liquidator {
                 continue;
             };
 
+            let refund_value = repay_amount
+                .saturating_sub(repaid)
+                .saturating_mul(borrow_pool.oracle_asset_price)
+                .saturating_div(10_i128.pow(borrow_pool.token_decimals));
             let (cost_value, gain_value) = (
                 amount_in
                     .saturating_mul(source_pool.oracle_asset_price)
-                    .saturating_div(10_i128.pow(source_pool.token_decimals)),
+                    .saturating_div(10_i128.pow(source_pool.token_decimals))
+                    .saturating_sub(refund_value),
                 expected_seized
                     .saturating_mul(collateral_pool.oracle_asset_price)
                     .saturating_div(10_i128.pow(collateral_pool.token_decimals)),
@@ -1297,29 +1332,23 @@ impl Liquidator {
         market_data: &MarketData,
         collateral_pool: &PoolData,
         deposit_pos: &DepositPosition,
-    ) -> Option<i128> {
-        let (obligation_debt_value, obligation_collateral_value) = (
-            liquidation::compute_obligation_debt_value(obligation, market_data)
-                .inspect_err(|e| error!(%e))
-                .ok()?,
-            liquidation::compute_obligation_collateral_value(obligation, market_data)
-                .inspect_err(|e| error!(%e))
-                .ok()?,
-        );
-
-        let seized = liquidation::compute_expected_seized_collateral(
-            repay_amount,
+    ) -> Option<(i128, i128)> {
+        let pair = self.liquidation_pair(
+            is_insolvent,
             borrow_pool,
+            obligation,
+            market_data,
             collateral_pool,
             deposit_pos,
-            obligation_debt_value,
-            obligation_collateral_value,
-            is_insolvent,
-            market_data.min_collateral_value_cents,
-            market_data.oracle_price_decimals,
-        )
-        .inspect_err(|e| error!(%e))
-        .ok()?;
+        )?;
+        let (seized, repaid) = match pair.quote(repay_amount).inspect_err(|e| error!(%e)).ok()? {
+            Seizure::Accepted { seized, repaid } => (seized, repaid),
+            refused => {
+                warn!(repay_amount, ?refused, "the market would refuse this repay");
+
+                return None;
+            }
+        };
 
         if !seized.is_positive() {
             warn!(repay_amount, "expected seized collateral is zero");
@@ -1327,8 +1356,42 @@ impl Liquidator {
 
             None
         } else {
-            Some(seized)
+            Some((seized, repaid))
         }
+    }
+
+    fn liquidation_pair<'a>(
+        &self,
+        is_insolvent: bool,
+        borrow_pool: &'a PoolData,
+        obligation: &Obligation,
+        market_data: &MarketData,
+        collateral_pool: &'a PoolData,
+        deposit_pos: &'a DepositPosition,
+    ) -> Option<LiquidationPair<'a>> {
+        LiquidationPair::new(
+            self.config.dust_rules,
+            obligation,
+            market_data,
+            borrow_pool,
+            collateral_pool,
+            deposit_pos,
+            is_insolvent,
+        )
+        .inspect_err(|e| error!(%e))
+        .ok()
+    }
+
+    /// [`LiquidationPair::fit_repay`], recording the pairs a no-dust market
+    /// leaves to nobody.
+    fn fit_repay(&self, pair: &LiquidationPair, repay: i128, max_offer: i128) -> Option<i128> {
+        let fitted = pair.fit_repay(repay, max_offer).inspect_err(|e| error!(%e)).ok()?;
+        if fitted.is_none() {
+            info!(repay, max_offer, "no affordable repay keeps the market's dust floor");
+            SkipReason::LeavesDust.record();
+        }
+
+        fitted
     }
 
     async fn execute_liquidation_plan(
@@ -1704,6 +1767,7 @@ pub(super) mod tests {
                 min_profit_margin_cents: 0,
                 max_market_data_age: MAX_AGE,
                 max_allowed_swap_slippage_bps: 0,
+                dust_rules: DustRules::Sweep,
             },
             store.obligations(),
             gateway,
@@ -2317,6 +2381,46 @@ pub(super) mod tests {
         let plan = plan_for(u32::MAX).expect("Flash is profitable");
 
         assert!(matches!(plan.liquidation_type, LiquidationType::Flash { .. }), "{plan:?}");
+    }
+
+    /// The measured $4.50 / $1 position on a market with the $5 floor, planned
+    /// with flash loans off so Direct is the only candidate.
+    fn small_position_plan(dust_rules: DustRules) -> Option<LiquidationPlan> {
+        let PlanningCase { mut liquidator, mut market_data, borrower_key, mut obligation } =
+            planning_case(0xFFFF_FFF7);
+        market_data.min_collateral_value_cents = 500;
+        obligation.borrows[0].d_tokens = UNIT.into();
+        obligation.deposits[0].collateral = (45 * UNIT / 10).into();
+        liquidator.config.dust_rules = dust_rules;
+        let runtime =
+            tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+
+        runtime.block_on(liquidator.build_liquidation_plan_for_asset_pool_pair(
+            false,
+            obligation.borrows[0].d_tokens.0,
+            &market_data.pools_data[0],
+            &market_data,
+            &market_data.pools_data[1],
+            &obligation,
+            &obligation.deposits[0],
+            &borrower_key,
+        ))
+    }
+
+    #[test]
+    fn a_sweep_market_leaves_a_position_under_the_floor_to_the_cover() {
+        assert!(small_position_plan(DustRules::Sweep).is_none());
+    }
+
+    #[test]
+    fn a_no_dust_market_gets_the_whole_debt_repaid_with_a_margin() {
+        let plan = small_position_plan(DustRules::NoDust).expect("profitable Direct plan");
+
+        assert!(matches!(plan.liquidation_type, LiquidationType::Direct), "{plan:?}");
+        assert_eq!(plan.repay_amount, UNIT + UNIT / 100);
+        assert_eq!(plan.expected_seized_collateral, 11 * UNIT / 10);
+        // $1.10 received for the $1 repaid; the margin comes back as a refund.
+        assert_eq!(plan.net_profit_value, 10_000_000_000_000);
     }
 
     /// Mainnet market CBP76…: the obligation the keeper kept re-issuing for,
