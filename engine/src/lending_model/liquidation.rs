@@ -11,6 +11,10 @@ use crate::lending_model::{
     market::MarketData,
     obligation::{DepositPosition, Obligation},
     pool::PoolData,
+    profitability::{
+        compute_liquidation_profitability, compute_profit_margin_in_borrow_token,
+        compute_repay_cap_from_collateral,
+    },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -536,6 +540,62 @@ impl<'a> LiquidationPair<'a> {
         self.largest_partial_repay(repay.min(max_offer))
     }
 
+    /// The liquidator's Direct repay with unlimited capital: its close-factor
+    /// and collateral caps net of the profit margin, fitted to the dust rules.
+    fn direct_repay(&self, min_profit_margin_cents: i128) -> Result<Option<i128>, LMError> {
+        let lifted = self.lifts_close_factor()?;
+        let max_feasible = self.position_debt.min(compute_close_factor_repay_cap(
+            lifted,
+            self.position_debt,
+            self.borrow_pool.liquidation_close_factor_bps,
+        ));
+        let collateral = self.position_collateral()?;
+        if max_feasible <= 0 || collateral <= 0 {
+            return Ok(None);
+        }
+        let margin = compute_profit_margin_in_borrow_token(
+            min_profit_margin_cents,
+            self.oracle_price_decimals,
+            self.borrow_pool,
+        )
+        .map_or(0, |m| m.0);
+        let Some(max_profitable) = compute_repay_cap_from_collateral(
+            !lifted,
+            self.borrow_pool,
+            max_feasible,
+            self.collateral_pool,
+            collateral,
+            self.obligation_debt_value,
+            margin,
+            self.obligation_collateral_value,
+        )
+        .ok()
+        .filter(|repay| *repay > 0) else {
+            return Ok(None);
+        };
+
+        self.fit_repay(max_profitable, i128::MAX)
+    }
+
+    /// The liquidator's acceptance of a Direct plan.
+    fn nets_more_than(&self, seized: i128, repaid: i128, min_profit_margin_cents: i128) -> bool {
+        let value = |amount: i128, pool: &PoolData| {
+            amount
+                .saturating_mul(pool.oracle_asset_price)
+                .saturating_div(10_i128.saturating_pow(pool.token_decimals))
+        };
+        let min_profit_margin_value = min_profit_margin_cents
+            .saturating_mul(10_i128.saturating_pow(self.oracle_price_decimals))
+            .saturating_div(100);
+
+        compute_liquidation_profitability(
+            value(seized, self.collateral_pool),
+            value(repaid, self.borrow_pool),
+            min_profit_margin_value,
+        )
+        .is_ok_and(|p| p.is_acceptable)
+    }
+
     fn quote_no_dust(&self, repay: i128) -> Result<Seizure, LMError> {
         let (position_debt, position_collateral) =
             (self.position_debt, self.position_collateral()?);
@@ -763,14 +823,17 @@ fn amount_ceil(value: i128, pool: &PoolData) -> Result<i128, LMError> {
         .m_ou()
 }
 
-/// Whether a liquidation on a no-dust market can still take seizable
-/// collateral from this obligation: some pair's whole-position repay burns a
-/// debt share. Collateral worth less than one unit of the debt asset cannot be
-/// taken (`NonPositiveSharesAmount`), nor can any in a pool the snapshot does
-/// not price.
-pub fn has_liquidatable_collateral(
+/// Whether the liquidator acts on this obligation on a no-dust market: some
+/// seizable pair has a plan that burns a debt share and nets more than
+/// `min_profit_margin_cents`, sized and judged as its Direct plan with
+/// unlimited capital, the cheapest of its plans. Collateral worth less than one
+/// unit of the debt asset cannot be taken (`NonPositiveSharesAmount`), nor can
+/// any in a pool the snapshot does not price.
+pub fn has_acceptable_liquidation(
     obligation: &Obligation,
     market_data: &MarketData,
+    min_profit_margin_cents: i128,
+    now: u64,
 ) -> Result<bool, LMError> {
     if !unpriced_pools_touched(obligation, market_data).is_empty() {
         return Ok(false);
@@ -801,11 +864,16 @@ pub fn has_liquidatable_collateral(
                 collateral_pool,
                 deposit,
                 is_insolvent,
-            )?;
-            if let Seizure::Accepted { seized, repaid } = pair.quote(pair.position_debt)?
+            )?
+            .accruing_until(now);
+            let Some(repay) = pair.direct_repay(min_profit_margin_cents)? else {
+                continue;
+            };
+            if let Seizure::Accepted { seized, repaid } = pair.quote(repay)?
                 && seized > 0
                 && (repaid == pair.position_debt
                     || borrow_pool.tokens_to_d_tokens_floor(Underlying(repaid))?.0 > 0)
+                && pair.nets_more_than(seized, repaid, min_profit_margin_cents)
             {
                 return Ok(true);
             }
@@ -1373,24 +1441,27 @@ mod tests {
         }
 
         #[test]
-        fn no_dust_collateral_is_liquidated_unless_too_small_to_burn_a_debt_share() {
-            // $2.40 of GOLD against $3: a liquidation can take it.
+        fn no_dust_collateral_is_liquidated_only_by_a_plan_the_liquidator_accepts() {
+            // $2.40 of GOLD against $3 nets $0.22: enough for a zero margin,
+            // not for a 50-cent one.
             let obligation = borrower(3 * UNIT, 30 * UNIT, vec![]);
-            assert!(has_liquidatable_collateral(&obligation, &market(USD * 8 / 100)).unwrap());
+            let cheap = market(USD * 8 / 100);
+            assert!(has_acceptable_liquidation(&obligation, &cheap, 0, 0).unwrap());
+            assert!(!has_acceptable_liquidation(&obligation, &cheap, 50, 0).unwrap());
 
             // GOLD at one price unit: the whole position costs one stroop of
             // USDC, which burns no d-token once the d-rate is above 1.
             let mut worthless = market(1);
             worthless.pools_data[0].total_borrowed = (1_100_000 * UNIT).into();
-            assert!(!has_liquidatable_collateral(&obligation, &worthless).unwrap());
+            assert!(!has_acceptable_liquidation(&obligation, &worthless, -1_000, 0).unwrap());
 
-            let mut supply_only = market(USD * 8 / 100);
+            let mut supply_only = cheap.clone();
             supply_only.pools_data[1].close_ltv_bps = 0;
-            assert!(!has_liquidatable_collateral(&obligation, &supply_only).unwrap());
+            assert!(!has_acceptable_liquidation(&obligation, &supply_only, 0, 0).unwrap());
 
             let mut no_deposits = obligation.clone();
             no_deposits.deposits.clear();
-            assert!(!has_liquidatable_collateral(&no_deposits, &market(USD)).unwrap());
+            assert!(!has_acceptable_liquidation(&no_deposits, &market(USD), 0, 0).unwrap());
         }
 
         #[test]

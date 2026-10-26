@@ -6,7 +6,7 @@ use ed25519_dalek::SigningKey;
 use engine::{
     lending_model::{
         MarketData, Obligation, ObligationKey,
-        liquidation::{DustRules, has_liquidatable_collateral, seizable_collateral_covers_debt},
+        liquidation::{DustRules, has_acceptable_liquidation, seizable_collateral_covers_debt},
         profitability::cents_to_oracle_value_ceil,
     },
     ports::{EventCodec, LedgerReader, OperationEvent},
@@ -21,6 +21,7 @@ use crate::{
     metrics::BadDebtOutcome,
     stellar::{client::Gateway, errors::is_obligation_does_not_exist},
     storage::obligations::ObligationsRepo,
+    strategy::liquidator::unix_now,
 };
 
 pub struct BadDebtRequestInitiatorConfig {
@@ -28,6 +29,8 @@ pub struct BadDebtRequestInitiatorConfig {
     pub markets: Vec<String>,
     pub refresh_interval_blocks: u32,
     pub dust_rules: DustRules,
+    /// The liquidator's acceptance floor, `liquidator_min_profit_margin_cents`.
+    pub min_profit_margin_cents: i128,
 }
 
 pub struct BadDebtRequestInitiator {
@@ -327,8 +330,13 @@ impl BadDebtRequestInitiator {
             }
             // Measured on $2.40 against $3: covering first costs the debt's
             // lenders $3.00, liquidating first $0.82.
-            if has_liquidatable_collateral(obligation, market_data)? {
-                info!(?obl_key, "collateral a liquidation can still take; not eligible");
+            if has_acceptable_liquidation(
+                obligation,
+                market_data,
+                self.config.min_profit_margin_cents,
+                unix_now(),
+            )? {
+                info!(?obl_key, "collateral the liquidator would still take; not eligible");
 
                 return Ok(false);
             }
@@ -386,11 +394,12 @@ mod tests {
     /// An initiator whose cache holds [`USER`]'s residual debt as the keeper last
     /// saw it, and whose chain read answers `on_chain`.
     fn initiator(on_chain: Result<Obligation, String>) -> BadDebtRequestInitiator {
-        initiator_with(DustRules::Sweep, residual_debt(0), market_data(&[], &[]), on_chain)
+        initiator_with(DustRules::Sweep, 0, residual_debt(0), market_data(&[], &[]), on_chain)
     }
 
     fn initiator_with(
         dust_rules: DustRules,
+        min_profit_margin_cents: i128,
         cached: Obligation,
         market_data: MarketData,
         on_chain: Result<Obligation, String>,
@@ -413,6 +422,7 @@ mod tests {
                 markets: vec![MARKET.to_string()],
                 refresh_interval_blocks: 5,
                 dust_rules,
+                min_profit_margin_cents,
             },
         )
     }
@@ -486,7 +496,7 @@ mod tests {
         for (dust_rules, dispatched) in [(DustRules::Sweep, 1), (DustRules::NoDust, 0)] {
             let (obligation, market_data) = solvent_dust();
             let mut initiator =
-                initiator_with(dust_rules, obligation.clone(), market_data, Ok(obligation));
+                initiator_with(dust_rules, 0, obligation.clone(), market_data, Ok(obligation));
 
             assert_eq!(sweep(&mut initiator).len(), dispatched, "{dust_rules:?}");
         }
@@ -506,9 +516,26 @@ mod tests {
         for (dust_rules, dispatched) in [(DustRules::Sweep, 1), (DustRules::NoDust, 0)] {
             let (obligation, market_data) = insolvent_dust();
             let mut initiator =
-                initiator_with(dust_rules, obligation.clone(), market_data, Ok(obligation));
+                initiator_with(dust_rules, 0, obligation.clone(), market_data, Ok(obligation));
 
             assert_eq!(sweep(&mut initiator).len(), dispatched, "{dust_rules:?}");
+        }
+    }
+
+    #[test]
+    fn a_no_dust_cover_waits_only_for_a_liquidation_the_liquidator_accepts() {
+        // The $2.40 / $3 liquidation nets $0.22.
+        for (min_profit_margin_cents, dispatched) in [(0, 0), (50, 1)] {
+            let (obligation, market_data) = insolvent_dust();
+            let mut initiator = initiator_with(
+                DustRules::NoDust,
+                min_profit_margin_cents,
+                obligation.clone(),
+                market_data,
+                Ok(obligation),
+            );
+
+            assert_eq!(sweep(&mut initiator).len(), dispatched, "{min_profit_margin_cents}");
         }
     }
 
@@ -520,7 +547,7 @@ mod tests {
         market_data.pools_data[0].total_borrowed = 1_100_000_000.into();
         market_data.pools_data[1].oracle_asset_price = 1;
         let mut initiator =
-            initiator_with(DustRules::NoDust, obligation.clone(), market_data, Ok(obligation));
+            initiator_with(DustRules::NoDust, 0, obligation.clone(), market_data, Ok(obligation));
 
         assert_eq!(sweep(&mut initiator).len(), 1);
     }

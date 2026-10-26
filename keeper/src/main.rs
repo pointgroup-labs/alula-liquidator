@@ -122,6 +122,7 @@ async fn main() -> anyhow::Result<()> {
             max_retries: bad_debt_request_initiator_max_retries,
             refresh_interval_blocks: bad_debt_request_initiator_refresh_interval_blocks,
             dust_rules: market_dust_rules,
+            min_profit_margin_cents: liquidator_min_profit_margin_cents,
         },
     );
 
