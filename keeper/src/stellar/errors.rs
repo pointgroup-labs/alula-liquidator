@@ -45,6 +45,8 @@ const EXPECTED_LIQUIDATION_FAILURE_NAMES: &[&str] = &[
     "InvalidLiquidationInputs",
     "BorrowPoolDoesNotExist",
     "CollateralPoolDoesNotExist",
+    "LiquidationExcessiveDemandedCollateral",
+    "LiquidationLeavesDust",
 ];
 
 /// Numeric `#[contracterror]` codes from the Alula lending-market contract
@@ -66,6 +68,8 @@ const KNOWN_LIQUIDATION_FAILURE_CODES: &[u32] = &[
     200, // ObligationDoesNotExist
     600, // InvalidLiquidationInputs
     601, // ObligationIsHealthy
+    605, // LiquidationExcessiveDemandedCollateral
+    606, // LiquidationLeavesDust
 ];
 
 impl SorobanRpcError {
@@ -194,5 +198,15 @@ mod tests {
         assert!(is_obligation_does_not_exist(&gone));
         assert!(!is_obligation_does_not_exist(&open_request));
         assert!(!is_obligation_does_not_exist(&anyhow!("connection refused")));
+    }
+
+    #[test]
+    fn a_dust_or_demand_refusal_is_an_expected_liquidation_failure() {
+        for code in [605, 606] {
+            let refused = anyhow!("HostError: Error(Contract, #{code})");
+
+            assert!(is_expected_liquidation_failure(&refused), "#{code}");
+        }
+        assert!(!is_expected_liquidation_failure(&anyhow!("HostError: Error(Contract, #603)")));
     }
 }
